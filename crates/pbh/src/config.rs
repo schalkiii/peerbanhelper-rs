@@ -4,6 +4,7 @@
 //! `profile.yml`（`check-interval` / `ban-duration` / `ignore-peers-from-addresses` / `module.*`）。
 //! 本阶段把两者合并到同一个 `config.yml` 的 `profile:` 段，便于单文件部署。
 
+use pbh_core::btn_transport::BtnNetworkConfig;
 use pbh_core::config::{IpDatabaseConfig, ProfileConfig};
 use pbh_core::remap::{BanlistRemapping, IpRemapConfig, RemapConfig};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,13 @@ pub struct AppConfig {
     /// `push:` 段（告警推送渠道）
     #[serde(default)]
     pub push: PushSection,
+    /// `btn:` 段（BTN 网络传输层，对齐上游 `config.yml` 的 `btn:`）。
+    ///
+    /// 默认形态（[`BtnNetworkConfig::default`]）**全部关闭** ⇒ 不构造 BTN 客户端、
+    /// 不起后台线程、零网络请求（对齐上游 `isEnableBTN() == false`）；
+    /// 此时 `profile.module.btn` 保持「未注入规则 ⇒ 恒 pass、绝不封禁」。
+    #[serde(default)]
+    pub btn: BtnNetworkConfig,
     #[serde(default)]
     pub downloaders: Vec<DownloaderConfig>,
 }
@@ -393,6 +401,7 @@ impl Default for AppConfig {
             ip_database: IpDatabaseConfig::default(),
             language: default_language(),
             push: PushSection::default(),
+            btn: BtnNetworkConfig::default(),
             downloaders: vec![],
         }
     }
@@ -443,6 +452,9 @@ mod tests {
         assert_eq!(ipb.regions, vec!["0".to_string()]);
         assert_eq!(ipb.cities, vec!["示例海南".to_string()]);
         assert!(ipb.net_type.to_tokens().is_empty(), "随包 net-type 开关全为 false");
+
+        // btn（传输层）：出厂默认必须关闭 ⇒ 不构造客户端、不起线程、零网络请求
+        assert!(!cfg.btn.is_active(), "出厂配置必须关闭 BTN 联网");
 
         // module.btn：已进入流水线（AutoRangeBan 之后、IPBlackRuleList 之前）
         let btn = cfg.profile.module.btn.as_ref().expect("module.btn");

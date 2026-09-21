@@ -478,9 +478,11 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
 > （`dismiss` / `dismissAll` / `DELETE`）与阈值告警的 `push:` 渠道推送。
 > （这四类模块上游即非 `RuleFeatureModule`，`check` 恒 `pass()`，**不影响任何封禁决策**。）
 
-1. **BTN 传输层未移植**：`btn` 的规则模型与判定路径已对齐上游，但
-   握手 / abilities（heartbeat、rules、ip-query、submit-*）/ PoW captcha / `metadataDao` 缓存未移植；
-   未注入规则时恒 `pass()`（未配置 BTN 服务端的部署与上游行为一致），BTN 脚本规则不执行。
+1. **BTN 传输层已移植**：`pbh-core::btn_transport` 提供配置端点握手、协议版本校验、
+   `X-BTN-ContentVersion` + 本地缓存（落 `meta` 表）、PoW captcha 与到期调度，并在 `pbh/src/main.rs`
+   接线（默认禁用 ⇒ 零网络）。未实现的 abilities（`submit_*` / `heartbeat` / `ip-query` / `reconfigure`）
+   只解析不构造、不调度。BTN 脚本规则在 `btn.allow-script-execute: true` 时以 rhai 执行
+   （上游默认 `false`）。未注入规则时恒 `pass()`（未配置 BTN 服务端的部署与上游行为一致）。
 2. **GeoIP 数据库自动更新已移植**：`pbh-core::geoip_update` 三镜像轮换下载 + XZ 解压 +
    45 天 mtime 间隔 + 校验后原子替换，在 `GeoIpDb::load` 之前接线（对齐上游「先 updateMMDB 再 loadMMDB」）；
    `auto-update: false`（默认）⇒ 严格 no-op。数据库缺失/损坏或 `pbh.forceDisableIPDB` 时

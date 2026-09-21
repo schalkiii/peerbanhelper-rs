@@ -197,12 +197,16 @@
       未读告警、`title`/`content` 按请求 locale 渲染）；三者都在 Token 鉴权之后（上游 `Role.USER_READ`）。
       未移植（非静默省略）：`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
       `DELETE /api/alert/{id}`，故 `read_at` 恒为 NULL、告警恒未读。
-- [ ] **BTN 网络传输**：`BtnNetwork` 的配置端点握手、abilities 调度与重试、PoW captcha、
-      `X-BTN-ContentVersion` 与本地缓存（`metadataDao`）未移植；判定模块与注入入口
-      （`apply_ruleset_json` / `apply_ip_*_list_text` / `sync_from_transport`）已就绪，
+- [x] **BTN 网络传输**：`pbh-core::btn_transport`（≈ `BtnNetwork` + `AbstractBtnAbility`）已实现配置端点握手、
+      协议版本校验（实现版本 20，遗留/现代 abilities 分支）、`X-BTN-ContentVersion` + 本地缓存、
+      PoW captcha（Base64 challenge → 递增 nonce → 摘要前置零位）、按 `interval`/`random_initial_delay`
+      的到期调度与 600s 重试节流；已在 `pbh/src/main.rs` 接线（`std::thread` + 阻塞客户端，5s tick，
+      默认禁用 ⇒ 不构造客户端/不起线程/零请求）。缓存落 `pbh-db` 既有 `meta` 键值表（对齐上游 `metadataDao`）。
+      未实现的 abilities（submit_* / heartbeat / ip-query / reconfigure）仅解析不构造、不调度。
       未注入规则时模块恒 `pass()`、绝不封禁
-- [ ] **BTN 脚本规则**：AviatorScript 执行（`btn.allow-script-execute`）未移植
-      （上游默认 `false`，此时与本移植行为一致）
+- [x] **BTN 脚本规则**：`btn.allow-script-execute` 为 true 时会编译并执行 BTN 规则集里的
+      `scriptRules`（上游 AviatorScript ⇒ 本移植 rhai，与 `expression_engine` 同一套注入变量与返回值语义）；
+      上游默认 `false` ⇒ 不编译、不执行
 - [x] **GeoIP 数据库自动更新**：`pbh-core::geoip_update` 已实现三镜像轮换（GitHub Releases →
       pbh-static.paulzzh.com → pbh-static.ghostchu.com）、XZ 解压（纯 Rust `lzma-rs`）、
       45 天 mtime 更新间隔、解压后 `validateMMDB` 再原子替换；已在 `pbh/src/main.rs` 的

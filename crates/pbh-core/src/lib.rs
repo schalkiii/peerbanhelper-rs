@@ -7,6 +7,8 @@ pub mod auto_stun;
 pub mod auto_stun_forwarder;
 pub mod auto_stun_probe;
 pub mod banlist;
+/// BTN 网络传输层（对齐上游 `btn/BtnNetwork` 与 `btn/ability/impl/*` 的联网部分）
+pub mod btn_transport;
 pub mod config;
 pub mod defaults;
 pub mod geoip;

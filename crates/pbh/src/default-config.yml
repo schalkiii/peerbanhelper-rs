@@ -17,6 +17,22 @@ persist:
   # 是否持久化封禁列表
   banlist: true
 
+# BTN 网络（对齐上游 config.yml 的 btn: 段；驱动 profile.module.btn 的规则来源）
+# enabled=false 或 config-url 为空 ⇒ 不构造 BTN 客户端、不发起任何请求、不创建后台线程
+# （对齐上游 isEnableBTN() == false）；此时 btn 模块恒 pass、绝不封禁。
+# 规则集与 IP 列表缓存落在 SQLite 的 meta 表（对齐上游 metadataDao）。
+btn:
+  enabled: false
+  # BTN 服务器配置端点；留空即视为未配置（零网络请求）
+  config-url: ""
+  submit: false
+  app-id: ""
+  app-secret: ""
+  # 是否编译/执行 BTN 下发的脚本规则（上游默认 false）
+  allow-script-execute: false
+  # 匿名账户（未配置 app-id/app-secret）时随请求头上报；留空即上报空值
+  installation-id: ""
+
 # GeoIP/ASN 数据库（对齐上游 config.yml 的 ip-database 段）
 # 数据库文件放在 <data>/ipdb/geoip/：GeoIP-City.mmdb、GeoIP-ASN.mmdb、GeoCN.mmdb
 # （可选 ok_data_level3.csv 行政区划表；缺失时 rev2 记录按上游「division 表查不到」处理）
@@ -172,7 +188,7 @@ profile:
       ipv6: 48
     # 启用来自 BTN 网络的规则
     # 此处的 enabled 只表示本模块参与判定；真正联网还需要主配置 config.yml 的 btn.enabled: true
-    # （本实现尚未提供 BTN 传输层：未注入规则时模块恒 pass、绝不封禁，见 PLAN.md 已知缺口）
+    # （未握手/未注入规则时模块恒 pass、绝不封禁）
     btn:
       enabled: true
       # 封禁时间，单位：毫秒，使用 default 则跟随全局设置

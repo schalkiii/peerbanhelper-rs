@@ -7,10 +7,15 @@ mod wave;
 use clap::Parser;
 use pbh_core::auto_stun::{AutoStunRefresher, DEFAULT_REFRESH_INTERVAL, DEFAULT_STUN_TIMEOUT};
 use pbh_core::banlist::BannedRecord;
+use pbh_core::btn_transport::{
+    now_millis, BtnHttpClient, BtnMetadataStore, BtnNetwork, BtnNetworkConfig,
+    ReqwestBlockingHttpClient,
+};
 use pbh_core::geoip::{geoip_force_disabled, GeoIpDb, GeoIpProvider};
 use pbh_core::modules::progress_cheat::PcbEntityKind;
 use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
-use pbh_db::{Database, DbMonitorSink};
+use pbh_core::Pipeline;
+use pbh_db::{Database, DbMetadataStore, DbMonitorSink};
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
 use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
 use pbh_downloader::bitcomet::{BitCometConfig, BitCometDownloader};
@@ -23,7 +28,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use wave::{DownloaderEntry, WaveEngine};
 
 #[derive(Parser, Debug)]
@@ -314,18 +319,40 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // BTN：规则集/IP 白黑名单全部由 BTN 服务器下发，本实现尚未提供传输层
-    //（上游 `BtnNetwork` 的握手、abilities 调度、PoW captcha 均未移植，见 PLAN.md 已知缺口）。
-    // 未注入任何规则时模块恒 `pass()` —— 启用它不会造成任何封禁。
-    if let Some(btn) = pipeline.module_as::<BtnNetworkOnline>("btn") {
-        if !btn.is_manager_initialized() {
-            info!(
-                "BTN 模块已启用（ban-duration={}ms）但客户端未初始化：尚无 BTN 传输层，\
-                 规则注入前该模块恒 pass、绝不封禁",
-                btn.ban_duration_ms
+    // BTN 传输层（对齐上游 `btn/BtnNetwork`）：规则集 / IP 白黑名单全部由 BTN 服务器下发。
+    // `btn.enabled: true` 且 `config-url` 非空（[`BtnNetworkConfig::is_active`]）时才构造客户端
+    // 并起后台线程：握手 → abilities 到期调度（含 PoW captcha）→ 注入 `btn` 模块。
+    // 否则（出厂默认）**不构造客户端、不发请求、不起线程**，模块保持
+    // 「未注入规则 ⇒ 恒 `pass()`、绝不封禁」。
+    let _btn_transport: Option<std::thread::JoinHandle<()>> = if cfg.btn.is_active() {
+        // 阻塞式 HTTP 客户端自带 tokio 运行时，**必须**在工作线程内部构造
+        // （在 async 上下文里构造/析构会 panic：`Cannot drop a runtime in a context
+        // where blocking is not allowed`），因此这里只传入构造函数。
+        // 规则缓存落 SQLite 的 `meta` 表（对齐上游 `metadataDao`；重启后回灌、不重拉）
+        let metadata = Arc::new(DbMetadataStore::new(db.clone()));
+        let handle = spawn_btn_transport(
+            &cfg.btn,
+            &pipeline,
+            || {
+                ReqwestBlockingHttpClient::new()
+                    .map(|client| Arc::new(client) as Arc<dyn BtnHttpClient>)
+            },
+            metadata,
+        );
+        if handle.is_none() {
+            warn!(
+                "btn.enabled=true 但流水线里没有启用 btn 模块\
+                 （profile.module.btn）：跳过 BTN 接线"
             );
         }
-    }
+        handle
+    } else {
+        info!(
+            "BTN 传输层未启用（config.yml 的 btn.enabled=false 或 config-url 为空）：\
+             不构造客户端、不发起请求、不创建线程；btn 模块恒 pass、绝不封禁"
+        );
+        None
+    };
 
     // 文案表：内嵌上游 lang 资源，允许 data/lang 覆盖（与 wave 共用，统一 locale 渲染）
     let translator = Arc::new(pbh_core::i18n::Translator::with_overrides(Some(
@@ -549,4 +576,191 @@ async fn main() -> anyhow::Result<()> {
     }
     server.abort();
     Ok(())
+}
+
+/// BTN 后台同步线程的 tick 间隔。
+///
+/// 上游每个 ability 由 `ScheduledExecutorService` 按自己的 `interval`（典型值 24h）+
+/// `random_initial_delay` 调度；本移植由本线程统一轮询 [`BtnNetwork::sync_due`]，
+/// tick 只决定「多快注意到某个 ability 到期」。取 5 秒：远小于服务端可能的分钟级
+/// `interval`（保证到期即跑、误差 ≤ 5s），又没有可观测开销；配置握手失败的重试由
+/// [`BtnNetwork`] 自己按上游 `RETRY_PERIOD_SECONDS`（600s）节流，与 tick 无关。
+const BTN_SYNC_TICK: Duration = Duration::from_secs(5);
+
+/// 接线 BTN 传输层：仅当 `btn.enabled && config-url` 非空（[`BtnNetworkConfig::is_active`]）、
+/// 且流水线里启用了 `btn` 模块时才构造 [`BtnNetwork`] 并起后台线程；
+/// 其余情况返回 `None` —— **不构造客户端、不发请求、不起线程**。
+///
+/// 用 `std::thread` + 阻塞式 HTTP 客户端（而非 tokio task）：`reqwest::blocking` 自带运行时、
+/// 不能在 async 上下文构造/析构，故 `http_factory` 也只在线程内被调用一次。
+/// 独立线程同样不会拖慢/阻塞 ban wave。
+fn spawn_btn_transport<F>(
+    config: &BtnNetworkConfig,
+    pipeline: &Arc<Pipeline>,
+    http_factory: F,
+    metadata: Arc<dyn BtnMetadataStore>,
+) -> Option<std::thread::JoinHandle<()>>
+where
+    F: Fn() -> anyhow::Result<Arc<dyn BtnHttpClient>> + Send + 'static,
+{
+    if !config.is_active() {
+        return None;
+    }
+    // 上游 `BtnNetwork` 与判定模块是两个对象，但本移植的规则注入入口全部在模块上：
+    // 流水线里没有 `btn` 模块就没有任何可落地的数据 ⇒ 视为未启用（直接返回 `None`）。
+    pipeline.module_as::<BtnNetworkOnline>("btn")?;
+    let pipeline = pipeline.clone();
+    let config_url = config.config_url.clone();
+    let config = config.clone();
+    let thread = std::thread::Builder::new().name("btn-transport".to_string()).spawn(move || {
+        let http = match http_factory() {
+            Ok(http) => http,
+            Err(e) => {
+                warn!("BTN HTTP 客户端初始化失败，BTN 同步线程退出: {e}");
+                return;
+            }
+        };
+        // 允许列表更新后需要解封（上游 `DownloaderServer.getBanList()`）
+        let network =
+            BtnNetwork::new(config, http, metadata).with_ban_list(pipeline.ban_list.clone());
+        info!("BTN 传输层已启动：config-url={config_url}, tick={BTN_SYNC_TICK:?}");
+        loop {
+            // 对齐上游 `scheduleWithFixedDelay(this::updateRule, 0, interval, MS)`：先跑再等
+            let Some(module) = pipeline.module_as::<BtnNetworkOnline>("btn") else {
+                warn!("btn 模块已不在流水线中，BTN 同步线程退出");
+                return;
+            };
+            // 上游各 ability 的 `try/catch`：任何失败都记日志并继续下一轮
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                network.check_if_need_retry_config(module);
+                network.sync_due(module, now_millis())
+            })) {
+                Ok(report) => {
+                    for sync in report {
+                        debug!("BTN ability 已同步: {} updated={}", sync.key, sync.updated);
+                    }
+                }
+                Err(_) => warn!("BTN 同步出现异常，已忽略并继续下一轮"),
+            }
+            std::thread::sleep(BTN_SYNC_TICK);
+        }
+    });
+    match thread {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            warn!("BTN 同步线程创建失败: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pbh_core::btn_transport::{
+        BtnHttpRequest, BtnHttpResponse, ClosureHttpClient, InMemoryMetadataStore,
+    };
+    use pbh_core::model::{PeerData, TorrentData};
+    use pbh_core::module::{CheckContext, PeerAction};
+    use pbh_core::RuleModule;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn counting_http(calls: Arc<AtomicUsize>) -> Arc<dyn BtnHttpClient> {
+        Arc::new(ClosureHttpClient::new(move |_: &BtnHttpRequest| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(BtnHttpResponse::new(200, "{}"))
+        }))
+    }
+
+    fn btn_pipeline() -> Arc<Pipeline> {
+        let mut pipeline = Pipeline::default();
+        pipeline.add_module(Box::new(BtnNetworkOnline::new(
+            pbh_core::modules::btn::BTN_BAN_DURATION_MS,
+        )));
+        Arc::new(pipeline)
+    }
+
+    fn peer() -> PeerData {
+        PeerData {
+            client_name: Some("Xunlei".to_string()),
+            peer_id: Some("-hp001-abcdefghijkl".to_string()),
+            dl_speed: 1000,
+            downloaded: 1000,
+            up_speed: 1000,
+            uploaded: 1000,
+            progress: 0.5,
+            flags: Some("d u".to_string()),
+            ip: "1.2.3.4".to_string(),
+            port: 51413,
+            raw_ip: "1.2.3.4:51413".to_string(),
+            connection: Some("uTP".to_string()),
+        }
+    }
+
+    fn torrent() -> TorrentData {
+        TorrentData {
+            hash: "h".to_string(),
+            name: "t".to_string(),
+            progress: 1.0,
+            total_size: 1_000_000_000,
+            piece_size: 0,
+            pieces_have: 0,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        }
+    }
+
+    /// 出厂默认（`btn` 未启用/未配置）⇒ 不构造 `BtnNetwork`、不起线程、零 HTTP 请求，
+    /// 模块保持「未注入规则 ⇒ 恒 pass、绝不封禁」
+    #[test]
+    fn disabled_btn_spawns_no_transport_and_module_passes() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = counting_http(calls.clone());
+        let pipeline = btn_pipeline();
+        let metadata = Arc::new(InMemoryMetadataStore::new());
+
+        for config in [
+            BtnNetworkConfig::default(),
+            BtnNetworkConfig { enabled: true, ..Default::default() },
+            BtnNetworkConfig { config_url: "https://btn.test/config".to_string(), ..Default::default() },
+            BtnNetworkConfig { enabled: true, config_url: "   ".to_string(), ..Default::default() },
+        ] {
+            let http = http.clone();
+            assert!(
+                spawn_btn_transport(&config, &pipeline, move || Ok(http.clone()), metadata.clone())
+                    .is_none(),
+                "未启用时不得构造客户端/起线程"
+            );
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0, "未启用时一个请求都不能发");
+
+        let btn = pipeline.module_as::<BtnNetworkOnline>("btn").expect("btn 模块");
+        assert!(!btn.is_manager_initialized());
+        let result = btn.check("qbittorrent", &torrent(), &peer(), &CheckContext::default());
+        assert_eq!(result.action, PeerAction::NoAction);
+        assert_eq!(result.data["status"], "pass");
+    }
+
+    /// `btn` 段启用但流水线里没有 `btn` 模块 ⇒ 同样不起线程、不发请求
+    #[test]
+    fn active_btn_without_module_spawns_nothing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let http = counting_http(calls.clone());
+        let pipeline = Arc::new(Pipeline::default());
+        let config = BtnNetworkConfig {
+            enabled: true,
+            config_url: "https://btn.test/config".to_string(),
+            ..Default::default()
+        };
+        assert!(spawn_btn_transport(
+            &config,
+            &pipeline,
+            move || Ok(http.clone()),
+            Arc::new(InMemoryMetadataStore::new())
+        )
+        .is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
 }

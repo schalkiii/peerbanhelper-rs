@@ -56,16 +56,22 @@
 //!    （对齐 `RuleParser.matchRule` 的「TRUE 可被后续覆盖、FALSE 最高优先」语义）；
 //! 6. 全部未命中 → `pass()`。
 //!
-//! 未移植的上游传输层部件（本模块**不发起任何网络请求**，所有规则由上层注入）：
-//! - `btn/BtnNetwork`：配置端点握手、abilities 调度与重试、PoW captcha、提交（submit_*）；
-//! - `BtnAbilityRules` / `BtnAbilityIPAllowList` / `BtnAbilityIPDenyList` 的定时拉取、
-//!   `X-BTN-ContentVersion`、`metadataDao`（`btn.ability.*.cache`）本地缓存持久化；
-//!   （只保留了最小的 [`BtnTransport`] 抽象与 [`BtnNetworkOnline::sync_from_transport`]
-//!   的「拉取 → 注入」流程与优雅降级语义，HTTP 细节由应用层实现）
-//! - `ScriptEngineManager` + AviatorScript 的 BTN 脚本规则执行：上游默认
-//!   `btn.allow-script-execute: false` 时 `scriptRules` 为空、`checkScript` 恒 `pass()`，
-//!   与本移植一致；打开该开关的上游行为未移植；
-//! - `BtnRuleUpdateEvent` 事件总线（[`BtnNetworkOnline::on_rule_update`] 保留等价逻辑，由上层调用）；
+//! 传输层（本模块自身**不发起任何网络请求**，只提供注入入口）：
+//! [`BtnTransport`] 的最小抽象 + [`BtnNetworkOnline::sync_from_transport`] 的「拉取 → 注入」
+//! 流程与优雅降级语义由本模块保留；真正的 HTTP/握手/abilities/PoW 实现见
+//! [`crate::btn_transport::BtnNetwork`]（它实现了 [`BtnTransport`]，可直接交给
+//! [`BtnNetworkOnline::sync_from_transport`]）。
+//!
+//! BTN 脚本规则（`script` 类别）：上游用 `ScriptEngineManager` + AviatorScript 编译/执行，
+//! 本移植用 **rhai**（与 [`crate::modules::expression_engine::ExpressionEngine`] 同样的引擎
+//! 构造与返回值语义，见 `docs/expression-engine-migration.md`）。上游默认
+//! `btn.allow-script-execute: false` ⇒ 不编译、不执行，与本移植默认行为一致。
+//!
+//! 未移植：
+//! - 上游 `btn/BtnNetwork` 的 submit_* 能力（需要 pbh-core 不持有的 DAO，见
+//!   [`crate::btn_transport`] 模块文档）；
+//! - `BtnRuleUpdateEvent` 事件总线（[`BtnNetworkOnline::on_rule_update`] 保留等价逻辑，
+//!   由传输层在允许列表更新后调用）；
 //! - `ModuleMatchCache` 判定缓存（本移植每轮重新判定，结果等价）；
 //! - `LegacyBtnExceptionRuleParsed` 例外规则：上游 v9.5.1 中 `checkPeerIdRuleException` 等
 //!   私有方法已无任何调用点（死代码），故不移植。
@@ -80,9 +86,14 @@ use crate::iputil::parse_addr;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
 use crate::rule::{Matcher, RuleSet};
+use rhai::CustomType;
+use rhai::Engine;
+use rhai::Scope;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `module.btn.ban-duration` 的上游默认值：3 天（ms）。
 pub const BTN_BAN_DURATION_MS: i64 = 259_200_000;
@@ -300,25 +311,280 @@ struct BtnState {
     ip_deny_list: Option<BtnIpList>,
 }
 
+/// 上游 `ScriptEngineManager.compileScript` 的产物（`CompiledScript`）。
+struct BtnScript {
+    name: String,
+    ast: rhai::AST,
+}
+
+/// BTN 脚本规则的 rhai 引擎（构造方式与 [`crate::modules::expression_engine`] 完全一致）。
+struct BtnScriptEngine {
+    engine: Engine,
+    /// 超时判定用的起始时间戳（原子；并发多 peer 执行时可能被交错覆盖，仅作安全上界）
+    start: Arc<AtomicI64>,
+}
+
+/// 上游 `ExpressionRule.maxScriptExecuteTime = 1500`（毫秒）。
+const MAX_SCRIPT_EXECUTE_MS: i64 = 1500;
+
+/// 脚本执行期注入的 `downloader` 变量（与 [`crate::modules::expression_engine`] 一致）。
+#[derive(Debug, Clone, CustomType)]
+struct BtnDownloaderInfo {
+    id: String,
+    name: String,
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 构造 rhai 引擎：注册 `peer` / `torrent` / `downloader` 等自定义类型与超时回调
+/// （逐项对齐 [`crate::modules::expression_engine::build_engine`]）。
+fn build_script_engine() -> BtnScriptEngine {
+    let start = Arc::new(AtomicI64::new(0));
+    let mut engine = Engine::new();
+
+    engine.register_type_with_name::<PeerData>("Peer");
+    engine.register_get("ip", |o: &mut PeerData| o.ip.clone());
+    engine.register_get("port", |o: &mut PeerData| o.port as i64);
+    engine.register_get("peer_id", |o: &mut PeerData| o.peer_id.clone().unwrap_or_default());
+    engine.register_get("client_name", |o: &mut PeerData| o.client_name.clone().unwrap_or_default());
+    engine.register_get("download_speed", |o: &mut PeerData| o.dl_speed);
+    engine.register_get("upload_speed", |o: &mut PeerData| o.up_speed);
+    engine.register_get("downloaded", |o: &mut PeerData| o.downloaded);
+    engine.register_get("uploaded", |o: &mut PeerData| o.uploaded);
+    engine.register_get("progress", |o: &mut PeerData| o.progress);
+    engine.register_get("flags", |o: &mut PeerData| o.flags.clone().unwrap_or_default());
+
+    engine.register_type_with_name::<TorrentData>("Torrent");
+    engine.register_get("id", |o: &mut TorrentData| o.hash.clone());
+    engine.register_get("name", |o: &mut TorrentData| o.name.clone());
+    engine.register_get("hash", |o: &mut TorrentData| o.hash.clone());
+    engine.register_get("progress", |o: &mut TorrentData| o.progress);
+    engine.register_get("size", |o: &mut TorrentData| o.total_size);
+    engine.register_get("rt_upload_speed", |o: &mut TorrentData| o.upspeed);
+    engine.register_get("rt_download_speed", |o: &mut TorrentData| o.dlspeed);
+
+    engine.register_type_with_name::<BtnDownloaderInfo>("Downloader");
+    engine.register_get("id", |o: &mut BtnDownloaderInfo| o.id.clone());
+    engine.register_get("name", |o: &mut BtnDownloaderInfo| o.name.clone());
+
+    let start_for_cb = start.clone();
+    engine.on_progress(move |_progress: u64| {
+        let s = start_for_cb.load(Ordering::Relaxed);
+        if s == 0 {
+            return None;
+        }
+        if now_millis() - s > MAX_SCRIPT_EXECUTE_MS {
+            // 超时：中止脚本执行，返回值 0（上游语义：pass）
+            Some(rhai::Dynamic::from(0))
+        } else {
+            None
+        }
+    });
+
+    BtnScriptEngine { engine, start }
+}
+
+impl BtnScriptEngine {
+    /// 对齐上游 `BtnRulesetParsed.compileScripts`：逐条编译，失败的记录日志并跳过。
+    fn compile(&self, scripts: &BTreeMap<String, String>) -> Vec<BtnScript> {
+        let mut compiled = Vec::new();
+        tracing::info!("BTN 脚本规则编译开始，共 {} 条", scripts.len());
+        for (name, content) in scripts {
+            match self.engine.compile(content) {
+                Ok(ast) => compiled.push(BtnScript { name: name.clone(), ast }),
+                Err(e) => tracing::error!("Unable to load BTN script {name}: {e}"),
+            }
+        }
+        tracing::info!("BTN 脚本规则编译完成，成功 {} 条", compiled.len());
+        compiled
+    }
+
+    /// 对齐上游 `BtnNetworkOnline.runExpression` + `ScriptEngineManager.handleResult`：
+    /// 变量注入与返回值语义与 [`crate::modules::expression_engine`] 一致。
+    ///
+    /// 返回 `None` 表示 `pass()`（无动作）；脚本异常/超时同样按 `pass()` 处理。
+    fn run(
+        &self,
+        script: &BtnScript,
+        ban_duration_ms: i64,
+        torrent: &TorrentData,
+        peer: &PeerData,
+        downloader_id: &str,
+    ) -> Option<CheckResult> {
+        let mut scope = Scope::new();
+        scope.push_constant("peer", peer.clone());
+        scope.push_constant("torrent", torrent.clone());
+        scope.push_constant(
+            "downloader",
+            BtnDownloaderInfo { id: downloader_id.to_string(), name: downloader_id.to_string() },
+        );
+        scope.push_constant("banDuration", ban_duration_ms);
+        scope.push_constant("cacheable", true);
+        scope.push_constant("ramStorage", rhai::Dynamic::from(rhai::Map::new()));
+        scope.push_constant("moduleInstance", "btn".to_string());
+        scope.push_constant("server", true);
+
+        self.start.store(now_millis(), Ordering::Relaxed);
+        let result = self.engine.eval_ast_with_scope(&mut scope, &script.ast);
+        self.start.store(0, Ordering::Relaxed);
+
+        match result {
+            Ok(ret) => {
+                let (action, payload) = handle_script_return(&ret)?;
+                Some(build_script_result(action, ban_duration_ms, &script.name, &payload))
+            }
+            Err(e) => {
+                tracing::debug!("BTN 脚本 {} 执行异常，按 pass 处理: {e}", script.name);
+                None
+            }
+        }
+    }
+}
+
+/// 上游 `ScriptEngineManager.handleResult` 的返回值映射（与
+/// [`crate::modules::expression_engine`] 的 `handle_return` 逐项一致）。
+fn handle_script_return(ret: &rhai::Dynamic) -> Option<(PeerAction, String)> {
+    if ret.is_bool() {
+        return if ret.as_bool().unwrap_or(false) {
+            Some((PeerAction::Ban, "true".to_string()))
+        } else {
+            None
+        };
+    }
+    if ret.is_int() {
+        return match ret.as_int().unwrap_or(0) {
+            0 => None,
+            1 => Some((PeerAction::Ban, "1".to_string())),
+            2 => Some((PeerAction::Skip, "2".to_string())),
+            _ => None,
+        };
+    }
+    if ret.is_float() {
+        let v = ret.as_float().unwrap_or(0.0).round() as i64;
+        return match v {
+            0 => None,
+            1 => Some((PeerAction::Ban, v.to_string())),
+            2 => Some((PeerAction::Skip, v.to_string())),
+            _ => None,
+        };
+    }
+    if let Ok(s) = ret.clone().into_string() {
+        if s.trim().is_empty() {
+            return None;
+        }
+        return if let Some(rest) = s.strip_prefix('@') {
+            Some((PeerAction::Skip, rest.to_string()))
+        } else {
+            Some((PeerAction::Ban, s))
+        };
+    }
+    // 其它类型（含上游的 PeerAction / CheckResult 返回）→ 视作无效，pass
+    None
+}
+
+/// 与 [`crate::modules::expression_engine`] 的 `build_result` 一致，只是模块名为 `btn`。
+fn build_script_result(
+    action: PeerAction,
+    ban_duration_ms: i64,
+    name: &str,
+    payload: &str,
+) -> CheckResult {
+    match action {
+        PeerAction::Skip => CheckResult {
+            module: "btn".to_string(),
+            action: PeerAction::Skip,
+            ban_duration_ms: 0,
+            rule: "btn".to_string(),
+            reason: payload.to_string(),
+            data: serde_json::json!({ "script": name }),
+            rule_key: Some(TranslationComponent::new("USER_SCRIPT_RULE")),
+            reason_key: Some(TranslationComponent::new(payload)),
+        },
+        PeerAction::Ban => CheckResult::ban(
+            "btn",
+            ban_duration_ms,
+            "btn",
+            &format!("Script {name}: {payload}"),
+            serde_json::json!({ "script": name }),
+        )
+        .with_keys(
+            TranslationComponent::new("USER_SCRIPT_RULE"),
+            TranslationComponent::with_params(
+                "USER_SCRIPT_RUN_RESULT",
+                vec![name.to_string().into(), payload.to_string().into()],
+            ),
+        ),
+        _ => CheckResult::pass("btn"),
+    }
+}
+
 /// BTN 网络在线规则模块（配置键 `btn`）。
 pub struct BtnNetworkOnline {
     /// `module.btn.ban-duration`
     pub ban_duration_ms: i64,
-    /// `module.btn.allow-script-execute`（脚本引擎未移植，见文件头）
-    pub allow_script: bool,
+    /// `btn.allow-script-execute`（上游主配置 `btn.allow-script-execute`，默认 false）
+    allow_script: AtomicBool,
+    script_engine: BtnScriptEngine,
+    /// 编译后的 BTN 脚本规则（仅 `allow_script` 为真时非空）
+    scripts: RwLock<Vec<BtnScript>>,
     state: RwLock<BtnState>,
 }
 
 impl BtnNetworkOnline {
     /// `ban_duration_ms` 来自 `profile.yml` 的 `module.btn.ban-duration`（上游默认 [`BTN_BAN_DURATION_MS`]）。
     pub fn new(ban_duration_ms: i64) -> Self {
-        Self { ban_duration_ms, allow_script: false, state: RwLock::new(BtnState::default()) }
+        Self {
+            ban_duration_ms,
+            allow_script: AtomicBool::new(false),
+            script_engine: build_script_engine(),
+            scripts: RwLock::new(Vec::new()),
+            state: RwLock::new(BtnState::default()),
+        }
     }
 
     /// 设置 `module.btn.allow-script-execute`。
-    pub fn with_allow_script(mut self, allow_script: bool) -> Self {
-        self.allow_script = allow_script;
+    pub fn with_allow_script(self, allow_script: bool) -> Self {
+        self.set_allow_script(allow_script);
         self
+    }
+
+    /// 上游 `BtnNetworkOnline.reloadConfig()` 的 `allow-script-execute`；传输层握手时同步。
+    ///
+    /// 关闭时清空已编译脚本（等价于上游 `scriptRules` 为空）；打开时按当前规则集重新编译。
+    pub fn set_allow_script(&self, allow_script: bool) {
+        self.allow_script.store(allow_script, Ordering::Relaxed);
+        let pending = if allow_script {
+            self.state
+                .read()
+                .ok()
+                .and_then(|state| state.ruleset.as_ref().map(|r| r.script_rules.clone()))
+        } else {
+            None
+        };
+        match pending {
+            Some(rules) => self.compile_scripts(&rules),
+            None => {
+                if let Ok(mut scripts) = self.scripts.write() {
+                    scripts.clear();
+                }
+            }
+        }
+    }
+
+    pub fn allow_script(&self) -> bool {
+        self.allow_script.load(Ordering::Relaxed)
+    }
+
+    fn compile_scripts(&self, rules: &BTreeMap<String, String>) {
+        let compiled = self.script_engine.compile(rules);
+        if let Ok(mut scripts) = self.scripts.write() {
+            *scripts = compiled;
+        }
     }
 
     /// 标记 BTN 客户端已初始化（对齐上游 `btnNetwork != null`）。
@@ -342,12 +608,21 @@ impl BtnNetworkOnline {
     /// 注入成功即视为 BTN 客户端已就绪。
     pub fn apply_ruleset(&self, ruleset: &BtnRuleset) -> anyhow::Result<()> {
         let parsed = BtnRulesetParsed::parse(ruleset)?;
+        let script_rules = parsed.script_rules.clone();
         let mut state = self
             .state
             .write()
             .map_err(|_| anyhow::anyhow!("BTN 模块状态锁已中毒"))?;
         state.ruleset = Some(parsed);
         state.manager_initialized = true;
+        drop(state);
+        // 上游 `new BtnRulesetParsed(scriptEngineManager, btnRuleset, scriptExecute)`：
+        // 同一处按 `scriptExecute` 决定是否编译脚本规则
+        if self.allow_script() {
+            self.compile_scripts(&script_rules);
+        } else if let Ok(mut scripts) = self.scripts.write() {
+            scripts.clear();
+        }
         Ok(())
     }
 
@@ -418,7 +693,8 @@ impl BtnNetworkOnline {
         updated
     }
 
-    fn ip_list_version(&self, allow: bool) -> String {
+    /// 当前允许（`allow=true`）/拒绝列表的 `X-BTN-ContentVersion`；未加载时为 `"initial"`。
+    pub fn ip_list_version(&self, allow: bool) -> String {
         self.state
             .read()
             .ok()
@@ -434,10 +710,47 @@ impl BtnNetworkOnline {
         if let Ok(mut state) = self.state.write() {
             *state = BtnState::default();
         }
+        if let Ok(mut scripts) = self.scripts.write() {
+            scripts.clear();
+        }
     }
 
     pub fn ruleset_version(&self) -> Option<String> {
         self.state.read().ok().and_then(|s| s.ruleset.as_ref().map(|r| r.version.clone()))
+    }
+
+    /// 对齐上游 `BtnNetworkOnline.checkScript`：逐条执行已编译的 BTN 脚本规则。
+    ///
+    /// 聚合语义与上游一致：SKIP 优先级最高（命中即短路返回），其次 BAN（保留最后一个），
+    /// 全部 pass 则返回 `None`（调用方继续 `checkShouldBanModern` / `checkShouldBanLegacy`）。
+    ///
+    /// 上游把脚本提交到 `parallelService` 并行执行；本移植按脚本名顺序（BTreeMap）串行执行，
+    /// 结果集合相同（SKIP 短路在并行版本下同样存在竞态，这里取确定性顺序）。
+    fn check_script(
+        &self,
+        torrent: &TorrentData,
+        peer: &PeerData,
+        downloader_id: &str,
+    ) -> Option<CheckResult> {
+        let Ok(scripts) = self.scripts.read() else {
+            return None;
+        };
+        let mut decided: Option<CheckResult> = None;
+        for script in scripts.iter() {
+            let Some(result) =
+                self.script_engine.run(script, self.ban_duration_ms, torrent, peer, downloader_id)
+            else {
+                continue;
+            };
+            match result.action {
+                // 上游 `if (result.action() == PeerAction.SKIP) return result;`
+                PeerAction::Skip => return Some(result),
+                // 上游 `else if (result.action() == PeerAction.BAN) finalResult = result;`
+                PeerAction::Ban => decided = Some(result),
+                _ => {}
+            }
+        }
+        decided
     }
 
     /// 对齐上游 `@Subscribe onRuleUpdate(BtnRuleUpdateEvent)`：
@@ -486,8 +799,8 @@ impl RuleModule for BtnNetworkOnline {
 
     fn check(
         &self,
-        _downloader_id: &str,
-        _torrent: &TorrentData,
+        downloader_id: &str,
+        torrent: &TorrentData,
         peer: &PeerData,
         _ctx: &CheckContext,
     ) -> CheckResult {
@@ -508,17 +821,14 @@ impl RuleModule for BtnNetworkOnline {
             }
         }
 
-        // checkScript：脚本规则（`allow-script-execute`）
-        // 上游脚本引擎未移植；上游默认 `allow-script-execute: false` 时 scriptRules 为空、
-        // 循环体不执行、返回 pass()，故此处与默认配置等价。
-        if self.allow_script {
-            if let Some(ruleset) = &state.ruleset {
-                if !ruleset.script_rules.is_empty() {
-                    tracing::debug!(
-                        "BTN 脚本规则 {} 条未执行（脚本引擎未移植），按 pass 处理",
-                        ruleset.script_rules.len()
-                    );
-                }
+        // checkScript：脚本规则（`btn.allow-script-execute`，rhai 引擎）
+        //
+        // 上游：`rule == null` ⇒ pass；`isHandShaking(peer)` ⇒ handshaking()（同样是
+        // NO_ACTION，不会短路后续的 `checkShouldBanModern`），否则逐条执行脚本：
+        // SKIP 立即返回、BAN 覆盖保留，最终返回最后一个 BAN。
+        if self.allow_script() && state.ruleset.is_some() && !peer.is_handshaking() {
+            if let Some(result) = self.check_script(torrent, peer, downloader_id) {
+                return result;
             }
         }
 

@@ -7,9 +7,11 @@ pub mod monitor;
 pub use monitor::{AlertRow, DbMonitorSink};
 
 use chrono::{DateTime, Utc};
+use pbh_core::btn_transport::BtnMetadataStore;
 use pbh_core::modules::progress_cheat::{PcbEntityKind, PcbPersistRow};
-use rusqlite::Connection;
-use std::sync::Mutex;
+use rusqlite::{Connection, OptionalExtension};
+use std::sync::{Arc, Mutex};
+use tracing::warn;
 
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -204,6 +206,31 @@ impl Database {
         Ok(removed)
     }
 
+    // ---------- 键值元数据（meta） ----------
+
+    /// 读回一个键（不存在 ⇒ `None`）。
+    pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT value FROM meta WHERE key=?1",
+                rusqlite::params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// 写入/覆盖一个键（upsert）。
+    pub fn set_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
     // ---------- PCB 历史 ----------
 
     /// 批量写入需要落库的 PCB 实体（对齐上游 `batchFlushBackDatabase*`）。
@@ -299,6 +326,48 @@ impl Database {
             )?;
         }
         Ok(n)
+    }
+}
+
+/// BTN 规则缓存的持久化落点（≈ 上游 `MetadataService` / `metadataDao`）。
+///
+/// 上游把规则集与 IP 列表缓存写进 metadata 表，重启后各 ability 的 `load()` 直接回灌、
+/// 不重新拉取；这里复用已有的 `meta(key, value)` 键值表（与 `schema_version` 共存），
+/// 键名逐字一致（`btn.ability.rules.cache` / `btn.ability.ip_*`）。
+///
+/// 所有 DB 失败一律 log-and-continue（对齐上游 DAO 外层 `catch (Throwable) + log`）：
+/// 读失败按「无缓存」处理，写失败只丢缓存、不影响本轮已注入的规则。
+pub struct DbMetadataStore {
+    db: Arc<Database>,
+}
+
+impl std::fmt::Debug for DbMetadataStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DbMetadataStore").finish_non_exhaustive()
+    }
+}
+
+impl DbMetadataStore {
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+}
+
+impl BtnMetadataStore for DbMetadataStore {
+    fn get(&self, key: &str) -> Option<String> {
+        match self.db.get_meta(key) {
+            Ok(value) => value,
+            Err(e) => {
+                warn!("BTN 缓存读取失败（按无缓存处理）: {key} - {e}");
+                None
+            }
+        }
+    }
+
+    fn set(&self, key: &str, value: &str) {
+        if let Err(e) = self.db.set_meta(key, value) {
+            warn!("BTN 缓存写入失败（本轮规则仍生效）: {key} - {e}");
+        }
     }
 }
 
@@ -429,6 +498,22 @@ mod tests {
         assert_eq!(db.load_pcb_rows(PcbEntityKind::Addr).unwrap().len(), 1);
         // range 表相互独立
         assert!(db.load_pcb_rows(PcbEntityKind::Range).unwrap().is_empty());
+    }
+
+    /// BTN 规则缓存复用 `meta` 键值表（`BtnMetadataStore` 契约：get / set 覆盖写）
+    #[test]
+    fn metadata_store_persists_btn_cache() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store: Arc<dyn BtnMetadataStore> = Arc::new(DbMetadataStore::new(db.clone()));
+        assert_eq!(store.get("btn.ability.rules.cache"), None);
+        store.set("btn.ability.rules.cache", r#"{"version":"v1"}"#);
+        assert_eq!(store.get("btn.ability.rules.cache").as_deref(), Some(r#"{"version":"v1"}"#));
+        // 覆盖写（上游 metadataDao 的 upsert）
+        store.set("btn.ability.rules.cache", r#"{"version":"v2"}"#);
+        assert_eq!(store.get("btn.ability.rules.cache").as_deref(), Some(r#"{"version":"v2"}"#));
+        // 与 `schema_version` 共用同一张表，互不干扰
+        assert_eq!(db.get_meta("schema_version").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.get_meta("btn.ability.rules.cache").unwrap().as_deref(), Some(r#"{"version":"v2"}"#));
     }
 
     fn default_pcb_row() -> PcbPersistRow {

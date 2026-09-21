@@ -158,12 +158,11 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 > 均已实现；未移植的只剩 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
 > `DELETE /api/alert/{id}`（故 `read_at` 恒为 NULL），以及阈值告警的 `push:` 渠道推送。
 
-> **已知缺口（非静默省略）**：仅剩 **BTN 传输层（握手/abilities/PoW/缓存）与 BTN 脚本规则**未移植。
-> 以下均已落地：GeoIP 数据库自动更新（三镜像 + XZ 解压，默认关闭 ⇒ 零网络请求）、
-> AutoSTUN 的 UDP NAT 类型探测 / TCP 转发器 / 端口保活（默认关闭 ⇒ 严格 no-op）、
-> 上传限速下发（`getSpeedLimiter`/`setSpeedLimiter`，六个适配器按上游端点实现）、
-> 流量阈值告警的 `push:` 渠道推送。
-> 全部缺口清单见 PLAN.md「Phase 1.7」。
+> **已知缺口（非静默省略）**：PLAN.md「Phase 1.7」清单中的缺口**已全部关闭**，
+> 现有未移植项仅剩不影响封禁语义的告警读写端点（`dismiss` / `dismissAll` / `DELETE`，故 `read_at` 恒为 NULL）
+> 与部分 BTN abilities（`submit_*` / `heartbeat` / `ip-query` / `reconfigure`：只解析不构造、不调度）。
+> 本轮落地：BTN 传输层（握手/abilities/PoW/缓存 + 脚本规则）、GeoIP 数据库自动更新、
+> AutoSTUN 的 UDP NAT 探测与 TCP 转发器、上传限速下发、阈值告警的 `push:` 渠道推送。
 
 ### 路线图（后续阶段，见 PLAN.md / SPEC.md §9）
 
