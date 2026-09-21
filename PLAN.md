@@ -153,7 +153,7 @@
 
 ### Phase 1.6 — 保真差距收口（已完成）
 
-- [x] `expression-engine`（rhai 替代 AviatorScript，默认空脚本目录无封禁；AviatorScript→rhai 语法翻译表待补）
+- [x] `expression-engine`（rhai 替代 AviatorScript，默认空脚本目录无封禁；AviatorScript→rhai 语法翻译表见 `docs/expression-engine-migration.md`）
 - [x] `ptr-blacklist`、`idle-connection-dos-protection`（两者上游默认关闭，已实现并接入流水线）
 - [x] Web API 按请求 locale 渲染 + `rule`/`reason` 结构化存储（`ban_logs` 接受 `?locale=`，落库 `TranslationComponent` 按需本地化）
 - [x] `btn`：判定模块 `BtnNetworkOnline` 已实现（五类规则 + 现代协议 IP 白/黑名单能力）并按上游

@@ -486,8 +486,9 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
 3. **AutoSTUN 未移植部分**：UDP NAT 类型探测（上游仅 WebUI 展示）、TCP 转发器与端口保活；
    另外 `Downloader` trait 未暴露 `getSpeedLimiter` / `setSpeedLimiter`，故 `active-monitoring` 的
    24 小时滑动窗口限速只计算不落地（上游该功能默认关闭，默认配置下无差异）。
-4. **`expression-engine` 语法翻译表待补**：rhai 引擎与返回值语义已对齐
-   `ScriptEngineManager.handleResult`，但 AviatorScript → rhai 的 API 映射文档尚未补全。
+4. **`expression-engine` 语法翻译表已补全**：rhai 引擎与返回值语义已对齐
+   `ScriptEngineManager.handleResult`；AviatorScript → rhai 的 API 映射、字段表、语法对照与迁移示例
+   见 `docs/expression-engine-migration.md`。
 
 > **已实现、且默认配置下不改变封禁语义**：
 > - `expression-engine`：默认启用、默认空脚本目录 ⇒ 无封禁。

@@ -170,7 +170,7 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 - [x] 规则订阅 `ip-address-blocker-rules`（上游默认启用，订阅远程 IP 规则文件）
 - [x] 表达式规则 `expression-engine`（rhai 替代 AviatorScript，默认空脚本目录无封禁；
       逐行对照上游 `ExpressionRule` / `ScriptEngineManager.handleResult` 的返回值语义）；
-      语法翻译表（AviatorScript API → rhai）待补
+      语法翻译表见 `docs/expression-engine-migration.md`（AviatorScript API → rhai 字段映射、语法对照、迁移示例）
 - [x] `ptr-blacklist`、`idle-connection-dos-protection`（上游默认关闭，显式启用即生效）
 - [x] `ip-address-blocker` 的 GeoIP 维度（ASN / 地区 / 城市 / 网络类型）
 - [x] `btn`（BTN 网络在线规则判定模块，默认启用；传输层见「已知缺口」）
