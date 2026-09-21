@@ -8,6 +8,7 @@ pub mod banlist;
 pub mod config;
 pub mod defaults;
 pub mod geoip;
+pub mod geoip_update;
 pub mod i18n;
 pub mod iputil;
 pub mod model;

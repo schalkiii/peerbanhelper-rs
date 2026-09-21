@@ -20,3 +20,9 @@ rhai = { workspace = true }
 tracing = { workspace = true }
 # MaxMind-DB v2 读取器（对齐上游 com.maxmind.db / com.maxmind.geoip2），用于 GeoIP 四维度判定
 maxminddb = { version = "0.32", default-features = false }
+# GeoIP 数据库自动更新（对齐上游 IPDB：`org.tukaani.xz.XZInputStream` 解压 .mmdb.xz）。
+# 纯 Rust 实现，不依赖系统 liblzma；默认特性为空，不额外引入日志依赖。
+lzma-rs = "0.3"
+# 上游用 OkHttp 下载 mmdb（connect 15s / read+call 3min、跟随重定向）；这里用阻塞式 reqwest 对齐。
+# 仅阻塞 API（`blocking`），调用方须在非 async 线程上运行（见模块文档）。
+reqwest = { workspace = true, features = ["blocking"] }

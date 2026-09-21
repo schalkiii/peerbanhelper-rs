@@ -10,12 +10,15 @@ use axum::{
     Json, Router,
 };
 use pbh_core::i18n::{normalize_locale, TranslationComponent, Translator};
+use pbh_core::modules::TrackedSwarmRow;
 use pbh_db::{ms_to_rfc3339, Database};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tracing::warn;
 
 /// 运行期概要指标，由 ban wave 调度器更新。
 #[derive(Default, Debug, Clone)]
@@ -71,6 +74,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ban/logs", get(ban_logs))
         .route("/metrics/general", get(general_metrics))
         .route("/downloaders", get(downloaders))
+        // 监控视图（对齐上游 `SwarmTrackingModule.onEnable` 注册的 `/api/modules/swarm-tracking*`
+        // 与 `PBHAlertController` 的 `/api/alerts`；两者都是 Role.USER_READ，走 Token 鉴权）
+        .route("/modules/swarm-tracking", get(swarm_tracking))
+        .route("/modules/swarm-tracking/details", get(swarm_tracking_details))
+        .route("/alerts", get(alerts))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
@@ -412,9 +420,376 @@ async fn downloaders(State(state): State<AppState>) -> Response {
     (StatusCode::OK, std_resp(true, None, json!(list))).into_response()
 }
 
+// ===========================================================================
+// 监控视图（`module.peer-analyse-service.*` / `active-monitoring` 的数据读取侧）
+// ===========================================================================
+
+/// `/api/modules/swarm-tracking`：对齐 `SwarmTrackingModule.handleWebAPI`
+/// —— `{"trackedSwarmSize": trackedSwarmDao.count()}`，**裸 JSON、无 `StdResp` 包装**
+/// （上游此处直接 `context.json(response)`）。
+async fn swarm_tracking(State(state): State<AppState>) -> Response {
+    match state.db.tracked_swarm_count() {
+        Ok(count) => (StatusCode::OK, Json(json!({ "trackedSwarmSize": count }))).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
+                .into_response()
+        }
+    }
+}
+
+/// `/api/modules/swarm-tracking/details`：对齐 `SwarmTrackingModule.handleDetails`
+/// —— `Pageable(page, pageSize)` + `Orderable` + `PBHPage{page, size, total, results}`。
+///
+/// 与上游的差异：`pageSize` 额外夹到 `1..=500`（上游不设上限），避免一次拉全表。
+async fn swarm_tracking_details(
+    State(state): State<AppState>,
+    uri: Uri,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    // 上游 `Pageable` 读的是 `pageSize`；这里兼容常见的 `size` 写法
+    let size = params
+        .get("pageSize")
+        .or_else(|| params.get("size"))
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(10)
+        .clamp(1, 500);
+    let order_by = parse_order_by(uri.query());
+    let offset = (page - 1) * size;
+    match state.db.page_tracked_swarm(&order_by, size, offset) {
+        Ok((rows, total)) => {
+            let data = json!({
+                "page": page,
+                "size": size,
+                "total": total,
+                "results": rows.iter().map(tracked_swarm_json).collect::<Vec<_>>(),
+            });
+            (StatusCode::OK, std_resp(true, None, data)).into_response()
+        }
+        Err(e) => {
+            warn!("swarm-tracking 分页查询失败: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
+                .into_response()
+        }
+    }
+}
+
+/// 解析 `orderBy` 查询参数：对齐上游 `Orderable` 的 `field|asc` / `field|desc`
+/// （缺省方向为 ASC）；可重复出现，按出现顺序作为主次排序键。
+fn parse_order_by(query: Option<&str>) -> Vec<(String, bool)> {
+    query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            if key != "orderBy" {
+                return None;
+            }
+            // 上游读的是框架已解码的查询参数，这里补上 `%XX` 解码
+            let value = percent_decode(value);
+            let mut parts = value.split('|');
+            let field = parts.next().unwrap_or_default().to_string();
+            let asc = match parts.next() {
+                None => true,
+                Some(direction) => {
+                    !(direction.eq_ignore_ascii_case("desc")
+                        || direction.eq_ignore_ascii_case("descend"))
+                }
+            };
+            Some((field, asc))
+        })
+        .collect()
+}
+
+/// 极简 `%XX` 百分号解码（用于 `orderBy` 的 `|` 分隔符）。
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Some(byte) = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `TrackedSwarmEntity` 的 JSON：字段名对齐 Gson（`OffsetDateTimeTypeAdapter` 把时间戳写成
+/// epoch 毫秒；`dirty` 是 `transient` 字段，不会输出）。
+fn tracked_swarm_json(row: &TrackedSwarmRow) -> Value {
+    json!({
+        "id": row.id,
+        "ip": row.ip,
+        "port": row.port,
+        "infoHash": row.info_hash,
+        "torrentIsPrivate": row.torrent_is_private,
+        "torrentSize": row.torrent_size,
+        "downloader": row.downloader,
+        "downloaderProgress": row.downloader_progress,
+        "peerId": row.peer_id,
+        "clientName": row.client_name,
+        "peerProgress": row.peer_progress,
+        "uploaded": row.uploaded,
+        "uploadedOffset": row.uploaded_offset,
+        "uploadSpeed": row.upload_speed,
+        "downloaded": row.downloaded,
+        "downloadedOffset": row.downloaded_offset,
+        "downloadSpeed": row.download_speed,
+        "lastFlags": row.last_flags,
+        "firstTimeSeen": row.first_time_seen_ms,
+        "lastTimeSeen": row.last_time_seen_ms,
+        "downloadSpeedMax": row.download_speed_max,
+        "uploadSpeedMax": row.upload_speed_max,
+    })
+}
+
+#[derive(Deserialize)]
+struct AlertsQuery {
+    /// 请求期望的 locale（与 `/api/ban/logs` 同一约定）；缺省用服务端默认 locale。
+    #[serde(default)]
+    locale: Option<String>,
+}
+
+/// `/api/alerts`：对齐 `PBHAlertController.handleListing` —— 未读告警列表，
+/// `title` / `content` 按请求 locale 渲染（上游 `tl(locale(ctx), ...)`）。
+///
+/// 与上游的差异（未移植）：`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
+/// `DELETE /api/alert/{id}` 三个读写端点未实现，故 `read_at` 恒为 NULL、告警保持未读。
+async fn alerts(State(state): State<AppState>, Query(q): Query<AlertsQuery>) -> Response {
+    let locale = normalize_locale(q.locale.as_deref().unwrap_or(&state.locale));
+    match state.db.list_unread_alerts() {
+        Ok(alerts) => {
+            let data = json!(alerts
+                .iter()
+                .map(|alert| json!({
+                    "id": alert.id,
+                    "createAt": alert.create_at_ms,
+                    "readAt": alert.read_at_ms,
+                    "level": alert.level,
+                    "identifier": alert.identifier,
+                    "title": render_stored_component(&alert.title, &state.translator, &locale),
+                    "content": render_stored_component(&alert.content, &state.translator, &locale),
+                }))
+                .collect::<Vec<_>>());
+            (StatusCode::OK, std_resp(true, None, data)).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
+                .into_response()
+        }
+    }
+}
+
+/// 用落库的 `TranslationComponent`（JSON）按 locale 渲染；解析失败时原样返回落库文本。
+fn render_stored_component(stored: &str, translator: &Translator, locale: &str) -> String {
+    match serde_json::from_str::<TranslationComponent>(stored) {
+        Ok(component) => translator.render(&component, locale),
+        Err(_) => stored.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use axum::http::Request;
+    use pbh_core::modules::{AlertLevel, MonitorSink, TrackedSwarmRow};
+    use pbh_db::DbMonitorSink;
+    use tower::ServiceExt;
+
+    /// 端点测试用的 AppState（内存库 + 固定 Token + 内嵌文案表）。
+    fn test_state(db: Arc<Database>) -> AppState {
+        AppState {
+            db,
+            token: Arc::new(Mutex::new("test-token".to_string())),
+            metrics: Arc::new(Mutex::new(Metrics::default())),
+            started: Arc::new(Instant::now()),
+            downloaders: Arc::new(Mutex::new(Vec::new())),
+            static_dir: Arc::new(Mutex::new(None)),
+            ban_list: Arc::new(Mutex::new(pbh_core::banlist::BanList::default())),
+            remap: Arc::new(pbh_core::remap::RemapConfig::default()),
+            translator: Arc::new(Translator::embedded()),
+            locale: "zh_cn".to_string(),
+        }
+    }
+
+    /// 发一个带 Token 的 GET 请求，返回 (状态码, JSON)。
+    async fn get_json(state: &AppState, uri: &str) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .uri(uri)
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, body)
+    }
+
+    fn swarm_row(address: &str, last_time_seen_ms: i64) -> TrackedSwarmRow {
+        TrackedSwarmRow {
+            id: None,
+            ip: address.to_string(),
+            port: 6881,
+            info_hash: "abcdef0123456789".to_string(),
+            torrent_is_private: Some(false),
+            torrent_size: 1_000_000_000,
+            downloader: "qb".to_string(),
+            downloader_progress: 0.25,
+            peer_id: "-qB4500-aaaaaaaa".to_string(),
+            client_name: "qBittorrent/4.5.0".to_string(),
+            peer_progress: 0.5,
+            uploaded: 100,
+            uploaded_offset: 100,
+            upload_speed: 10,
+            downloaded: 200,
+            downloaded_offset: 200,
+            download_speed: 20,
+            last_flags: "d u".to_string(),
+            first_time_seen_ms: 1000,
+            last_time_seen_ms,
+            download_speed_max: 30,
+            upload_speed_max: 40,
+            dirty: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn swarm_tracking_endpoint_returns_bare_tracked_swarm_size() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let state = test_state(db.clone());
+        let sink = DbMonitorSink::new(db);
+        for index in 0..3 {
+            let mut row = swarm_row(&format!("10.0.0.{index}"), 1000 + index);
+            row.port = 6881 + index as u16;
+            sink.upsert_tracked_swarm(&row);
+        }
+
+        // 上游 `handleWebAPI` 直接返回裸 JSON（没有 success/message/data 包装）
+        let (status, body) = get_json(&state, "/api/modules/swarm-tracking").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "trackedSwarmSize": 3 }));
+        assert!(body.get("data").is_none());
+
+        // 清空后计数回落
+        sink.reset_tracked_swarm();
+        let (_, body) = get_json(&state, "/api/modules/swarm-tracking").await;
+        assert_eq!(body, json!({ "trackedSwarmSize": 0 }));
+    }
+
+    #[tokio::test]
+    async fn swarm_tracking_details_pages_and_orders() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let state = test_state(db.clone());
+        let sink = DbMonitorSink::new(db);
+        for index in 0..5 {
+            let mut row = swarm_row(&format!("10.0.0.{index}"), 1000 + index);
+            row.port = 6881 + index as u16;
+            sink.upsert_tracked_swarm(&row);
+        }
+
+        // 默认 page=1 / pageSize=10
+        let (status, body) = get_json(&state, "/api/modules/swarm-tracking/details").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["message"], Value::Null);
+        assert_eq!(body["data"]["page"], json!(1));
+        assert_eq!(body["data"]["size"], json!(10));
+        assert_eq!(body["data"]["total"], json!(5));
+        assert_eq!(body["data"]["results"].as_array().unwrap().len(), 5);
+        let first = &body["data"]["results"][0];
+        assert_eq!(first["ip"], json!("10.0.0.0"));
+        assert_eq!(first["infoHash"], json!("abcdef0123456789"));
+        assert_eq!(first["torrentIsPrivate"], json!(false));
+        assert_eq!(first["peerProgress"], json!(0.5));
+        assert_eq!(first["firstTimeSeen"], json!(1000), "时间戳为 epoch 毫秒");
+        assert!(first.get("dirty").is_none(), "dirty 是 transient 字段，不输出");
+
+        // 分页：page=2&pageSize=2
+        let (_, body) =
+            get_json(&state, "/api/modules/swarm-tracking/details?page=2&pageSize=2").await;
+        assert_eq!(body["data"]["page"], json!(2));
+        assert_eq!(body["data"]["size"], json!(2));
+        assert_eq!(body["data"]["total"], json!(5));
+        assert_eq!(body["data"]["results"].as_array().unwrap().len(), 2);
+        assert_eq!(body["data"]["results"][0]["lastTimeSeen"], json!(1002));
+
+        // orderBy=last_time_seen|desc（对齐 `Orderable` 的 `field|desc`）
+        let (_, body) = get_json(
+            &state,
+            "/api/modules/swarm-tracking/details?orderBy=last_time_seen%7Cdesc&pageSize=3",
+        )
+        .await;
+        let seen: Vec<i64> = body["data"]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["lastTimeSeen"].as_i64().unwrap())
+            .collect();
+        assert_eq!(seen, vec![1004, 1003, 1002]);
+
+        // 非法排序列（对齐 `SQLHelper.checkSafeFieldName`）-> 500
+        let (status, body) =
+            get_json(&state, "/api/modules/swarm-tracking/details?orderBy=id%3Bdrop").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["success"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn alerts_endpoint_lists_unread_alerts_localized_per_request() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let state = test_state(db.clone());
+        let sink = DbMonitorSink::new(db);
+        sink.publish_alert(
+            true,
+            AlertLevel::Warn,
+            "dataTrafficCapping-1",
+            &TranslationComponent::with_params(
+                "MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_TITLE",
+                vec!["2026-09-20".into()],
+            ),
+            &TranslationComponent::new("MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_DESCRIPTION"),
+        );
+
+        let (status, body) = get_json(&state, "/api/alerts").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], json!(true));
+        let alert = &body["data"][0];
+        assert_eq!(alert["identifier"], json!("dataTrafficCapping-1"));
+        assert_eq!(alert["level"], json!("WARN"));
+        assert_eq!(alert["readAt"], Value::Null, "未读告警");
+        assert!(alert["createAt"].as_i64().unwrap() > 0);
+        assert_eq!(
+            alert["title"],
+            json!("下载器上行流量超限告警 (2026-09-20)"),
+            "默认 locale（服务端 zh_cn）"
+        );
+
+        // `?locale=en_us` 用同一份落库数据重新本地化
+        let (_, body) = get_json(&state, "/api/alerts?locale=en_us").await;
+        assert_eq!(
+            body["data"][0]["title"],
+            json!("Download upload traffic reached threshold (2026-09-20)")
+        );
+
+        // 无 Token -> 401
+        let request = Request::builder()
+            .uri("/api/alerts")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
 
     #[test]
     fn p2p_plain_format_uses_start_end_ranges() {

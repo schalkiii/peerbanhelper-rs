@@ -172,12 +172,31 @@
 
 ### Phase 1.7 — 本轮接线后的已知缺口（按影响排序，均非静默省略）
 
-- [ ] **监控数据未持久化**：`MonitorSink` 目前注入内存实现（`InMemoryMonitorSink`），
-      DB 版 sink（`alerts` / `traffic_journal_v3` / `peer_connection_metrics(_track)` /
-      `peer_records` / `tracked_swarm` 五张表）尚未接线 ⇒ 监控数据重启即丢；
-      逐表 SQL 语义清单见 `pbh-core/src/modules/monitor.rs` 头部 INTEGRATION SNIPPET 【3】
-- [ ] **监控 WebUI/API**：`/api/modules/swarm-tracking`、`/api/modules/swarm-tracking/details`
-      等监控端点未在 `pbh-web` 暴露（依赖上面的 DB 版 sink）
+- [x] **监控数据持久化（缺口 #1 关闭）**：生产落点由内存实现改为 `pbh-db` 的 `DbMonitorSink`
+      （与其余持久化共用同一个 `Database`）。表结构逐条对齐上游 SQLite 建表脚本
+      `resources/db/migration/sqlite/V1_1__initial_sqlite.sql` 及 V1_3 / V1_4 增量迁移：
+      `alert`（上游表名是**单数**；`create_at` / `read_at` / `level` / `identifier` / `title` /
+      `content`，后两列存 `TranslationComponent` 的 JSON）、`torrents`（键 `info_hash`）、
+      `traffic_journal_v3`（键 `(timestamp, downloader)`）、
+      `peer_connection_metrics_track`（键 `(timeframe_at, downloader, torrent_id, address, port)`）、
+      `peer_connection_metrics`（键 `(timeframe_at, downloader)`）、
+      `peer_records`（键 `(address, torrent_id, downloader)`，V1_3 起不含 port ）、
+      `tracked_swarm`（键 `(ip, port, info_hash, downloader)`）。
+      语义对齐点：流量日志只抬升不回落且 `*_at_start` 永不更新；聚合查询闭区间、`SUM` 允许负值、
+      单下载器逐行 `MAX(0, …)`；`saveAggregating` 覆盖写保留主键、合并写**与上游 `merge()` 一样
+      漏掉 `local_not_interested`**；`peer_records` 逐列 CASE upsert（`first_time_seen` / `peer_geoip`
+      永不更新、计数被重置时整值累加）；`delete_metrics_tracks` 逐条删（#1518 的 `SQLITE_TOOBIG`
+      规避）；`remove_connection_metrics_before` 为 `<=`、`remove_peer_records_before` 为 `<`；
+      `tracked_swarm` 启动时 `resetTable` 清空（数据随本次运行会话）。`peer_records.peer_geoip`
+      由 sink 用注入的 `GeoIP` provider 填充（对齐上游在 DAO 内查 IP 库），无库时落 NULL。
+      全部 DB 失败一律 log-and-continue（对齐上游 DAO 外层 `catch (Throwable) + log`）。
+- [x] **监控 Web API（缺口 #1 关闭）**：`pbh-web` 新增 `/api/modules/swarm-tracking`
+      （**裸** `{"trackedSwarmSize": N}`，对齐上游 `SwarmTrackingModule.handleWebAPI` 不套 `StdResp`）、
+      `/api/modules/swarm-tracking/details`（`page` / `pageSize` + `orderBy=字段|asc|desc`，
+      返回 `{page, size, total, results}`）、`/api/alerts`（对齐 `PBHAlertController.handleListing`：
+      未读告警、`title`/`content` 按请求 locale 渲染）；三者都在 Token 鉴权之后（上游 `Role.USER_READ`）。
+      未移植（非静默省略）：`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
+      `DELETE /api/alert/{id}`，故 `read_at` 恒为 NULL、告警恒未读。
 - [ ] **BTN 网络传输**：`BtnNetwork` 的配置端点握手、abilities 调度与重试、PoW captcha、
       `X-BTN-ContentVersion` 与本地缓存（`metadataDao`）未移植；判定模块与注入入口
       （`apply_ruleset_json` / `apply_ip_*_list_text` / `sync_from_transport`）已就绪，
@@ -190,6 +209,23 @@
       TCP 转发器与端口保活、友好回环映射的监听绑定未移植
 - [ ] **上传限速下发**：`Downloader` trait 未暴露 `getSpeedLimiter()` / `setSpeedLimiter()`，
       `traffic-sliding-capping` 只计算不落地（上游默认关闭该功能，默认配置下无行为差异）
+- [ ] **流量阈值告警的推送通道**：`active-monitoring` 的 `traffic-monitoring.daily` 超阈值告警
+      已落 `alert` 表并由 `/api/alerts` 暴露（等价上游 `publishAlert` 的落库部分），但**没有**
+      走 `push:` 渠道（上游 `AlertManagerImpl.publishAlert(push=true, …)` 会同时推送）。
+      上游默认 `traffic-monitoring.daily: -1`（禁用），默认配置下无行为差异。
+
+> 验证记录（2026-09-21，监控持久化 + 监控 Web API）：`cargo test --workspace` **402 个测试全部通过**
+> （pbh-core 179、pbh 39、pbh-db 18、pbh-web 7、pbh-downloader 76、黄金测试 83）；
+> 新增测试：pbh-db 14 个（五张表各自的落库/查询/清理边界，含 `*_at_start` 不可变、`merge()` 漏列、
+> 负增量重置、`<=` / `<` 边界、`ORDER BY id DESC LIMIT 1`、`orderBy` 白名单）+
+> pbh-web 3 个端点测试（`/api/modules/swarm-tracking` 裸 JSON、`details` 分页与排序、
+> `/api/alerts` 按 locale 渲染 + 无 Token 401）+ pbh 1 个链路测试（`DbMonitorSink` 下
+> `onPeersRetrieved` → 定时 flush 真正写入 `peer_records` / `tracked_swarm` / `peer_connection_metrics`）；
+> `cargo clippy --workspace --all-targets` 零新增警告（余下 6 条告警位于未改动的 pbh-downloader /
+> pbh-core / pbh `push.rs`）。真机冒烟：`./target/debug/pbh --data …` 启动后库内出现 7 张新表
+> （`alert` / `torrents` / `traffic_journal_v3` / `peer_connection_metrics(_track)` /
+> `peer_records` / `tracked_swarm`）与上游唯一索引，`curl` 三个新端点返回预期 JSON
+> （`{"trackedSwarmSize":0}`、`{page,size,total,results}`、`{success:true,data:[]}`）。
 
 > 验证记录（本轮接线）：`cargo test --workspace` **368 个测试全部通过**
 > （pbh-core 163、pbh 38、pbh-db 4、pbh-web 4、pbh-downloader 76、黄金测试 83）；

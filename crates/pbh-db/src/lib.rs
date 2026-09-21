@@ -1,4 +1,10 @@
-//! SQLite 持久化：封禁日志、封禁列表、PCB 历史（SPEC 第 8 节）。
+//! SQLite 持久化：封禁日志、封禁列表、PCB 历史（SPEC 第 8 节）与监控数据
+//! （[`monitor`] 子模块，SPEC 第 9 节，对齐上游 `databasent` 的 `alert` /
+//! `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` / `tracked_swarm`）。
+
+pub mod monitor;
+
+pub use monitor::{AlertRow, DbMonitorSink};
 
 use chrono::{DateTime, Utc};
 use pbh_core::modules::progress_cheat::{PcbEntityKind, PcbPersistRow};

@@ -15,18 +15,16 @@
 //! | 各模块 `onPeersRetrieved` | [`MonitorHost::on_peers_retrieved`]（在 wave 拉完 peers 后调用） |
 //! | 各模块 `onDisable` | [`MonitorHost::shutdown`] |
 //!
+//! 落点由应用层注入：生产路径是 `pbh-db` 的 `DbMonitorSink`（与其它持久化共用同一个
+//! `Database`，五张表逐条对齐上游）；测试可用 pbh-core 的 `InMemoryMonitorSink`。
+//! WebUI 的监控视图（`/api/modules/swarm-tracking`、`/api/alerts`）由 `pbh-web` 直接读库。
+//!
 //! ## 已知缺口（非静默省略）
 //!
-//! 1. **持久化仍是内存版**：`MonitorSink` 目前注入的是 pbh-core 的
-//!    [`InMemoryMonitorSink`]，DB 版 sink（`alerts` / `traffic_journal_v3` /
-//!    `peer_connection_metrics(_track)` / `peer_records` / `tracked_swarm` 五张表）
-//!    **尚未接线**，因此监控数据重启即丢、WebUI 的监控视图读不到数据。
-//!    操作清单（逐条对齐上游实体与 `resources/mapper/sqlite/*.xml`）见
-//!    `pbh-core/src/modules/monitor.rs` 头部的 INTEGRATION SNIPPET 【3】。
-//! 2. **时长/限速回落缺失**：`Downloader` trait 未暴露 `getSpeedLimiter()` /
-//!    `setSpeedLimiter()`，故 `traffic-sliding-capping` 的滑动窗口限速在本移植中
-//!    与上游「`getSpeedLimiter() == null` ⇒ `continue`」同义：只计算不落地。
-//!    上游默认关闭该功能（`traffic-sliding-capping.enabled: false`），默认配置下无行为差异。
+//! **时长/限速回落缺失**：`Downloader` trait 未暴露 `getSpeedLimiter()` /
+//! `setSpeedLimiter()`，故 `traffic-sliding-capping` 的滑动窗口限速在本移植中
+//! 与上游「`getSpeedLimiter() == null` ⇒ `continue`」同义：只计算不落地。
+//! 上游默认关闭该功能（`traffic-sliding-capping.enabled: false`），默认配置下无行为差异。
 
 use pbh_core::config::ProfileConfig;
 use pbh_core::model::{PeerData, TorrentData};
@@ -424,6 +422,35 @@ module:
         // session-analyse 的 track 行先 upsert、再按「是否今天」聚合进 metrics 后删除
         assert_eq!(sink.connection_metrics().len(), 1, "flushData 聚合落库");
         assert!(sink.metrics_tracks().is_empty(), "聚合后的 track 行被删除");
+    }
+
+    /// 生产落点（`DbMonitorSink`）下的同一链路：`onPeersRetrieved` → 定时 flush → SQLite
+    /// （归档缺口 #1 的端到端证据：四个模块都真正写进了上游那五张表）。
+    #[tokio::test]
+    async fn db_sink_persists_the_whole_pipeline_into_sqlite() {
+        let db = Arc::new(pbh_db::Database::open_in_memory().expect("内存库"));
+        let sink: Arc<dyn MonitorSink> = Arc::new(pbh_db::DbMonitorSink::new(db.clone()));
+        let host = MonitorHost::new(&profile(), sink.clone());
+        let now = 1_700_000_000_000;
+
+        host.on_peers_retrieved("qb", &torrent(), &[peer("1.2.3.4"), peer("5.6.7.8")], now);
+        assert_eq!(db.tracked_swarm_count().unwrap(), 0, "回调本身不落库");
+
+        host.run_scheduled(&[], now).await;
+        assert_eq!(db.tracked_swarm_count().unwrap(), 2, "swarm-tracking.flushAll 写库");
+        assert_eq!(host.swarm_tracking().unwrap().count(), 2, "count = trackedSwarmDao.count()");
+        // `peer_records` / `peer_connection_metrics` 没有读取接口，用清理接口反查写入条数
+        assert_eq!(sink.remove_peer_records_before(i64::MAX), 2, "peer-recording.flush 写库");
+        assert_eq!(
+            sink.remove_connection_metrics_before(i64::MAX),
+            1,
+            "session-analyse.flushData 聚合落库"
+        );
+        assert!(sink.list_metrics_tracks_at(i64::MAX).is_empty());
+
+        // 重启（`onEnable` 的 resetTable）-> swarm 数据随本次运行会话丢弃
+        sink.reset_tracked_swarm();
+        assert_eq!(db.tracked_swarm_count().unwrap(), 0);
     }
 
     /// fixed-delay 语义：首次立即执行，间隔未到时不再执行。

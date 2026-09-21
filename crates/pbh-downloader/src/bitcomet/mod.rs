@@ -24,9 +24,9 @@
 //!     地址逐个走 `remapBanListAddress`（BitComet 声明 `RANGE_BAN_IP` → `supportRangeBan = true`）。
 //!   * 增量新增（`ban_peers` → 上游 ≤ v9.0.0 的 `setBanListIncrement`）：同一接口的
 //!     `import_type = "merge"`，地址去重后按 `"\n"` 连接。
-//!   注意：上游 v9.5.1 的 BitComet **已删除**增量分支——`setBanListIncrement` 原本就被
-//!   `is211Newer()`（BitComet >= 2.11 不支持 merge 导入）挡住，而登录门槛是 2.18，故该分支不可达；
-//!   因此 `main.rs` 给 BitComet 固定 `increment_ban = false`，生产路径恒为整份替换。
+//!     注意：上游 v9.5.1 的 BitComet **已删除**增量分支——`setBanListIncrement` 原本就被
+//!     `is211Newer()`（BitComet >= 2.11 不支持 merge 导入）挡住，而登录门槛是 2.18，故该分支不可达；
+//!     因此 `main.rs` 给 BitComet 固定 `increment_ban = false`，生产路径恒为整份替换。
 //! - 特性标志（顺序同 `getFeatureFlags()`）：`UNBAN_IP` / `LIVE_UPDATE_BT_PROTOCOL_PORT` /
 //!   [`TRAFFIC_STATS`（服务端 >= 2.20）] / `RANGE_BAN_IP`。
 //! - 统计：`POST /api/statistics_list/get`；BitComet 2.21 起令牌去掉前导 `$` 且 2.20 起返回字节数

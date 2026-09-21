@@ -57,6 +57,10 @@
 //    let geo: Option<Arc<dyn GeoIpProvider>> = if geoip_force_disabled() {
 //        None
 //    } else {
+//        // [3.1] 数据库自动更新（可选）：必须在 `GeoIpDb::load` 之前调用，
+//        //       上游 `IPDB` 构造函数即「先 updateMMDB 后 loadMMDB」；
+//        //       完整接线（含 `auto-update: false` 严格 no-op、后台线程调用）见
+//        //       `pbh_core::geoip_update` 头部 INTEGRATION SNIPPET。
 //        // 上游 `new IPDB(new File(dataDirectory, "ipdb"), ...)` -> <data>/ipdb/geoip/*.mmdb
 //        match GeoIpDb::load(data_dir.join("ipdb")) {
 //            Ok(db) => Some(Arc::new(db)),
@@ -76,8 +80,10 @@
 //! - [`IpGeoData`] ≈ `IPGeoData`：含逐字段覆盖式合并（`mergeFrom(other, overwrite)`）。
 //!
 //! 未移植的次要行为（都不改变任何判定结果）：
-//! - `IPDBManager` 的 Guava 查询结果缓存（外部开关 `pbh.geoIpCache.timeout` / `pbh.geoIpCache.size`）；
-//! - `IPDB#updateMMDB` 的数据库下载 / XZ 解压（属于下载层职责，本 crate 只读取已存在的文件）。
+//! - `IPDBManager` 的 Guava 查询结果缓存（外部开关 `pbh.geoIpCache.timeout` / `pbh.geoIpCache.size`）。
+//!
+//! 与之配套的 `IPDB#updateMMDB`（mmdb 下载 / XZ 解压 / 原子替换）见 [`crate::geoip_update`]：
+//! 它在 [`GeoIpDb::load`] 之前把下载好的文件放到本模块读取的位置。
 //!
 //! 与上游的一处环境差异：`GeoCN2` 依赖 jar 内资源 `/ok_data_level3.csv`，
 //! 本移植版改为在 ipdb 目录内查找同名文件（见 [`GEOIP_DIVISION_CSV`]）；
@@ -320,7 +326,7 @@ pub const DEFAULT_GEOIP_CACHE_SIZE: u32 = 300;
 /// Java 侧还会先查系统属性、并支持 `--key=value` 启动参数；本移植版只保留环境变量一级，
 /// 键名转换规则与上游 `args.replace(".", "_").replace("-", "_").toUpperCase(Locale.ROOT)` 一致。
 pub fn external_switch(key: &str) -> Option<String> {
-    let env_key = key.replace('.', "_").replace('-', "_").to_uppercase();
+    let env_key = key.replace(['.', '-'], "_").to_uppercase();
     match std::env::var(env_key) {
         Ok(value) if !value.is_empty() => Some(value),
         _ => None,

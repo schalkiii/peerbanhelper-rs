@@ -17,3 +17,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+# 端点测试用 `Router::oneshot`（tower 本就是 axum 的传递依赖，版本已在 Cargo.lock 中）
+tower = { version = "0.5", features = ["util"] }

@@ -519,7 +519,7 @@ fn exception_param(e: &anyhow::Error) -> Param {
 fn tl(key: &str, params: Vec<Param>) -> String {
     static TRANSLATOR: OnceLock<Translator> = OnceLock::new();
     TRANSLATOR
-        .get_or_init(|| Translator::embedded())
+        .get_or_init(Translator::embedded)
         .render(&TranslationComponent::with_params(key, params), UI_LOCALE)
 }
 

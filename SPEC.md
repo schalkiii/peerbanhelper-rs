@@ -468,19 +468,25 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
 > `idle-connection-dos-protection`。
 > 所有「需外部资源」的模块**均已忠实移植**，并在资源缺失时按上游语义降级为空操作（不封禁、不报错）。
 
-1. **监控数据未持久化**：`active-monitoring` / `peer-analyse-service.*` 的 `MonitorSink` 目前注入内存实现，
-   上游的 `alerts` / `traffic_journal_v3` / `peer_connection_metrics*` / `peer_records` / `tracked_swarm`
-   五张表与监控 WebUI API 未接线 ⇒ 重启即丢。
-   （这四类模块上游即非 `RuleFeatureModule`，`check` 恒 `pass()`，**不影响任何封禁决策**。）
-2. **BTN 传输层未移植**：`btn` 的规则模型与判定路径已对齐上游，但
+> **已关闭**：~~监控数据未持久化~~ —— `active-monitoring` / `peer-analyse-service.*` 的落点已从内存实现
+> 换成 `pbh-db::DbMonitorSink`（与其余持久化共用同一个 `Database`），表结构逐条对齐上游 SQLite 迁移脚本：
+> `alert`（上游为单数表名）/ `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` /
+> `tracked_swarm` / `torrents`；`peer_records.peer_geoip` 由 sink 内查 IP 库填充。
+> Web 侧已暴露 `/api/modules/swarm-tracking`（裸 `{"trackedSwarmSize": N}`）、
+> `/api/modules/swarm-tracking/details`（`page`/`pageSize` + `orderBy`，`{page,size,total,results}`）、
+> `/api/alerts`（未读告警，按请求 locale 渲染）。未移植：三个告警读写端点
+> （`dismiss` / `dismissAll` / `DELETE`）与阈值告警的 `push:` 渠道推送。
+> （这四类模块上游即非 `RuleFeatureModule`，`check` 恒 `pass()`，**不影响任何封禁决策**。）
+
+1. **BTN 传输层未移植**：`btn` 的规则模型与判定路径已对齐上游，但
    握手 / abilities（heartbeat、rules、ip-query、submit-*）/ PoW captcha / `metadataDao` 缓存未移植；
    未注入规则时恒 `pass()`（未配置 BTN 服务端的部署与上游行为一致），BTN 脚本规则不执行。
-3. **GeoIP 数据库自动更新未移植**：只读 `<data>/ipdb/geoip/*.mmdb`，不做 mmdb 下载与 XZ 解压。
+2. **GeoIP 数据库自动更新未移植**：只读 `<data>/ipdb/geoip/*.mmdb`，不做 mmdb 下载与 XZ 解压。
    数据库缺失/损坏或 `pbh.forceDisableIPDB` 时四个维度全部不命中（对齐上游无库行为）。
-4. **AutoSTUN 未移植部分**：UDP NAT 类型探测（上游仅 WebUI 展示）、TCP 转发器与端口保活；
+3. **AutoSTUN 未移植部分**：UDP NAT 类型探测（上游仅 WebUI 展示）、TCP 转发器与端口保活；
    另外 `Downloader` trait 未暴露 `getSpeedLimiter` / `setSpeedLimiter`，故 `active-monitoring` 的
    24 小时滑动窗口限速只计算不落地（上游该功能默认关闭，默认配置下无差异）。
-5. **`expression-engine` 语法翻译表待补**：rhai 引擎与返回值语义已对齐
+4. **`expression-engine` 语法翻译表待补**：rhai 引擎与返回值语义已对齐
    `ScriptEngineManager.handleResult`，但 AviatorScript → rhai 的 API 映射文档尚未补全。
 
 > **已实现、且默认配置下不改变封禁语义**：

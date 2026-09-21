@@ -669,6 +669,7 @@ async fn gotify_push(
 /// 请求头 `Title: =?UTF-8?B?<base64(title)>?=`、`Priority: <配置值>`、`Icon: <图标地址>`，
 /// 以及 token 非空白时的 `Authorization: Bearer <token>`、tags 非空白时的 `Tags: <tags>`；
 /// 成功判据：HTTP 2xx。
+#[allow(clippy::too_many_arguments)] // 逐参对齐上游 NtfyPushProvider 的配置字段
 async fn ntfy_push(
     fetcher: &Arc<dyn HttpFetcher>,
     server_url: &str,

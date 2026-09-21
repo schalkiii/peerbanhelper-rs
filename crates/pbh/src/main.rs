@@ -9,10 +9,8 @@ use pbh_core::auto_stun::{AutoStunRefresher, DEFAULT_REFRESH_INTERVAL, DEFAULT_S
 use pbh_core::banlist::BannedRecord;
 use pbh_core::geoip::{geoip_force_disabled, GeoIpDb, GeoIpProvider};
 use pbh_core::modules::progress_cheat::PcbEntityKind;
-use pbh_core::modules::{
-    BtnNetworkOnline, InMemoryMonitorSink, MonitorSink, ProgressCheatBlocker,
-};
-use pbh_db::Database;
+use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
+use pbh_db::{Database, DbMonitorSink};
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
 use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
 use pbh_downloader::bitcomet::{BitCometConfig, BitCometDownloader};
@@ -261,6 +259,28 @@ async fn main() -> anyhow::Result<()> {
         None
     } else {
         let ipdb_dir = data_dir.join("ipdb");
+        // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` 的异步更新）：
+        // URL/镜像顺序、`.mmdb.xz` + XZ 解压、45 天 mtime 间隔、原子替换均见 `geoip_update`。
+        // `ip-database.auto-update` 为 false 时严格 no-op（连本地缺失也不下载）；
+        // 更新跑在独立线程里，因此 `reqwest::blocking` 不会踩到 tokio runtime。
+        if cfg.ip_database.auto_update {
+            match pbh_core::geoip_update::ReqwestBlockingHttpClient::new() {
+                Ok(http) => match pbh_core::geoip_update::spawn_update(
+                    ipdb_dir.clone(),
+                    cfg.ip_database.clone(),
+                    Arc::new(http),
+                ) {
+                    Ok(handle) => {
+                        // 后台更新，不阻塞启动；本次启动先用已有数据库
+                        let _updater = std::thread::spawn(move || {
+                            let _ = handle.join();
+                        });
+                    }
+                    Err(e) => warn!("GeoIP 自动更新启动失败: {e}"),
+                },
+                Err(e) => warn!("GeoIP 下载客户端初始化失败，跳过自动更新: {e}"),
+            }
+        }
         match GeoIpDb::load(&ipdb_dir) {
             Ok(db) => {
                 info!("GeoIP 数据库已加载: {}", ipdb_dir.display());
@@ -274,7 +294,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 判定流水线：由 profile 段驱动（模块开关/ban-duration/规则集/bypass 地址/GeoIP 注入）
-    let pipeline = Arc::new(cfg.profile.build_pipeline_with_geo(geo));
+    let pipeline = Arc::new(cfg.profile.build_pipeline_with_geo(geo.clone()));
     {
         let names: Vec<&str> = pipeline.modules.iter().map(|m| m.config_name()).collect();
         if names.is_empty() {
@@ -303,10 +323,14 @@ async fn main() -> anyhow::Result<()> {
     // 监控模块（`active-monitoring` / `peer-analyse-service.*`，上游非 RuleFeatureModule，
     // 不参与 peer 判定）：由 ban wave 循环按上游定时任务间隔驱动。
     //
-    // **已知缺口**：`MonitorSink` 目前注入的是内存实现，DB 版持久化（`alerts` /
-    // `traffic_journal_v3` / `peer_connection_metrics*` / `peer_records` / `tracked_swarm`）
-    // 尚未接线 —— 监控数据重启即丢、WebUI 监控视图读不到，见 crates/pbh/src/monitor.rs 文档。
-    let monitor_sink: Arc<dyn MonitorSink> = Arc::new(InMemoryMonitorSink::new());
+    // 落点为 SQLite（与其余持久化共用同一个 `Database`）：表结构逐条对齐上游
+    // `alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` /
+    // `tracked_swarm`；`peer_records.peer_geoip` 由 sink 内的 IP 库查询填充（对齐上游在 DAO 内查询）。
+    // 单元测试仍可用 pbh-core 的内存实现 `InMemoryMonitorSink`。
+    let monitor_sink: Arc<dyn MonitorSink> = Arc::new(DbMonitorSink::with_geo(db.clone(), geo));
+    // `tracked_swarm` 是「本次运行会话」的临时表：启动时清空一次
+    //（对齐上游 `SwarmTrackingModule.onEnable` 的 `TrackedSwarmService.resetTable()`）。
+    monitor_sink.reset_tracked_swarm();
     let monitor = Arc::new(monitor::MonitorHost::new(&cfg.profile, monitor_sink));
     let monitor_names = monitor.config_names();
     match monitor_names.as_slice() {
@@ -315,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
              profile.module.peer-analyse-service 段）"
         ),
         names => info!(
-            "已启用监控模块: {}（落点为内存版 MonitorSink，DB 持久化尚未接线）",
+            "已启用监控模块: {}（落点：SQLite 监控表，Web API: /api/modules/swarm-tracking、/api/alerts）",
             names.join(", ")
         ),
     }

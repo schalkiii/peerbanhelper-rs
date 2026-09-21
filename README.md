@@ -67,7 +67,11 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
   - [x] `peer-analyse-service.session-analyse`：按天聚合 peer 连接指标 + 保留期清理
   - [x] `peer-analyse-service.peer-recording`：peer 状态/会话/传输/偏移量记录 + 清理
   - [x] `peer-analyse-service.swarm-tracking`：本次运行会话内的 swarm 跟踪（重启即清空）
-  - ⚠️ 落点目前是**内存实现** `InMemoryMonitorSink`：DB 版持久化尚未接线（见「已知缺口」）
+  - [x] **落点为 SQLite**（`pbh-db::DbMonitorSink`，与其余持久化共用同一个 `Database`）：
+        五张表 `alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` /
+        `peer_records` / `tracked_swarm`（+ `torrents`）逐条对齐上游建表脚本与
+        `mapper/sqlite/*.xml`；`peer_records.peer_geoip` 由 sink 内查 IP 库填充；
+        Web 侧新增 `/api/modules/swarm-tracking`、`/api/modules/swarm-tracking/details`、`/api/alerts`
 - [x] **AutoSTUN 内置 NAT 地址翻译**：TCP STUN 客户端（RFC 5389 Binding Request /
   `XOR-MAPPED-ADDRESS`）+ 静态映射表 + 后台 5 秒刷新；`ip-remapping.auto-stun.enabled=false`
   （默认）时严格直通、不发起任何网络请求
@@ -94,7 +98,9 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
   - [x] 增量封禁 `/transfer/banPeers`（`ip:port|ip:port`）
   - [x] 全量封禁 `/app/setPreferences`（`banned_IPs`）
   - [x] 握手 peer 判定（`up_speed<=0 && dl_speed<=0`）
-- [x] SQLite 持久化：封禁日志、封禁列表、torrent/peer 快照（schema 与字段对齐上游）
+- [x] SQLite 持久化：封禁日志、封禁列表、torrent/peer 快照、监控表
+      （`alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` /
+      `tracked_swarm` / `torrents`；schema 与字段对齐上游）
 - [x] 内存封禁表：到期自动解封（`now > unbanAt`）、重复封禁触发全量重放、
       有解封项时强制全量下发封禁列表（对齐 `removeExpiredBans` + `setBanList`）
 - [x] **`profile.yml` 驱动**：`check-interval` / `ban-duration` / `ignore-peers-from-addresses` /
@@ -140,17 +146,21 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 | GeoIP 四维度 | `config.yml` 的 `ip-database` 段 → `GeoIpDb::load(<data>/ipdb)` → `build_pipeline_with_geo(geo)` | 数据库不可用/`pbh.forceDisableIPDB` ⇒ 不注入 provider，四维度全不命中 |
 | BTN | `profile.module.btn` → `build_pipeline_with_geo` 在 `auto-range-ban` 之后实例化 `BtnNetworkOnline` | 传输层未移植：未注入规则时恒 `pass()` |
 | AutoSTUN | `ip-remapping.auto-stun` → 仅 `enabled: true` 时 `AutoStunConfig::build()` + `with_auto_stun()` + 后台刷新线程 | `enabled: false`（默认）为**严格 no-op**，不发起任何网络请求 |
-| 监控模块 | `profile.module.active-monitoring` / `peer-analyse-service.*` → `build_monitor_modules(sink)` → ban wave 循环按上游间隔驱动 | 落点为**内存** `InMemoryMonitorSink`（DB 持久化未接线） |
+| 监控模块 | `profile.module.active-monitoring` / `peer-analyse-service.*` → `build_monitor_modules(sink)` → ban wave 循环按上游间隔驱动 | 落点为 `DbMonitorSink`（SQLite 五张监控表，与其余持久化共用同一个 `Database`）；启动时 `reset_tracked_swarm()`，`peer_records.peer_geoip` 由 sink 内查 IP 库填充 |
 
 监控模块的调度对齐上游 `registerScheduledTask` 的 fixed-delay 语义（首次 delay 0 立即执行）：
 `updateTrafficStatus` 每 1 分钟；`session-analyse` 的 `flushData` / `cleanup`、
 `peer-recording` 的 `flush` / `cleanup`、`swarm-tracking` 的 `flushAll` 各按配置间隔；
 `onPeersRetrieved` 在 wave 拉完每个 torrent 的 peers 后派发；退出时按各模块 `onDisable` 收尾刷写。
 
-> **已知缺口（非静默省略）**：① 监控数据的 DB 持久化与监控 WebUI API 未接线（内存落点，重启即丢）；
-> ② BTN 传输层（握手/abilities/PoW/缓存）与 BTN 脚本规则未移植；
-> ③ GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）未移植，只读已存在的数据库文件；
-> ④ AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活未移植，上传限速下发
+> **监控落库与监控 API（已接线）**：DB 版 `MonitorSink`（五张表 + `torrents`）与
+> `/api/modules/swarm-tracking`、`/api/modules/swarm-tracking/details`、`/api/alerts`
+> 均已实现；未移植的只剩 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
+> `DELETE /api/alert/{id}`（故 `read_at` 恒为 NULL），以及阈值告警的 `push:` 渠道推送。
+
+> **已知缺口（非静默省略）**：① BTN 传输层（握手/abilities/PoW/缓存）与 BTN 脚本规则未移植；
+> ② GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）未移植，只读已存在的数据库文件；
+> ③ AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活未移植，上传限速下发
 > （`getSpeedLimiter`/`setSpeedLimiter`）因 `Downloader` trait 未暴露该接口而只计算不落地。
 > 全部缺口清单见 PLAN.md「Phase 1.7」。
 
@@ -163,11 +173,12 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 - [x] `ptr-blacklist`、`idle-connection-dos-protection`（上游默认关闭，显式启用即生效）
 - [x] `ip-address-blocker` 的 GeoIP 维度（ASN / 地区 / 城市 / 网络类型）
 - [x] `btn`（BTN 网络在线规则判定模块，默认启用；传输层见「已知缺口」）
-- [x] 非封禁模块：`active-monitoring`、`peer-analyse-service.*`（内存落点）
+- [x] 非封禁模块：`active-monitoring`、`peer-analyse-service.*`（SQLite 落点 + 监控 Web API）
 - [x] 告警推送渠道（PushPlus / ServerChan / SMTP / Telegram / Bark / PushDeer / Gotify / Ntfy / Webhook）
 - [x] 内置 NAT（AutoSTUN）地址翻译（默认关闭，严格直通）
 - [x] 其余下载器：Deluge / BiglyBT / BitComet / Aria2Next（Transmission 见上）
-- [ ] 监控数据的 DB 持久化（`MonitorSink` 的数据库实现）与监控 WebUI API
+- [x] 监控数据的 DB 持久化（`pbh-db::DbMonitorSink`：`alert` / `traffic_journal_v3` /
+      `peer_connection_metrics(_track)` / `peer_records` / `tracked_swarm`）与监控 Web API
 - [ ] BTN 传输层（握手 / abilities / PoW / 缓存）与 BTN 脚本规则
 - [ ] GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）
 - [ ] AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活
