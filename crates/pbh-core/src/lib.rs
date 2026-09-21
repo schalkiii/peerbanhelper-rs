@@ -4,6 +4,8 @@
 //! 行为契约见根目录 SPEC.md，所有 `[GOLDEN]` 点由 pbh-golden 黄金测试锁定。
 
 pub mod auto_stun;
+pub mod auto_stun_forwarder;
+pub mod auto_stun_probe;
 pub mod banlist;
 pub mod config;
 pub mod defaults;

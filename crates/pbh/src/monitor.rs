@@ -34,11 +34,13 @@ use pbh_core::module::RuleModule;
 use pbh_core::modules::{
     ActiveMonitoringModule, DownloaderTrafficStats, MonitorSink, PeerRecordingServiceModule,
     SessionAnalyseServiceModule, SpeedLimiter, SpeedLimitChange, SwarmTrackingModule,
+    TrafficMonitoringAlert,
 };
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+use crate::push::AlertManager;
 use crate::wave::DownloaderEntry;
 
 /// 上游 `registerScheduledTask(this::updateTrafficStatus, 0, 1, TimeUnit.MINUTES)`。
@@ -89,6 +91,10 @@ pub struct MonitorHost {
     /// `ActiveMonitoring → SwarmTracking → SessionAnalyse → PeerRecording`（上游注册顺序）
     modules: Vec<Box<dyn RuleModule>>,
     schedule: Mutex<ScheduleState>,
+    /// 推送渠道（上游 `AlertManagerImpl.publishAlert(push=true)` 的推送分支）：
+    /// `active-monitoring` 的日流量阈值告警除落库外，还要经它分发到各推送渠道。
+    /// `None`（未接线，如部分测试）⇒ 只落库、不推送。
+    alert_manager: Option<Arc<AlertManager>>,
 }
 
 impl MonitorHost {
@@ -101,11 +107,19 @@ impl MonitorHost {
         let host = Self {
             modules,
             schedule: Mutex::new(ScheduleState::default()),
+            alert_manager: None,
         };
         if let Some(swarm) = host.swarm_tracking() {
             swarm.on_enable();
         }
         host
+    }
+
+    /// 接线推送渠道：日流量阈值告警（`publishAlert(push=true)`）会经它分发
+    /// （渲染规则与 alert 表完全一致，见 [`AlertManager::publish_alert`]）。
+    pub fn with_alert_manager(mut self, alert_manager: Arc<AlertManager>) -> Self {
+        self.alert_manager = Some(alert_manager);
+        self
     }
 
     /// 已构造的监控模块名（`build_monitor_modules` 的顺序，供启动日志）。
@@ -174,7 +188,10 @@ impl MonitorHost {
         if traffic_due {
             if let Some(active) = self.active_monitoring() {
                 let stats = collect_traffic_stats(entries).await;
-                changes = active.on_tick(&stats, now_ms);
+                let (tick_changes, alert) = active.on_tick(&stats, now_ms);
+                changes = tick_changes;
+                // 对齐 `AlertManagerImpl.publishAlert(push=true)`：告警已落库，此处补推送分支
+                self.dispatch_push_alert(alert).await;
                 for change in &changes {
                     info!(
                         "active-monitoring: 下载器 {} 上传限速调整为 {} bytes/s（下载 {} bytes/s）",
@@ -263,13 +280,38 @@ impl MonitorHost {
     pub async fn shutdown(&self, entries: &[DownloaderEntry], now_ms: i64) {
         if let Some(active) = self.active_monitoring() {
             let stats = collect_traffic_stats(entries).await;
-            active.on_tick(&stats, now_ms);
+            let (_, alert) = active.on_tick(&stats, now_ms);
+            // 对齐 `onDisable` → `updateTrafficStatus`：同样会走一次完整的告警发布
+            self.dispatch_push_alert(alert).await;
         }
         if let Some(session) = self.session_analyse() {
             session.flush_data(now_ms);
         }
         if let Some(recording) = self.peer_recording() {
             recording.flush();
+        }
+    }
+
+    /// 日流量阈值告警的推送分支（对齐 `AlertManagerImpl.publishAlert(push=true)`）：
+    /// 复用与 alert 表完全一致的 title/content 渲染路径
+    /// （[`AlertManager::publish_alert`]）；推送失败只在内部记日志，绝不打断监控 tick。
+    async fn dispatch_push_alert(&self, alert: Option<TrafficMonitoringAlert>) {
+        let Some(alert) = alert else {
+            return;
+        };
+        if !alert.alert.push {
+            return;
+        }
+        if let Some(alert_manager) = &self.alert_manager {
+            alert_manager
+                .publish_alert(
+                    true,
+                    alert.alert.level.into(),
+                    &alert.alert.identifier,
+                    &alert.alert.title,
+                    &alert.alert.description,
+                )
+                .await;
         }
     }
 }
@@ -509,5 +551,122 @@ module:
         host.shutdown(&[], 5_000).await;
         assert_eq!(sink.peer_records().len(), 1, "onDisable 的 flush()");
         assert!(!sink.connection_metrics().is_empty(), "onDisable 的 flushData()");
+    }
+
+    // ---------------- 日流量阈值告警的推送分发（publishAlert(push=true)） ----------------
+
+    /// 记录请求的 mock fetcher（与 push.rs 测试同款样式）。
+    struct RecordingFetcher {
+        requests: Mutex<Vec<pbh_downloader::http::HttpRequest>>,
+    }
+
+    impl RecordingFetcher {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                requests: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn requests(&self) -> Vec<pbh_downloader::http::HttpRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl pbh_downloader::http::HttpFetcher for RecordingFetcher {
+        fn execute<'a>(
+            &'a self,
+            req: pbh_downloader::http::HttpRequest,
+        ) -> pbh_downloader::http::BoxFuture<'a, anyhow::Result<pbh_downloader::http::HttpResponse>>
+        {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(req);
+                Ok(pbh_downloader::http::HttpResponse::new(200, "{}".to_string()))
+            })
+        }
+    }
+
+    fn alert_manager_with(
+        fetcher: Arc<RecordingFetcher>,
+    ) -> Arc<crate::push::AlertManager> {
+        let section: crate::config::PushSection =
+            serde_yaml::from_str("a:\n  type: bark\n  device_key: \"k\"\n")
+                .expect("测试用 push 配置应可解析");
+        let push_manager = crate::push::PushManager::from_config(&section, fetcher);
+        Arc::new(crate::push::AlertManager::new(
+            Arc::new(push_manager),
+            Arc::new(pbh_core::i18n::Translator::embedded()),
+            "zh_cn",
+        ))
+    }
+
+    fn traffic_profile(daily: i64) -> ProfileConfig {
+        serde_yaml::from_str(&format!(
+            r#"
+module:
+  active-monitoring:
+    enabled: true
+    traffic-monitoring:
+      daily: {daily}
+"#
+        ))
+        .expect("profile yaml")
+    }
+
+    /// 当日上传量达到阈值：告警落库（alert 表）**且**经推送渠道分发，
+    /// 推送渲染与 alert 表一致（`"[PeerBanHelper/<LEVEL>] " + title` / 渲染后的 content，
+    /// 对齐 `AlertManagerImpl.publishAlert(push=true)` → `PushManagerImpl.pushMessage`）。
+    #[tokio::test]
+    async fn daily_traffic_alert_fires_and_is_pushed_via_configured_channel() {
+        let now = 1_700_000_000_000i64;
+        let sink = Arc::new(InMemoryMonitorSink::new());
+        // 当日已上传 2000 bytes ≥ 阈值 1000：先建行（at_start = 0）再在同小时内更新
+        sink.update_traffic_journal("qb", 0, 0, 0, 0, now);
+        sink.update_traffic_journal("qb", 0, 2000, 0, 0, now + 60_000);
+
+        let fetcher = RecordingFetcher::new();
+        let host = MonitorHost::new(&traffic_profile(1000), sink.clone())
+            .with_alert_manager(alert_manager_with(fetcher.clone()));
+
+        host.run_scheduled(&[], now).await;
+
+        // 告警落库（alert 表可见）
+        let alerts = sink.alerts();
+        assert_eq!(alerts.len(), 1);
+        assert!(
+            alerts[0].identifier.starts_with("dataTrafficCapping-"),
+            "identifier = dataTrafficCapping-<当日 0 点 epoch 秒>，实际: {}",
+            alerts[0].identifier
+        );
+        assert_eq!(alerts[0].level, pbh_core::modules::AlertLevel::Warn);
+
+        // 同一告警经推送渠道分发：标题带级别前缀，正文含渲染后的参数
+        let requests = fetcher.requests();
+        assert_eq!(requests.len(), 1, "恰好推送一次");
+        let body = requests[0].body.clone().expect("请求体不应为空");
+        assert!(body.contains("[PeerBanHelper/WARN]"), "{body}");
+        assert!(body.contains("1000 B"), "正文应渲染阈值参数：{body}");
+
+        // 推送管理器内的去重：同一 identifier 的未读告警不重复发布
+        host.run_scheduled(&[], now + 60_000 * 30).await;
+        assert_eq!(fetcher.requests().len(), 1, "一天只发一次");
+    }
+
+    /// `traffic-monitoring.daily: -1`（上游默认）：完全禁用 ⇒ 不告警、不推送、无网络流量。
+    #[tokio::test]
+    async fn daily_threshold_disabled_publishes_no_alert_and_no_push() {
+        let now = 1_700_000_000_000i64;
+        let sink = Arc::new(InMemoryMonitorSink::new());
+        sink.update_traffic_journal("qb", 0, 0, 0, 0, now);
+        sink.update_traffic_journal("qb", 0, i64::from(i32::MAX), 0, 0, now + 60_000);
+
+        let fetcher = RecordingFetcher::new();
+        let host = MonitorHost::new(&traffic_profile(-1), sink.clone())
+            .with_alert_manager(alert_manager_with(fetcher.clone()));
+
+        host.run_scheduled(&[], now).await;
+        host.shutdown(&[], now + 120_000).await;
+
+        assert!(sink.alerts().is_empty(), "禁用时不应发布告警");
+        assert!(fetcher.requests().is_empty(), "禁用时不应产生推送流量");
     }
 }

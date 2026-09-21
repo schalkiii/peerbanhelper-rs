@@ -203,18 +203,24 @@
       未注入规则时模块恒 `pass()`、绝不封禁
 - [ ] **BTN 脚本规则**：AviatorScript 执行（`btn.allow-script-execute`）未移植
       （上游默认 `false`，此时与本移植行为一致）
-- [ ] **GeoIP 数据库自动更新**：`ip-database.auto-update` 的 mmdb 下载与 XZ 解压未移植，
-      只读取已存在的数据库文件
-- [ ] **AutoSTUN 次要能力**：`StunManager` 的 UDP NAT 类型探测（仅 WebUI/遥测展示）、
-      TCP 转发器与端口保活、友好回环映射的监听绑定未移植
+- [x] **GeoIP 数据库自动更新**：`pbh-core::geoip_update` 已实现三镜像轮换（GitHub Releases →
+      pbh-static.paulzzh.com → pbh-static.ghostchu.com）、XZ 解压（纯 Rust `lzma-rs`）、
+      45 天 mtime 更新间隔、解压后 `validateMMDB` 再原子替换；已在 `pbh/src/main.rs` 的
+      `GeoIpDb::load` **之前**接线（对齐上游 `IPDB` 构造函数「先 updateMMDB 再 loadMMDB」）。
+      `auto-update: false`（默认）⇒ 严格 no-op（零网络请求）；`pbh.forceDisableIPDB` ⇒ 整体旁路
+- [x] **AutoSTUN 次要能力**：`auto_stun_probe`（UDP NAT 类型探测，对齐 cdnbye/上游 `StunManager`，
+      仅 WebUI/遥测展示、从不参与 ban 判定）+ `auto_stun_forwarder`（TCP 转发器 + 端口保活心跳 +
+      友好回环映射绑定）已实现；`auto-stun.enabled: false`（默认）⇒ 严格 no-op（无 socket/无探测/无线程）
 - [x] **上传限速下发**：`Downloader` trait 已暴露 `getSpeedLimiter()` / `setSpeedLimiter()`（bytes/s，<=0 为不限制），
       六个适配器（qBittorrent / Transmission / Deluge / BiglyBT / BitComet / Aria2Next）均按上游端点实现；
       `traffic-sliding-capping` 现已真正下发：`run_scheduled` 在 `on_tick` 算出新限速后调用 `set_speed_limiter`，
       `collect_traffic_stats` 取当前限速（不支持的下载器对齐上游 `getSpeedLimiter() == null` ⇒ 跳过）。
       上游默认关闭该功能，默认配置下无行为差异
-- [ ] **流量阈值告警的推送通道**：`active-monitoring` 的 `traffic-monitoring.daily` 超阈值告警
-      已落 `alert` 表并由 `/api/alerts` 暴露（等价上游 `publishAlert` 的落库部分），但**没有**
-      走 `push:` 渠道（上游 `AlertManagerImpl.publishAlert(push=true, …)` 会同时推送）。
+- [x] **流量阈值告警的推送通道**：`active-monitoring` 的 `traffic-monitoring.daily` 超阈值告警
+      除落 `alert` 表（`/api/alerts` 暴露）外，现已通过 `AlertManager::publish_alert(push=true, …)`
+      走 `push:` 渠道推送（`MonitorHost::with_alert_manager` 接线，标题 `[PeerBanHelper/WARN] …`，
+      与落库完全相同的 title/content 渲染路径；失败仅记日志不影响 tick）。
+      已核对上游 6 个 `push=true` 调用点，本移植现存集合中仅此一类待补，现已完整复刻。
       上游默认 `traffic-monitoring.daily: -1`（禁用），默认配置下无行为差异。
 
 > 验证记录（2026-09-21，监控持久化 + 监控 Web API）：`cargo test --workspace` **402 个测试全部通过**

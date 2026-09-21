@@ -259,26 +259,33 @@ async fn main() -> anyhow::Result<()> {
         None
     } else {
         let ipdb_dir = data_dir.join("ipdb");
-        // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` 的异步更新）：
-        // URL/镜像顺序、`.mmdb.xz` + XZ 解压、45 天 mtime 间隔、原子替换均见 `geoip_update`。
+        // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` → `IPDB` 构造函数的
+        // 「先 updateMMDB 再 loadMMDB」：更新完成后再加载，本次启动即可用上新库）。
+        // 镜像顺序、`.mmdb.xz` + XZ 解压、45 天 mtime 间隔、原子替换均见 `geoip_update`。
         // `ip-database.auto-update` 为 false 时严格 no-op（连本地缺失也不下载）；
-        // 更新跑在独立线程里，因此 `reqwest::blocking` 不会踩到 tokio runtime。
+        // 更新跑在阻塞线程上，因此 `reqwest::blocking` 不会踩到 tokio runtime。
         if cfg.ip_database.auto_update {
-            match pbh_core::geoip_update::ReqwestBlockingHttpClient::new() {
-                Ok(http) => match pbh_core::geoip_update::spawn_update(
-                    ipdb_dir.clone(),
-                    cfg.ip_database.clone(),
-                    Arc::new(http),
-                ) {
-                    Ok(handle) => {
-                        // 后台更新，不阻塞启动；本次启动先用已有数据库
-                        let _updater = std::thread::spawn(move || {
-                            let _ = handle.join();
-                        });
+            let updater_dir = ipdb_dir.clone();
+            let updater_config = cfg.ip_database.clone();
+            match tokio::task::spawn_blocking(move || -> anyhow::Result<
+                pbh_core::geoip_update::UpdateReport,
+            > {
+                let http = pbh_core::geoip_update::ReqwestBlockingHttpClient::new()?;
+                Ok(
+                    pbh_core::geoip_update::GeoIpUpdater::new(updater_dir, updater_config, &http)
+                        .update_if_needed(),
+                )
+            })
+            .await
+            {
+                Ok(Ok(report)) => {
+                    let (updated, failed) = (report.updated().len(), report.failures().len());
+                    if updated > 0 || failed > 0 {
+                        info!("GeoIP 数据库更新检查完成: 更新 {updated} 个 / 失败 {failed} 个");
                     }
-                    Err(e) => warn!("GeoIP 自动更新启动失败: {e}"),
-                },
-                Err(e) => warn!("GeoIP 下载客户端初始化失败，跳过自动更新: {e}"),
+                }
+                Ok(Err(e)) => warn!("GeoIP 下载客户端初始化失败，跳过自动更新: {e}"),
+                Err(e) => warn!("GeoIP 更新任务异常退出: {e}"),
             }
         }
         match GeoIpDb::load(&ipdb_dir) {
@@ -320,6 +327,33 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 文案表：内嵌上游 lang 资源，允许 data/lang 覆盖（与 wave 共用，统一 locale 渲染）
+    let translator = Arc::new(pbh_core::i18n::Translator::with_overrides(Some(
+        &data_dir.join("lang"),
+    )));
+
+    // 告警推送：渠道全部来自 `push:` 段（键 = 渠道名，段内 `type` 决定类型）；
+    // 段为空 ⇒ 空渠道列表（不产生任何网络流量、不报错）。
+    // HTTP 客户端对齐上游 `HTTPUtil.newBuilder()`：校验 TLS（上游默认不跳过校验）、
+    // 连接超时 15s；上游未设读超时，这里为不阻塞 ban wave 额外设置了 60s 总超时。
+    let push_fetcher = Arc::new(ReqwestFetcher::new(true, 15, 60)?);
+    let push_manager = Arc::new(push::PushManager::from_config(&cfg.push, push_fetcher));
+    match push_manager.provider_list() {
+        [] => info!("未配置推送渠道（config.yml 的 push: 段为空）"),
+        providers => {
+            let names: Vec<String> = providers
+                .iter()
+                .map(|p| format!("{}（{}）", p.name(), p.config_type()))
+                .collect();
+            info!("已加载 {} 个推送渠道: {}", names.len(), names.join(", "));
+        }
+    }
+    let alert_manager = Arc::new(push::AlertManager::new(
+        push_manager,
+        translator.clone(),
+        cfg.language.locale.clone(),
+    ));
+
     // 监控模块（`active-monitoring` / `peer-analyse-service.*`，上游非 RuleFeatureModule，
     // 不参与 peer 判定）：由 ban wave 循环按上游定时任务间隔驱动。
     //
@@ -331,7 +365,12 @@ async fn main() -> anyhow::Result<()> {
     // `tracked_swarm` 是「本次运行会话」的临时表：启动时清空一次
     //（对齐上游 `SwarmTrackingModule.onEnable` 的 `TrackedSwarmService.resetTable()`）。
     monitor_sink.reset_tracked_swarm();
-    let monitor = Arc::new(monitor::MonitorHost::new(&cfg.profile, monitor_sink));
+    // active-monitoring 的日流量阈值告警除落库外还经推送渠道分发
+    //（对齐上游 `AlertManagerImpl.publishAlert(push=true)` 的推送分支）。
+    let monitor = Arc::new(
+        monitor::MonitorHost::new(&cfg.profile, monitor_sink)
+            .with_alert_manager(alert_manager.clone()),
+    );
     let monitor_names = monitor.config_names();
     match monitor_names.as_slice() {
         [] => info!(
@@ -372,33 +411,6 @@ async fn main() -> anyhow::Result<()> {
             list.load(records);
         }
     }
-
-    // 文案表：内嵌上游 lang 资源，允许 data/lang 覆盖（与 wave 共用，统一 locale 渲染）
-    let translator = Arc::new(pbh_core::i18n::Translator::with_overrides(Some(
-        &data_dir.join("lang"),
-    )));
-
-    // 告警推送：渠道全部来自 `push:` 段（键 = 渠道名，段内 `type` 决定类型）；
-    // 段为空 ⇒ 空渠道列表（不产生任何网络流量、不报错）。
-    // HTTP 客户端对齐上游 `HTTPUtil.newBuilder()`：校验 TLS（上游默认不跳过校验）、
-    // 连接超时 15s；上游未设读超时，这里为不阻塞 ban wave 额外设置了 60s 总超时。
-    let push_fetcher = Arc::new(ReqwestFetcher::new(true, 15, 60)?);
-    let push_manager = Arc::new(push::PushManager::from_config(&cfg.push, push_fetcher));
-    match push_manager.provider_list() {
-        [] => info!("未配置推送渠道（config.yml 的 push: 段为空）"),
-        providers => {
-            let names: Vec<String> = providers
-                .iter()
-                .map(|p| format!("{}（{}）", p.name(), p.config_type()))
-                .collect();
-            info!("已加载 {} 个推送渠道: {}", names.len(), names.join(", "));
-        }
-    }
-    let alert_manager = Arc::new(push::AlertManager::new(
-        push_manager,
-        translator.clone(),
-        cfg.language.locale.clone(),
-    ));
 
     // Web 状态
     let metrics = Arc::new(Mutex::new(Metrics::default()));

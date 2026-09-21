@@ -1291,11 +1291,15 @@ impl ActiveMonitoringModule {
     ///
     /// 上游由 `registerScheduledTask(this::updateTrafficStatus, 0, 1, MINUTES)` 每 1 分钟调用。
     /// 本移植无需 `&mut self`：全部状态（含告警去重）都在 [`MonitorSink`] 内。
+    ///
+    /// 返回 `(限速变更, 本次新发布的日流量阈值告警)`：告警的落库已在
+    /// [`MonitorSink::publish_alert`] 完成；`push = true` 的推送分发由应用层接线
+    /// （对齐上游 `AlertManagerImpl.publishAlert(push=true)` 的推送分支，见 pbh 的 `MonitorHost`）。
     pub fn on_tick(
         &self,
         downloaders: &[DownloaderTrafficStats],
         now_ms: i64,
-    ) -> Vec<SpeedLimitChange> {
+    ) -> (Vec<SpeedLimitChange>, Option<TrafficMonitoringAlert>) {
         for stats in downloaders {
             // 上游：`if (downloader.login().success())`，失败在 catch 中记日志
             if !stats.logged_in {
@@ -1310,10 +1314,10 @@ impl ActiveMonitoringModule {
                 now_ms,
             );
         }
-        self.update_traffic_monitoring(now_ms);
-        self.update_traffic_capping_service(downloaders, now_ms)
+        let alert = self.update_traffic_monitoring(now_ms);
+        let changes = self.update_traffic_capping_service(downloaders, now_ms);
+        (changes, alert)
     }
-
     /// 对齐 `updateTrafficMonitoringService()`：当日上传流量超阈值 → 发布一次告警。
     pub fn update_traffic_monitoring(&self, now_ms: i64) -> Option<TrafficMonitoringAlert> {
         if self.settings.daily_traffic_capping <= 0 {
@@ -2295,7 +2299,9 @@ mod tests {
             DownloaderTrafficStats::new("qb", "qBittorrent", true, 111, 222, None, true),
             DownloaderTrafficStats::new("tr", "Transmission", false, 333, 444, None, true),
         ];
-        assert!(module.on_tick(&stats, now).is_empty());
+        let (changes, alert) = module.on_tick(&stats, now);
+        assert!(changes.is_empty());
+        assert!(alert.is_none(), "daily = -1 ⇒ 阈值告警禁用");
 
         let journal = s.traffic_journal();
         assert_eq!(journal.len(), 1, "未登录成功的下载器不写日志");
@@ -2507,7 +2513,9 @@ mod tests {
             Some(SpeedLimiter { upload: 5000, download: 777 }),
             true,
         )];
-        assert!(disabled.on_tick(&stats, now).is_empty());
+        let (changes, alert) = disabled.on_tick(&stats, now);
+        assert!(changes.is_empty());
+        assert!(alert.is_none());
         assert!(disabled.update_traffic_capping_service(&stats, now).is_empty());
     }
 

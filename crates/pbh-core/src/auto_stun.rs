@@ -26,20 +26,26 @@
 //! `127.x.y.z` 写法作为回源地址）依赖连接表精确匹配（地址 **与** 端口），无法用静态前缀表达，
 //! 因此本模块只记录该配置项，不据此猜测性改写地址（避免误改真实 `127.0.0.0/8` peer）。
 //!
-//! ## 关于依赖
-//! STUN 部分不需要额外依赖：`TcpStunClient` 等价实现使用 `std::net` 直接发送 RFC 5389
-//! Binding Request 并解析 `XOR-MAPPED-ADDRESS`（与上游逐行对齐）。网络不可达、无响应、
-//! 报文非法等任何失败都只返回 `None`（保留既有映射 ⇒ 翻译直通），不会 panic 或阻塞翻译调用方：
-//! 翻译路径只做一次读锁查表，网络刷新发生在后台线程（[`AutoStunRefresher`]）。
+//! ## 次要能力（本文件仅做门控接线，实现见兄弟模块）
+//! - UDP NAT 类型探测（`StunManager` + cdnbye `NettyStunClient`，仅用于 WebUI/遥测展示
+//!   `nat_type`，不参与 ban 判定）：[`crate::auto_stun_probe`]，入口 [`AutoStun::refresh_nat_type`]
+//!   / [`AutoStun::spawn_nat_type_prober`]，结果经 [`AutoStun::nat_type`] 暴露（Rust 侧暂无
+//!   Web API，另有 tracing 日志）；
+//! - TCP 转发器 + 端口保活 + 友好回环绑定（`TCPForwarderImpl` / `StunTcpTunnelImpl` /
+//!   `StunSocketTool` / `BTStunInstance.onCreate`）：[`crate::auto_stun_forwarder`]，
+//!   入口 [`AutoStun::create_tunnel`]。
 //!
-//! 未移植：`StunManager` 的 UDP NAT 类型探测（cdnbye `NettyStunClient`，仅用于 WebUI/遥测展示
-//! `nat_type`，不参与地址翻译）、TCP 转发器与端口保活（属下载器/网络层）。
+//! ## 与上游的差异（严格 no-op 约束）
+//! 上游 `StunManager` 的 UDP 探测**无条件**每小时运行（与 `auto-stun.enabled` 无关）；
+//! 本移植按仓库「`enabled=false` ⇒ 无 socket / 无探测 / 无线程」的硬性约束，把探测与
+//! 隧道全部挂在 [`AutoStun`] 上、仅在 `enabled=true` 时激活（所有入口都会先检查 enabled）。
 //!
-//! 与上游的一处实现差异：上游 `getMappingTcp` 会先把套接字绑定到隧道端口再连接 STUN 服务器
-//! （`StunSocketTool.getSocket()` + `bind`）；本移植用 `TcpStream::connect_timeout` 连接
-//! （工具链的 `std::net` 未提供「先绑定再连接」的 `TcpSocket`），本机端口由系统分配，
-//! `inter` 仍取 `local_addr()`，与上游 `getLocalSocketAddress()` 语义一致。
+//! 与上游的一处早期实现差异已消除：现在 `getMappingTcp` 同样先绑定源地址再连接 STUN 服务器
+//! （`StunSocketTool.getSocket()` + `bind`，经 `socket2` 实现），本机端口即隧道端口
+//! （`inter` 取 `local_addr()`，与上游 `getLocalSocketAddress()` 完全一致）。
 
+use crate::auto_stun_forwarder::{StunTcpTunnel, TunnelConfig};
+use crate::auto_stun_probe::{NatType, NatTypeProber, NAT_TYPE_REFRESH_INTERVAL};
 use crate::iputil::{parse_addr, parse_net};
 use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
@@ -160,6 +166,8 @@ pub struct AutoStun {
     enabled: bool,
     use_friendly_loopback_mapping: bool,
     downloaders: Vec<String>,
+    udp_servers: Vec<String>,
+    nat_type_prober: NatTypeProber,
     mappings: RwLock<Vec<NatMapping>>,
     public_endpoint: RwLock<Option<SocketAddr>>,
 }
@@ -170,6 +178,8 @@ impl std::fmt::Debug for AutoStun {
             .field("enabled", &self.enabled)
             .field("use_friendly_loopback_mapping", &self.use_friendly_loopback_mapping)
             .field("downloaders", &self.downloaders)
+            .field("udp_servers", &self.udp_servers)
+            .field("nat_type", &self.nat_type())
             .field("mappings", &self.mappings())
             .field("public_endpoint", &self.public_endpoint())
             .finish()
@@ -182,6 +192,8 @@ impl AutoStun {
             enabled: config.enabled,
             use_friendly_loopback_mapping: config.use_friendly_loopback_mapping,
             downloaders: config.downloaders.clone(),
+            udp_servers: config.udp_servers.clone(),
+            nat_type_prober: NatTypeProber::new(),
             mappings: RwLock::new(Vec::new()),
             public_endpoint: RwLock::new(None),
         }
@@ -336,6 +348,81 @@ impl AutoStun {
             .ok();
         AutoStunRefresher { stop, handle }
     }
+
+    /// 最近一次缓存的 NAT 类型（`StunManager.getCachedNatType()`；初始 `Unknown`）。
+    ///
+    /// 上游该结果仅用于 WebUI/遥测展示（`/api/autostun/status` 的 `natType`），从不参与
+    /// ban 判定；Rust 侧暂无 Web API，此处作为方法 + 日志暴露。
+    pub fn nat_type(&self) -> NatType {
+        self.nat_type_prober.cached_nat_type()
+    }
+
+    /// `StunManager.refreshNatType()` 的门控包装：用 `stun.udp-servers` 做 UDP NAT 类型探测。
+    ///
+    /// - `enabled=false` ⇒ 严格 no-op（不发任何 UDP 包），返回 `NatType::Unknown`；
+    /// - `enabled=true` ⇒ 与上游一致：打乱服务器逐台尝试，全部失败 ⇒ 缓存 `UdpBlocked`。
+    ///
+    /// 与上游的差异：上游 `StunManager` 无条件每小时探测（与 enabled 无关）；本移植按
+    /// 「disabled ⇒ 严格 no-op」约束改为仅在启用时运行（见模块文档）。
+    pub fn refresh_nat_type(&self) -> NatType {
+        if !self.enabled {
+            tracing::debug!("[AutoSTUN] 未启用，跳过 NAT 类型探测（严格 no-op）");
+            return NatType::Unknown;
+        }
+        self.nat_type_prober.refresh_nat_type(&self.udp_servers)
+    }
+
+    /// 上游 `StunManager` 构造时的 `scheduleWithFixedDelay(this::refreshNatType, 0, 1, HOURS)`。
+    /// 未启用 ⇒ 返回不持有线程的句柄（严格 no-op）。
+    pub fn spawn_nat_type_prober(self: &Arc<Self>) -> AutoStunRefresher {
+        self.spawn_nat_type_prober_with(NAT_TYPE_REFRESH_INTERVAL)
+    }
+
+    /// [`AutoStun::spawn_nat_type_prober`] 的可注入周期版本（测试用短周期）。
+    pub fn spawn_nat_type_prober_with(self: &Arc<Self>, interval: Duration) -> AutoStunRefresher {
+        if !self.enabled {
+            tracing::debug!("[AutoSTUN] 未启用，不启动 NAT 类型探测线程（严格 no-op）");
+            return AutoStunRefresher::completed();
+        }
+        let this = Arc::clone(self);
+        AutoStunRefresher::spawn_named("StunManager-RefreshNatType", move |stop| {
+            while !stop.load(Ordering::SeqCst) {
+                this.refresh_nat_type();
+                let mut waited = Duration::ZERO;
+                while waited < interval && !stop.load(Ordering::SeqCst) {
+                    let step = REFRESH_TICK.min(interval - waited);
+                    std::thread::sleep(step);
+                    waited += step;
+                }
+            }
+        })
+    }
+
+    /// `StunTcpTunnelImpl.createMapping` + `BTStunInstance.onCreate` 的门控包装
+    /// （TCP 转发器 + 端口保活 + 友好回环绑定，实现见 [`crate::auto_stun_forwarder`]）。
+    ///
+    /// - `enabled=false` ⇒ 严格 no-op（无 socket / 无线程），返回 `None`；
+    /// - `enabled=true` 且隧道不适用（映射自测失败 / 下载器主机为公网）⇒ `None`；
+    /// - STUN/网络错误 ⇒ 记录告警并返回 `None`（上游由 5s 定时任务捕获并在下一周期重建）。
+    pub fn create_tunnel(
+        &self,
+        stun_servers: &[String],
+        downloader_host: &str,
+        config: &TunnelConfig,
+    ) -> Option<StunTcpTunnel> {
+        if !self.enabled {
+            tracing::debug!("[AutoSTUN] 未启用，跳过隧道创建（严格 no-op）");
+            return None;
+        }
+        match crate::auto_stun_forwarder::create_tunnel(stun_servers, downloader_host, config) {
+            Ok(tunnel) => tunnel,
+            Err(e) => {
+                // 上游 Lang.BTSTUN_RESTART_FAILED：由 5s 定时任务捕获，下一周期重建
+                tracing::warn!("[AutoSTUN] 隧道创建失败（下一刷新周期将重试）: {e}");
+                None
+            }
+        }
+    }
 }
 
 /// 后台刷新句柄，对齐 `BTStunInstance` 的定时任务与 `close()`。
@@ -351,6 +438,23 @@ impl AutoStunRefresher {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+
+    /// 以 `name` 启动一个可通过 [`AutoStunRefresher::close`] 停止的后台线程
+    /// （线程体周期性检查 `stop` 标志）。
+    pub(crate) fn spawn_named(name: &str, body: impl Fn(&AtomicBool) + Send + 'static) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || body(&flag))
+            .ok();
+        Self { stop, handle }
+    }
+
+    /// 不持有线程的已完成句柄（`enabled=false` ⇒ 严格 no-op，不创建任何线程）。
+    pub(crate) fn completed() -> Self {
+        Self { stop: Arc::new(AtomicBool::new(true)), handle: None }
     }
 }
 
@@ -521,14 +625,11 @@ pub fn parse_stun_response(buffer: &[u8]) -> io::Result<SocketAddr> {
 }
 
 /// 连接 STUN 服务器并发起一次交换（对齐 `getMappingTcp`：
-/// `bind(source) → connect(server) → getLocalSocketAddress() → write/read`）。
-///
-/// 与上游的差异：上游先把套接字绑定到 `sourceHost:sourcePort`（保持隧道端口的 NAT 映射）。
-/// 本移植用 `TcpStream::connect_timeout` 直接连接（工具链的 `std::net` 未提供
-/// `TcpSocket`，无法「先绑定再连接」），本机端口由系统分配；`inter` 仍取 `local_addr()`，
-/// 与上游 `socket.getLocalSocketAddress()` 语义一致（`source_host`/`source_port` 仅用于选择地址族）。
+/// `StunSocketTool.getSocket()` → `bind(source)` → `connect(server)` → `getLocalSocketAddress()`
+/// → `write/read`）。先绑定 `sourceHost:sourcePort` 以保持隧道端口的 NAT 映射
+/// （经 `socket2` 实现「先绑定再连接」，与上游语义完全一致）。
 fn exchange_stun(source: SocketAddr, target: SocketAddr, timeout: Duration) -> io::Result<StunMapping> {
-    let mut stream = TcpStream::connect_timeout(&target, timeout)?;
+    let mut stream = crate::auto_stun_forwarder::bind_connect(source, target, timeout)?;
     // 上游未设读写超时（可能永久阻塞）；本实现统一套用调用方超时，保证后台线程可退出
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
@@ -579,7 +680,7 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 
 /// 非密码学随机数（事务 ID 只需唯一性，对齐上游 `ThreadLocalRandom.nextInt()`）。
 /// 使用标准库 `RandomState` 的随机哈希种子 + 单调计数器 + 时钟，避免引入额外依赖。
-fn random_u32() -> u32 {
+pub(crate) fn random_u32() -> u32 {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
 

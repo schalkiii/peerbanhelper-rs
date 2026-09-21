@@ -55,6 +55,20 @@ pub enum AlertLevel {
     Fatal,
 }
 
+/// `pbh_core::modules::AlertLevel` → 推送层的 [`AlertLevel`]（枚举成员一一对应），
+/// 供监控模块的告警推送分支复用同一渲染/分发路径。
+impl From<pbh_core::modules::AlertLevel> for AlertLevel {
+    fn from(level: pbh_core::modules::AlertLevel) -> Self {
+        match level {
+            pbh_core::modules::AlertLevel::Tip => AlertLevel::Tip,
+            pbh_core::modules::AlertLevel::Info => AlertLevel::Info,
+            pbh_core::modules::AlertLevel::Warn => AlertLevel::Warn,
+            pbh_core::modules::AlertLevel::Error => AlertLevel::Error,
+            pbh_core::modules::AlertLevel::Fatal => AlertLevel::Fatal,
+        }
+    }
+}
+
 impl AlertLevel {
     /// 对齐 `AlertLevel.name()`（大写枚举名，用于标题前缀）。
     pub fn name(self) -> &'static str {

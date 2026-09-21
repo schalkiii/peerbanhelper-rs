@@ -481,11 +481,14 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
 1. **BTN 传输层未移植**：`btn` 的规则模型与判定路径已对齐上游，但
    握手 / abilities（heartbeat、rules、ip-query、submit-*）/ PoW captcha / `metadataDao` 缓存未移植；
    未注入规则时恒 `pass()`（未配置 BTN 服务端的部署与上游行为一致），BTN 脚本规则不执行。
-2. **GeoIP 数据库自动更新未移植**：只读 `<data>/ipdb/geoip/*.mmdb`，不做 mmdb 下载与 XZ 解压。
-   数据库缺失/损坏或 `pbh.forceDisableIPDB` 时四个维度全部不命中（对齐上游无库行为）。
-3. **AutoSTUN 未移植部分**：UDP NAT 类型探测（上游仅 WebUI 展示）、TCP 转发器与端口保活；
-   另外 `Downloader` trait 未暴露 `getSpeedLimiter` / `setSpeedLimiter`，故 `active-monitoring` 的
-   24 小时滑动窗口限速只计算不落地（上游该功能默认关闭，默认配置下无差异）。
+2. **GeoIP 数据库自动更新已移植**：`pbh-core::geoip_update` 三镜像轮换下载 + XZ 解压 +
+   45 天 mtime 间隔 + 校验后原子替换，在 `GeoIpDb::load` 之前接线（对齐上游「先 updateMMDB 再 loadMMDB」）；
+   `auto-update: false`（默认）⇒ 严格 no-op。数据库缺失/损坏或 `pbh.forceDisableIPDB` 时
+   四个维度全部不命中（对齐上游无库行为）。
+3. **AutoSTUN 次要能力已移植**：UDP NAT 类型探测（对齐 cdnbye/上游 `StunManager`，仅 WebUI/遥测展示）
+   与 TCP 转发器 + 端口保活 + 友好回环映射绑定均已实现；`enabled: false`（默认）⇒ 严格 no-op。
+   上传限速已落地：`Downloader` trait 暴露 `getSpeedLimiter` / `setSpeedLimiter`，
+   `active-monitoring` 的滑动窗口限速在 `enabled: true` 时真正下发（默认关闭，默认配置下无差异）。
 4. **`expression-engine` 语法翻译表已补全**：rhai 引擎与返回值语义已对齐
    `ScriptEngineManager.handleResult`；AviatorScript → rhai 的 API 映射、字段表、语法对照与迁移示例
    见 `docs/expression-engine-migration.md`。

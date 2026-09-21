@@ -26,3 +26,6 @@ lzma-rs = "0.3"
 # 上游用 OkHttp 下载 mmdb（connect 15s / read+call 3min、跟随重定向）；这里用阻塞式 reqwest 对齐。
 # 仅阻塞 API（`blocking`），调用方须在非 async 线程上运行（见模块文档）。
 reqwest = { workspace = true, features = ["blocking"] }
+# AutoSTUN TCP 转发器 / 端口保活需要「先 bind 再 connect」（上游 StunSocketTool.getSocket() + bind）。
+# std::net 不提供该能力，用 socket2 实现（已是锁文件中的传递依赖，无新增下载）。
+socket2 = "0.6"
