@@ -77,7 +77,7 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
   （默认）时严格直通、不发起任何网络请求
 - [x] **告警推送**：9 个渠道（PushPlus / ServerChan / SMTP / Telegram / Bark / PushDeer /
       Gotify / Ntfy / Webhook），支持 `body-template`、自定义请求头与 Markdown 渲染
-- [x] 下载器抽象 `Downloader` trait
+- [x] 下载器抽象 `Downloader` trait（含 `getSpeedLimiter()` / `setSpeedLimiter()` 限速接口，六个适配器按上游端点实现，`traffic-sliding-capping` 现已真正下发）
 - [x] **Transmission 适配器**（>= 4.1.0）：JSON-RPC + 409 会话握手、blocklist 指向 PBH 自身端点、
       `completedSize = sizeWhenDone * percentDone`、base64 `peer_id` → ISO-8859-1、
       peers 复用 `torrent-get` 响应、强制全量封禁路径（无 `RANGE_BAN_IP`）
@@ -160,8 +160,9 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 
 > **已知缺口（非静默省略）**：① BTN 传输层（握手/abilities/PoW/缓存）与 BTN 脚本规则未移植；
 > ② GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）未移植，只读已存在的数据库文件；
-> ③ AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活未移植，上传限速下发
-> （`getSpeedLimiter`/`setSpeedLimiter`）因 `Downloader` trait 未暴露该接口而只计算不落地。
+> ③ AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活未移植。
+> 上传限速下发（`getSpeedLimiter`/`setSpeedLimiter`）已落地：六个适配器按上游端点实现，
+> `traffic-sliding-capping` 在 `enabled: true` 时真正下发。
 > 全部缺口清单见 PLAN.md「Phase 1.7」。
 
 ### 路线图（后续阶段，见 PLAN.md / SPEC.md §9）

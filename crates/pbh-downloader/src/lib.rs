@@ -79,4 +79,30 @@ pub trait Downloader: Send + Sync {
     fn ban_peers<'a>(&'a self, peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>>;
     fn replace_banned_ips<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>>;
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>>;
+
+    /// 读取当前限速，返回 `(upload, download)`。
+    ///
+    /// 对齐 Java `Downloader#getSpeedLimiter()`（返回 `DownloaderSpeedLimiter(upload, download)`）：
+    /// - 单位统一为 **bytes/s**。各适配器负责与自己的原生单位换算，并在实现处注明
+    ///   （qB / BiglyBT / BitComet / Aria2 原生即 bytes/s；Transmission 用 KB/s ×1024，
+    ///   Deluge 用 KiB/s ×1024）。
+    /// - `<= 0` 表示「不限制」（对齐 `DownloaderSpeedLimiter.isUploadUnlimited()` /
+    ///   `isDownloadUnlimited()`：`<= 0` 即无限制）。Transmission / Aria2 在读取时会按
+    ///   各自上游逻辑把「未启用限速」映射为 `0`。
+    /// - Java 用 `null` 表达「不支持限速或请求失败」（调用方 `ActiveMonitoringModule`
+    ///   据此 `continue` 跳过该下载器）；本移植用 `Err` 表达同一语义：调用方
+    ///   （`pbh::monitor::collect_traffic_stats`）记日志后按 `None` 处理，行为等价。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>>;
+
+    /// 设置当前限速（`upload` / `download`，单位 **bytes/s**，`<= 0` 表示不限制）。
+    ///
+    /// 对齐 Java `Downloader#setSpeedLimiter(DownloaderSpeedLimiter)`：各适配器在自己的
+    /// 原生单位与 bytes/s 之间换算，并把「不限制」翻译成对应后端的表达
+    /// （qB / Deluge / BitComet / Aria2 用 0，Transmission 用 `*-enabled = false`，
+    /// BiglyBT 原样透传）。失败语义逐适配器对齐上游（有的抛错、有的只记日志）。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>>;
 }

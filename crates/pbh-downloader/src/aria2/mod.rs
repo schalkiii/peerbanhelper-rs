@@ -77,6 +77,12 @@ const M_TELL_STOPPED: &str = "aria2.tellStopped";
 const M_GET_PEERS: &str = "aria2.getPeers";
 /// Aria2Next 的封禁列表扩展（aria2 原生没有封禁 API）。
 const M_SET_BT_PEER_BLOCKLIST: &str = "aria2.setBtPeerBlocklist";
+/// 对齐 `getSpeedLimiter()`：`aria2.getGlobalOption`（单位 bytes/s，字符串值）。
+#[cfg(test)]
+const M_GET_GLOBAL_OPTION: &str = "aria2.getGlobalOption";
+/// 对齐 `setSpeedLimiter(...)`：`aria2.changeGlobalOption`。
+#[cfg(test)]
+const M_CHANGE_GLOBAL_OPTION: &str = "aria2.changeGlobalOption";
 
 /// `Aria2Next.login0()` 要求的产品名（仅 Aria2Next 分支返回该值）。
 const PRODUCT_ARIA2_NEXT: &str = "aria2-next";
@@ -567,6 +573,49 @@ impl Downloader for Aria2Downloader {
         })
     }
 
+    /// 对齐 `Aria2Next.getSpeedLimiter()`：`aria2.getGlobalOption`，单位 **bytes/s**（字符串形式）。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let opts: HashMap<String, String> = self
+                .send_rpc_request("aria2.getGlobalOption", Vec::new())
+                .await?;
+            let upload = opts
+                .get("max-overall-upload-limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let download = opts
+                .get("max-overall-download-limit")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            Ok((upload, download))
+        })
+    }
+
+    /// 对齐 `Aria2Next.setSpeedLimiter(...)`：`aria2.changeGlobalOption`，
+    /// 负载 `{"max-overall-upload-limit": ..., "max-overall-download-limit": ...}`（字符串；0 = 不限制）。
+    /// 返回非 `OK` → 抛错。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let result: String = self
+                .send_rpc_request(
+                    "aria2.changeGlobalOption",
+                    vec![serde_json::json!({
+                        "max-overall-upload-limit": upload.to_string(),
+                        "max-overall-download-limit": download.to_string(),
+                    })],
+                )
+                .await?;
+            if !result.eq_ignore_ascii_case("OK") {
+                anyhow::bail!("Aria2Next setSpeedLimiter returned non-OK result: {result}");
+            }
+            Ok(())
+        })
+    }
+
     /// 对齐 `getStatistics()`：Aria2Next **未覆写**，沿用 `AbstractDownloader` 的
     /// `new DownloaderStatistics(0, 0)`（不发起任何 RPC）。
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
@@ -916,6 +965,10 @@ mod tests {
         blocklist: Mutex<(u16, String)>,
         /// 为 true 时所有请求都返回传输层错误
         transport_error: Mutex<bool>,
+        /// 对齐 `getSpeedLimiter()`：`aria2.getGlobalOption` 的返回值。
+        global_option: Mutex<(u16, String)>,
+        /// 对齐 `setSpeedLimiter(...)`：`aria2.changeGlobalOption` 的返回值（一般为 "OK"）。
+        set_global_option: Mutex<(u16, String)>,
     }
 
     impl Aria2Mock {
@@ -932,6 +985,15 @@ mod tests {
                     ok(r#"{"disconnectedPeers":0,"removedPeers":1,"revision":3,"ruleCount":2}"#),
                 )),
                 transport_error: Mutex::new(false),
+                global_option: Mutex::new((
+                    200,
+                    r#"{"result":{"max-overall-upload-limit":"1048576","max-overall-download-limit":"2097152"}}"#
+                        .to_string(),
+                )),
+                set_global_option: Mutex::new((
+                    200,
+                    r#"{"result":"OK"}"#.to_string(),
+                )),
             })
         }
 
@@ -974,6 +1036,8 @@ mod tests {
                     M_TELL_STOPPED => self.stopped.lock().unwrap().clone(),
                     M_GET_PEERS => self.peers.lock().unwrap().clone(),
                     M_SET_BT_PEER_BLOCKLIST => self.blocklist.lock().unwrap().clone(),
+                    M_GET_GLOBAL_OPTION => self.global_option.lock().unwrap().clone(),
+                    M_CHANGE_GLOBAL_OPTION => self.set_global_option.lock().unwrap().clone(),
                     other => (404, rpc_error(-32601, &format!("unknown method {other}"))),
                 };
                 Ok(HttpResponse::new(status, response))
@@ -1226,6 +1290,25 @@ mod tests {
         // 夹具是合法的 JSON 对象 → 反序列化 `Vec<A2Task>` 失败 → 与上游异常路径等价
         let torrents = dl.fetch_all_torrents().await;
         assert_eq!(torrents.len(), 2, "只保留 tellActive 的结果");
+    }
+
+    #[tokio::test]
+    async fn speed_limiter_get_and_set() {
+        let mock = Aria2Mock::new();
+        *mock.global_option.lock().unwrap() = (
+            200,
+            r#"{"result":{"max-overall-upload-limit":"1048576","max-overall-download-limit":"2097152"}}"#
+                .to_string(),
+        );
+        *mock.set_global_option.lock().unwrap() = (200, r#"{"result":"OK"}"#.to_string());
+        let dl = downloader(mock.clone());
+        // 对齐 `getSpeedLimiter()`：aria2.getGlobalOption 字符串值解析为 bytes/s
+        let (up, dl_) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!(up, 1_048_576);
+        assert_eq!(dl_, 2_097_152);
+        // 对齐 `setSpeedLimiter(...)`：aria2.changeGlobalOption 返回 "OK"
+        dl.set_speed_limiter(0, 0).await.unwrap();
+        assert_eq!(mock.methods(), vec![M_GET_GLOBAL_OPTION, M_CHANGE_GLOBAL_OPTION]);
     }
 
     #[tokio::test]

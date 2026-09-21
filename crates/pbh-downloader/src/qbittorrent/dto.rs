@@ -90,3 +90,17 @@ pub struct MainData {
     #[serde(default, rename = "server_state")]
     pub server_state: Option<ServerState>,
 }
+
+/// `GET /api/v2/app/preferences` 的所需子集（对齐 `QBittorrentPreferences` 的限速字段）。
+///
+/// 上游字段是装箱 `Long`：qB 未返回该键时 Java 在 `getDlLimit()` 处 NPE
+/// （被 `catch (Exception e) { throw new IllegalStateException(e); }` 包成异常）。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct QBittorrentPreferences {
+    /// 上传限速，单位 bytes/s，0 = 不限制
+    #[serde(default, rename = "up_limit")]
+    pub up_limit: Option<i64>,
+    /// 下载限速，单位 bytes/s，0 = 不限制
+    #[serde(default, rename = "dl_limit")]
+    pub dl_limit: Option<i64>,
+}

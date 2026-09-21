@@ -26,6 +26,10 @@ pub const IP_FILTER_UPLOAD: &str = "/api/config/ipfilter/upload";
 pub const TASK_UNBAN_PEERS: &str = "/api/task/peers/unban_peers";
 /// `BCEndpoint.GET_STATISTICS_LIST`
 pub const GET_STATISTICS_LIST: &str = "/api/statistics_list/get";
+/// `BCEndpoint.GET_CONNECTION_CONFIG`
+pub const GET_CONNECTION_CONFIG: &str = "/api/config/connection_config/get";
+/// `BCEndpoint.SET_CONNECTION_CONFIG`
+pub const SET_CONNECTION_CONFIG: &str = "/api/config/connection_config/set";
 
 /// 对齐 `BCLoginResponse`。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -257,4 +261,24 @@ pub struct BCPeer {
     pub peer_id: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+}
+
+/// 对齐 `BCConnectionConfigResponse`（`GET_CONNECTION_CONFIG` 的返回）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BCConnectionConfigResponse {
+    #[serde(default, rename = "error_code")]
+    pub error_code: Option<String>,
+    #[serde(default, rename = "error_message")]
+    pub error_message: Option<String>,
+    #[serde(default, rename = "connection_config")]
+    pub connection_config: Option<BCConnectionConfig>,
+}
+
+/// 对齐 `BCConnectionConfigResponse.ConnectionConfigDTO`。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BCConnectionConfig {
+    #[serde(default, rename = "max_upload_speed")]
+    pub max_upload_speed: Option<i64>,
+    #[serde(default, rename = "max_download_speed")]
+    pub max_download_speed: Option<i64>,
 }

@@ -533,6 +533,37 @@ impl Downloader for BiglyBtDownloader {
         Box::pin(async move { self.set_ban_list_full(ips).await })
     }
 
+    /// 对齐 `BiglyBT.getSpeedLimiter()`：`GET /speedlimiter`（单位 **bytes/s**）。
+    /// 非 2xx 或解析失败 → 返回 `Err`（调用方 `ActiveMonitoringModule` 据此跳过本下载器）。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let resp = self.get("/speedlimiter").await?;
+            if resp.status != 200 {
+                anyhow::bail!("BiglyBT getSpeedLimiter failed with status {}", resp.status);
+            }
+            let parsed: CurrentSpeedLimiterBean = serde_json::from_str(&resp.body)
+                .map_err(|e| anyhow::anyhow!("BiglyBT getSpeedLimiter parse error: {e}"))?;
+            Ok((parsed.upload, parsed.download))
+        })
+    }
+
+    /// 对齐 `BiglyBT.setSpeedLimiter(...)`：`POST /speedlimiter`，负载 `SetSpeedLimiterBean`（单位 bytes/s）。
+    /// 非 2xx → 返回 `Err`。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let body = serde_json::to_string(&SetSpeedLimiterBean { upload, download })?;
+            let resp = self.post_json("/speedlimiter", body).await?;
+            if resp.status != 200 {
+                anyhow::bail!("BiglyBT setSpeedLimiter failed with status {}", resp.status);
+            }
+            Ok(())
+        })
+    }
+
     /// 对齐 `BiglyBT.getStatistics()`；失败时对齐调用方语义（记日志 + 返回 0，不抛错）。
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
         Box::pin(async move {
@@ -884,6 +915,7 @@ mod tests {
     /// 插件 HTTP API 的内存实现：按路径返回夹具并记录收到的请求。
     struct BiglyBtMock {
         requests: Mutex<Vec<Recorded>>,
+        speedlimiter: Mutex<(u16, String)>,
         metadata: Mutex<(u16, String)>,
         downloads: Mutex<(u16, String)>,
         peers: Mutex<(u16, String)>,
@@ -897,6 +929,7 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
+                speedlimiter: Mutex::new((200, r#"{"upload":1048576,"download":2097152}"#.to_string())),
                 metadata: Mutex::new((200, METADATA.to_string())),
                 downloads: Mutex::new((200, DOWNLOADS.to_string())),
                 peers: Mutex::new((200, PEERS.to_string())),
@@ -943,6 +976,8 @@ mod tests {
                     (*self.bans_status.lock().unwrap(), "{}".to_string())
                 } else if req.url.ends_with("/setconnector") {
                     (200, "{}".to_string())
+                } else if req.url.ends_with("/speedlimiter") {
+                    self.speedlimiter.lock().unwrap().clone()
                 } else {
                     (404, String::new())
                 };
@@ -1098,6 +1133,20 @@ mod tests {
         let torrents = dl.fetch_torrents().await.unwrap();
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].hash, "1111111111111111111111111111111111111111");
+    }
+
+    #[tokio::test]
+    async fn speed_limiter_get_and_set() {
+        let mock = BiglyBtMock::new();
+        let dl = downloader(mock.clone(), false);
+        // 对齐 `setSpeedLimiter(...)`：POST /speedlimiter（先调用，使首个 /speedlimiter 请求为 POST）
+        dl.set_speed_limiter(0, 0).await.unwrap();
+        let req = mock.request("/speedlimiter");
+        assert_eq!(req.method, "POST");
+        // 对齐 `getSpeedLimiter()`：GET /speedlimiter（bytes/s）
+        let (up, dl_) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!(up, 1_048_576);
+        assert_eq!(dl_, 2_097_152);
     }
 
     #[tokio::test]

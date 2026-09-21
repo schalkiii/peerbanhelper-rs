@@ -207,8 +207,11 @@
       只读取已存在的数据库文件
 - [ ] **AutoSTUN 次要能力**：`StunManager` 的 UDP NAT 类型探测（仅 WebUI/遥测展示）、
       TCP 转发器与端口保活、友好回环映射的监听绑定未移植
-- [ ] **上传限速下发**：`Downloader` trait 未暴露 `getSpeedLimiter()` / `setSpeedLimiter()`，
-      `traffic-sliding-capping` 只计算不落地（上游默认关闭该功能，默认配置下无行为差异）
+- [x] **上传限速下发**：`Downloader` trait 已暴露 `getSpeedLimiter()` / `setSpeedLimiter()`（bytes/s，<=0 为不限制），
+      六个适配器（qBittorrent / Transmission / Deluge / BiglyBT / BitComet / Aria2Next）均按上游端点实现；
+      `traffic-sliding-capping` 现已真正下发：`run_scheduled` 在 `on_tick` 算出新限速后调用 `set_speed_limiter`，
+      `collect_traffic_stats` 取当前限速（不支持的下载器对齐上游 `getSpeedLimiter() == null` ⇒ 跳过）。
+      上游默认关闭该功能，默认配置下无行为差异
 - [ ] **流量阈值告警的推送通道**：`active-monitoring` 的 `traffic-monitoring.daily` 超阈值告警
       已落 `alert` 表并由 `/api/alerts` 暴露（等价上游 `publishAlert` 的落库部分），但**没有**
       走 `push:` 渠道（上游 `AlertManagerImpl.publishAlert(push=true, …)` 会同时推送）。
@@ -226,6 +229,13 @@
 > （`alert` / `torrents` / `traffic_journal_v3` / `peer_connection_metrics(_track)` /
 > `peer_records` / `tracked_swarm`）与上游唯一索引，`curl` 三个新端点返回预期 JSON
 > （`{"trackedSwarmSize":0}`、`{page,size,total,results}`、`{success:true,data:[]}`）。
+
+> 验证记录（2026-09-21，缺口④ 上传限速下发）：`cargo test --workspace` **417 个测试全部通过**
+> （pbh-downloader 79：新增 3 个限速方法单测——aria2 `get/changeGlobalOption` 解析、biglybt `GET/POST /speedlimiter`、
+> bitcomet `GET/SET_CONNECTION_CONFIG`；上游默认 `traffic-sliding-capping.enabled: false`，默认配置下无行为差异）；
+> 六个适配器 `get_speed_limiter` / `set_speed_limiter` 按上游端点实现，pbh `monitor.rs` 在 `run_scheduled`
+> 把 `on_tick` 算出的 `SpeedLimitChange` 下发到 `set_speed_limiter`，`collect_traffic_stats` 填当前限速快照；
+> `cargo clippy --workspace --all-targets` 零告警。
 
 > 验证记录（本轮接线）：`cargo test --workspace` **368 个测试全部通过**
 > （pbh-core 163、pbh 38、pbh-db 4、pbh-web 4、pbh-downloader 76、黄金测试 83）；

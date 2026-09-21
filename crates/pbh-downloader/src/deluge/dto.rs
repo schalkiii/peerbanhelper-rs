@@ -76,3 +76,17 @@ pub struct SessionTotals {
     #[serde(default, rename = "total_payload_download")]
     pub total_payload_download: Option<i64>,
 }
+
+/// `core.get_config` 的所需子集（对齐 `ConfigResponse.ConfigRequestDTO`）。
+///
+/// 字段为装箱 `Long`：缺失时上游在 `getMaxDownloadSpeed()` 处 NPE（`catch (DelugeException)`
+/// 覆盖不到，异常继续上抛），本实现按错误处理。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CoreConfig {
+    /// 下载限速，单位为 **KiB/s**（上游读取后 ×1024 转 bytes/s）
+    #[serde(default, rename = "max_download_speed")]
+    pub max_download_speed: Option<i64>,
+    /// 上传限速，单位为 **KiB/s**
+    #[serde(default, rename = "max_upload_speed")]
+    pub max_upload_speed: Option<i64>,
+}

@@ -19,11 +19,13 @@
 //! `Database`，五张表逐条对齐上游）；测试可用 pbh-core 的 `InMemoryMonitorSink`。
 //! WebUI 的监控视图（`/api/modules/swarm-tracking`、`/api/alerts`）由 `pbh-web` 直接读库。
 //!
-//! ## 已知缺口（非静默省略）
+//! ## 限速落地
 //!
-//! **时长/限速回落缺失**：`Downloader` trait 未暴露 `getSpeedLimiter()` /
-//! `setSpeedLimiter()`，故 `traffic-sliding-capping` 的滑动窗口限速在本移植中
-//! 与上游「`getSpeedLimiter() == null` ⇒ `continue`」同义：只计算不落地。
+//! `Downloader` trait 已暴露 `getSpeedLimiter()` / `setSpeedLimiter()`（bytes/s，<=0 为不限制），
+//! 六个适配器均按上游端点实现。`traffic-sliding-capping` 的滑动窗口限速现已**真正下发**：
+//! [`collect_traffic_stats`] 取当前限速、[`MonitorHost::run_scheduled`] 在
+//! [`ActiveMonitoringModule::on_tick`] 算出新限速后调用 `set_speed_limiter` 落地。
+//! 未实现限速（返回 `Err`）的下载器对齐上游 `getSpeedLimiter() == null` ⇒ 跳过。
 //! 上游默认关闭该功能（`traffic-sliding-capping.enabled: false`），默认配置下无行为差异。
 
 use pbh_core::config::ProfileConfig;
@@ -31,7 +33,7 @@ use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::RuleModule;
 use pbh_core::modules::{
     ActiveMonitoringModule, DownloaderTrafficStats, MonitorSink, PeerRecordingServiceModule,
-    SessionAnalyseServiceModule, SpeedLimitChange, SwarmTrackingModule,
+    SessionAnalyseServiceModule, SpeedLimiter, SpeedLimitChange, SwarmTrackingModule,
 };
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -175,9 +177,25 @@ impl MonitorHost {
                 changes = active.on_tick(&stats, now_ms);
                 for change in &changes {
                     info!(
-                        "active-monitoring: 下载器 {} 上传限速调整为 {} bytes/s",
-                        change.downloader_name, change.limiter.upload
+                        "active-monitoring: 下载器 {} 上传限速调整为 {} bytes/s（下载 {} bytes/s）",
+                        change.downloader_name, change.limiter.upload, change.limiter.download
                     );
+                    // 对齐 `downloader.setSpeedLimiter(...)`：把滑动窗口算出的新限速真正下发。
+                    // 找不到匹配下载器或下发失败都只记日志，不影响其它下载器。
+                    if let Some(entry) =
+                        entries.iter().find(|e| e.downloader.id() == change.downloader_id)
+                    {
+                        if let Err(e) = entry
+                            .downloader
+                            .set_speed_limiter(change.limiter.upload, change.limiter.download)
+                            .await
+                        {
+                            warn!(
+                                "active-monitoring: 下载器 {} 限速下发失败: {e}",
+                                change.downloader_id
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -259,7 +277,8 @@ impl MonitorHost {
 /// 对齐 `updateTrafficStatus()` 的取值口径：
 /// `login()` 失败（抛异常或不 success）→ 跳过；`getStatistics()` 抛异常 → 记日志并跳过。
 ///
-/// `getSpeedLimiter()` 在本移植未暴露（见模块文档的已知缺口 2），固定为 `None`；
+/// `getSpeedLimiter()` 在支持限速的下载器上取当前上传/下载限速；返回 `Err`（未实现/不支持）
+/// 时对齐上游 `getSpeedLimiter() == null` ⇒ 该下载器不参与滑动窗口限速；
 /// 特性标志按上游 `DownloaderFeatureFlag.TRAFFIC_STATS` 的名字比较。
 pub async fn collect_traffic_stats(entries: &[DownloaderEntry]) -> Vec<DownloaderTrafficStats> {
     let mut stats = Vec::with_capacity(entries.len());
@@ -286,13 +305,24 @@ pub async fn collect_traffic_stats(entries: &[DownloaderEntry]) -> Vec<Downloade
             .feature_flags()
             .iter()
             .any(|flag| flag == "TRAFFIC_STATS");
+        // `getSpeedLimiter()`：未实现（返回 Err）的下载器对齐上游 `getSpeedLimiter() == null` ⇒ 跳过限速。
+        let speed_limiter = match downloader.get_speed_limiter().await {
+            Ok((upload, download)) => Some(SpeedLimiter { upload, download }),
+            Err(e) => {
+                debug!(
+                    "active-monitoring: 下载器 {} 不支持 getSpeedLimiter，跳过限速: {e}",
+                    downloader.id()
+                );
+                None
+            }
+        };
         stats.push(DownloaderTrafficStats::new(
             downloader.id(),
             downloader.name(),
             true,
             statistics.all_time_download,
             statistics.all_time_upload,
-            None,
+            speed_limiter,
             traffic_stats_feature,
         ));
     }

@@ -176,3 +176,19 @@ pub struct BanListReplacementBean {
     #[serde(rename = "includeNonPBHEntries")]
     pub include_non_pbh_entries: bool,
 }
+
+/// `GET /speedlimiter` 响应（上游 `CurrentSpeedLimiterBean`，字段为原始 `long`）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CurrentSpeedLimiterBean {
+    #[serde(default)]
+    pub upload: i64,
+    #[serde(default)]
+    pub download: i64,
+}
+
+/// `POST /speedlimiter` 请求体（上游 `SetSpeedLimiterBean`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct SetSpeedLimiterBean {
+    pub upload: i64,
+    pub download: i64,
+}

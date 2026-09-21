@@ -38,6 +38,13 @@ const MUST_HAVE_METHODS: [&str; 4] = [
 
 const M_AUTH_LOGIN: &str = "auth.login";
 const M_LIST_METHODS: &str = "system.listMethods";
+/// 对齐 `DelugeServer.getConfig()` 的 `core.get_config`
+const M_GET_CONFIG: &str = "core.get_config";
+/// 对齐 `DelugeServer.setConfig()` 的 `core.set_config`
+const M_SET_CONFIG: &str = "core.set_config";
+
+/// Deluge 的 `max_upload_speed` / `max_download_speed` 单位是 **KiB/s**（上游 ×1024 转 bytes/s）。
+const SPEED_LIMIT_UNIT: i64 = 1024;
 /// 活跃 torrent + peers（一次调用取全部）
 const M_ACTIVE_TORRENTS: &str = "peerbanhelperadapter.get_active_torrents_info";
 const M_BAN_IPS: &str = "peerbanhelperadapter.ban_ips";
@@ -417,6 +424,61 @@ impl Downloader for DelugeDownloader {
             })
         })
     }
+
+    /// 对齐 `Deluge.getSpeedLimiter()`：`core.get_config`，`max_upload_speed` /
+    /// `max_download_speed`（**KiB/s**）×1024 -> bytes/s。
+    ///
+    /// 失败语义：`DelugeException` 时上游记日志并返回 `null`（调用方跳过）-> 本实现记同一
+    /// 文案日志后返回 `Err`；`config` 或其限速字段缺失在上游是 NPE（不在 catch 范围内，继续
+    /// 上抛）-> 本实现同样返回 `Err`。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let result = match self.call(M_GET_CONFIG, Vec::new()).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log_api_error(&e);
+                    anyhow::bail!("core.get_config failed: {e}");
+                }
+            };
+            let config: CoreConfig = serde_json::from_value(result).map_err(|e| {
+                anyhow::anyhow!("NullPointerException: core.get_config result is null: {e}")
+            })?;
+            let download_limit = config
+                .max_download_speed
+                .ok_or_else(|| anyhow::anyhow!("NullPointerException: max_download_speed is null"))?
+                * SPEED_LIMIT_UNIT;
+            let upload_limit = config
+                .max_upload_speed
+                .ok_or_else(|| anyhow::anyhow!("NullPointerException: max_upload_speed is null"))?
+                * SPEED_LIMIT_UNIT;
+            Ok((upload_limit, download_limit))
+        })
+    }
+
+    /// 对齐 `Deluge.setSpeedLimiter()`：`core.set_config`，载荷是
+    /// `ConfigRequest.toRequestJSON()` 的一个对象参数（键序 `max_download_speed` 后
+    /// `max_upload_speed`）；bytes/s 整除 1024 换成 **KiB/s**，`<= 0` 即
+    /// `isUploadUnlimited()` / `isDownloadUnlimited()` 写 0（Deluge 的「不限制」）。
+    ///
+    /// 失败语义：上游 `catch (DelugeException)` 只记日志，不抛错 -> 本实现同样返回 `Ok(())`。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let upload_limit = if upload <= 0 { 0 } else { upload / SPEED_LIMIT_UNIT };
+            let download_limit = if download <= 0 { 0 } else { download / SPEED_LIMIT_UNIT };
+            let config = json!({
+                "max_download_speed": download_limit,
+                "max_upload_speed": upload_limit,
+            });
+            if let Err(e) = self.call(M_SET_CONFIG, vec![config]).await {
+                log_api_error(&e);
+            }
+            Ok(())
+        })
+    }
 }
 
 impl DelugeDownloader {
@@ -595,6 +657,8 @@ mod tests {
         pub rpc_error: Mutex<bool>,
         /// `get_active_torrents_info` 的 result
         pub active_torrents: Mutex<String>,
+        /// `core.get_config` 的 result（Deluge 的单位是 KiB/s）
+        pub core_config: Mutex<Value>,
     }
 
     impl DelugeMock {
@@ -605,6 +669,10 @@ mod tests {
                 login_ok: Mutex::new(true),
                 rpc_error: Mutex::new(false),
                 active_torrents: Mutex::new(ACTIVE_TORRENTS.to_string()),
+                core_config: Mutex::new(json!({
+                    "max_download_speed": 2048,
+                    "max_upload_speed": 1024,
+                })),
             })
         }
 
@@ -656,6 +724,20 @@ mod tests {
                             rpc_err(&id, "adapter failed")
                         } else {
                             rpc_ok(&id, self.active_torrents.lock().unwrap().parse().unwrap())
+                        }
+                    }
+                    M_GET_CONFIG => {
+                        if failed {
+                            rpc_err(&id, "adapter failed")
+                        } else {
+                            rpc_ok(&id, self.core_config.lock().unwrap().clone())
+                        }
+                    }
+                    M_SET_CONFIG => {
+                        if failed {
+                            rpc_err(&id, "adapter failed")
+                        } else {
+                            rpc_ok(&id, json!(true))
                         }
                     }
                     M_BAN_IPS | M_REPLACE_BLOCKLIST => {
@@ -893,6 +975,62 @@ mod tests {
         // torrents 失败同样返回空列表
         let torrents = deluge.fetch_torrents().await.unwrap();
         assert!(torrents.is_empty());
+    }
+
+    /// 读取：`core.get_config` 的 KiB/s ×1024 -> bytes/s。
+    #[tokio::test]
+    async fn speed_limiter_is_read_in_kib() {
+        let mock = DelugeMock::new();
+        let deluge = mock_downloader(mock.clone());
+        let (upload, download) = deluge.get_speed_limiter().await.unwrap();
+        assert_eq!(upload, 1_048_576, "1024 KiB/s -> 1 MiB/s");
+        assert_eq!(download, 2_097_152, "2048 KiB/s -> 2 MiB/s");
+        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_GET_CONFIG]);
+        assert_eq!(mock.params_of(M_GET_CONFIG), json!([]));
+    }
+
+    /// 下发 1 MiB/s：bytes/s ÷ 1024 -> KiB/s，载荷是 `ConfigRequest.toRequestJSON()` 的一个对象参数。
+    #[tokio::test]
+    async fn speed_limiter_is_written_in_kib() {
+        let mock = DelugeMock::new();
+        let deluge = mock_downloader(mock.clone());
+        deluge.set_speed_limiter(1_048_576, 2_097_152).await.unwrap();
+        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_SET_CONFIG]);
+        assert_eq!(
+            mock.params_of(M_SET_CONFIG),
+            json!([{ "max_download_speed": 2048, "max_upload_speed": 1024 }])
+        );
+
+        // 不限制：`isUploadUnlimited()` / `isDownloadUnlimited()`（<= 0）-> 0
+        let mock = DelugeMock::new();
+        let deluge = mock_downloader(mock.clone());
+        deluge.set_speed_limiter(0, -1).await.unwrap();
+        assert_eq!(
+            mock.params_of(M_SET_CONFIG),
+            json!([{ "max_download_speed": 0, "max_upload_speed": 0 }])
+        );
+    }
+
+    /// 失败路径：RPC 失败时读取报错（上游返回 null）、下发只记日志；
+    /// `config` 缺字段等价上游 NPE（同样报错）。
+    #[tokio::test]
+    async fn speed_limiter_failure_semantics_follow_upstream() {
+        let mock = DelugeMock::new();
+        *mock.rpc_error.lock().unwrap() = true;
+        let deluge = mock_downloader(mock);
+        assert!(deluge.get_speed_limiter().await.is_err());
+        assert!(deluge.set_speed_limiter(1_048_576, 2_097_152).await.is_ok());
+
+        let mock = DelugeMock::new();
+        *mock.core_config.lock().unwrap() = json!({ "max_upload_speed": 1024 });
+        let deluge = mock_downloader(mock);
+        let err = deluge.get_speed_limiter().await.unwrap_err();
+        assert!(err.to_string().contains("max_download_speed"), "{err}");
+
+        let mock = DelugeMock::new();
+        *mock.core_config.lock().unwrap() = Value::Null;
+        let deluge = mock_downloader(mock);
+        assert!(deluge.get_speed_limiter().await.is_err());
     }
 
     #[tokio::test]

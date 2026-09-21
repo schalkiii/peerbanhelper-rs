@@ -804,6 +804,72 @@ impl Downloader for BitCometDownloader {
         })
     }
 
+    /// 对齐 `BitComet.getSpeedLimiter()`：`POST /api/config/connection_config/get`（单位 **bytes/s**）。
+    /// 上游异常时返回 `null` ⇒ 调用方跳过；这里返回 `Err` 等价。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let resp = match self.post_authed(GET_CONNECTION_CONFIG, "{}".to_string()).await {
+                Ok(resp) => resp,
+                Err(e) => return Err(e),
+            };
+            if !is_success(resp.status) {
+                anyhow::bail!("BitComet getSpeedLimiter failed with status {}", resp.status);
+            }
+            let parsed: BCConnectionConfigResponse = serde_json::from_str(&resp.body)
+                .map_err(|e| anyhow::anyhow!("BitComet getSpeedLimiter parse error: {e}"))?;
+            if parsed
+                .error_code
+                .as_deref()
+                .is_some_and(|c| !c.eq_ignore_ascii_case("ok"))
+            {
+                anyhow::bail!(
+                    "BitComet getSpeedLimiter error: {}",
+                    parsed.error_message.unwrap_or_default()
+                );
+            }
+            let cfg = parsed.connection_config.unwrap_or_default();
+            Ok((
+                cfg.max_upload_speed.unwrap_or(0),
+                cfg.max_download_speed.unwrap_or(0),
+            ))
+        })
+    }
+
+    /// 对齐 `BitComet.setSpeedLimiter(...)`：`POST /api/config/connection_config/set`，
+    /// 负载 `{"connection_config": {"max_upload_speed": ..., "max_download_speed": ...}}`（0 = 不限制）。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let body = serde_json::json!({
+                "connection_config": {
+                    "max_upload_speed": if upload <= 0 { 0 } else { upload },
+                    "max_download_speed": if download <= 0 { 0 } else { download },
+                }
+            })
+            .to_string();
+            let resp = self.post_authed(SET_CONNECTION_CONFIG, body).await?;
+            if !is_success(resp.status) {
+                anyhow::bail!("BitComet setSpeedLimiter failed with status {}", resp.status);
+            }
+            let parsed: BCConfigSetResponse = serde_json::from_str(&resp.body)
+                .map_err(|e| anyhow::anyhow!("BitComet setSpeedLimiter parse error: {e}"))?;
+            if parsed
+                .error_code
+                .as_deref()
+                .is_some_and(|c| !c.eq_ignore_ascii_case("ok"))
+            {
+                anyhow::bail!(
+                    "BitComet setSpeedLimiter error: {}",
+                    parsed.error_message.unwrap_or_default()
+                );
+            }
+            Ok(())
+        })
+    }
+
     /// 对齐 `BitComet.getStatistics()`；失败时对齐上游：`warn` 后抛出。
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
         Box::pin(async move {
@@ -1358,6 +1424,16 @@ mod tests {
                 if url.ends_with(dto::SET_IP_FILTER_CONFIG) {
                     return respond(200, r#"{"error_code":"ok","version":"2.21.5"}"#.to_string());
                 }
+                if url.ends_with(dto::GET_CONNECTION_CONFIG) {
+                    return respond(
+                        200,
+                        r#"{"error_code":"ok","connection_config":{"max_upload_speed":1048576,"max_download_speed":2097152}}"#
+                            .to_string(),
+                    );
+                }
+                if url.ends_with(dto::SET_CONNECTION_CONFIG) {
+                    return respond(200, r#"{"error_code":"ok","version":"2.21.5"}"#.to_string());
+                }
                 if url.ends_with(dto::USER_LOGIN) {
                     let (status, body) = self.login.lock().unwrap().clone();
                     return respond(status, body);
@@ -1704,6 +1780,19 @@ mod tests {
         let torrents = dl.fetch_torrents().await.unwrap();
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].hash, "1111111111111111111111111111111111111111");
+    }
+
+    #[tokio::test]
+    async fn speed_limiter_get_and_set() {
+        let mock = mock_with_version("2.21.5", IPFILTER_OK);
+        let dl = downloader(mock.clone(), false);
+        logged_in(&dl).await;
+        // 对齐 `getSpeedLimiter()`：GET_CONNECTION_CONFIG（bytes/s）
+        let (up, dl_) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!(up, 1_048_576);
+        assert_eq!(dl_, 2_097_152);
+        // 对齐 `setSpeedLimiter(...)`：SET_CONNECTION_CONFIG
+        dl.set_speed_limiter(0, 0).await.unwrap();
     }
 
     #[tokio::test]

@@ -6,12 +6,21 @@ use crate::http::{BoxFuture, HttpFetcher, HttpRequest, HttpResponse, ReqwestFetc
 use crate::{BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult};
 use dto::*;
 use pbh_core::defaults::qb as qbcfg;
+use pbh_core::i18n::{Param, TranslationComponent, Translator};
 use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::remap::{remap_ban_list_address, translate_peer_ip, RemapConfig};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tracing::error;
+
+/// 上游 `Lang` 文案键（`DOWNLOADER_QB_FAILED_SAVE_SPEED_LIMITER` 的 5 个占位参数：
+/// 下载器名 / apiEndpoint / 状态码 / `"HTTP ERROR"` / 响应体）。
+const MSG_QB_FAILED_SAVE_SPEED_LIMITER: &str = "DOWNLOADER_QB_FAILED_SAVE_SPEED_LIMITER";
+
+/// 对齐上游 `tlUI`：下载器不持有 locale，使用服务端默认文案语言。
+const UI_LOCALE: &str = "zh_cn";
 
 #[derive(Clone, Debug)]
 pub struct QBConfig {
@@ -456,6 +465,111 @@ impl Downloader for QBittorrentDownloader {
             })
         })
     }
+
+    /// 对齐 `AbstractQbittorrent.getSpeedLimiter()`：`GET /app/preferences`，
+    /// 单位为 **bytes/s**（qB 原生单位，`0` = 不限制），无需换算。
+    ///
+    /// 失败语义：上游任何异常（含非 2xx 与 `up_limit`/`dl_limit` 缺失导致的 NPE）
+    /// 都被包成 `IllegalStateException` 抛出 -> 本实现返回 `Err`。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let resp = self.get("/app/preferences").await?;
+            if resp.status != 200 {
+                anyhow::bail!("Request failed with code: {}", resp.status);
+            }
+            let preferences: QBittorrentPreferences =
+                serde_json::from_str(&resp.body).unwrap_or_default();
+            // `preferences.getDlLimit()` / `getUpLimit()`（装箱 `Long`，缺失即 NPE）
+            let download_limit = preferences
+                .dl_limit
+                .ok_or_else(|| anyhow::anyhow!("NullPointerException: dl_limit is null"))?;
+            let upload_limit = preferences
+                .up_limit
+                .ok_or_else(|| anyhow::anyhow!("NullPointerException: up_limit is null"))?;
+            Ok((upload_limit, download_limit))
+        })
+    }
+
+    /// 对齐 `AbstractQbittorrent.setSpeedLimiter()`：`POST /app/setPreferences`，表单字段
+    /// `json` 内含 `up_limit` / `dl_limit` / `alt_up_limit` / `alt_dl_limit` 以及
+    /// `limit_utp_rate` / `limit_lan_peers` / `scheduler_enabled` 三个固定开关。
+    ///
+    /// 单位为 **bytes/s**（qB 原生单位）；`isUploadUnlimited()` / `isDownloadUnlimited()`
+    /// 即 `<= 0` 时下发 `0`（qB 的「不限制」）。失败语义同上游：记
+    /// `DOWNLOADER_QB_FAILED_SAVE_SPEED_LIMITER` 日志后抛异常 -> 本实现返回 `Err`。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let upload_limit = if upload <= 0 { 0 } else { upload };
+            let download_limit = if download <= 0 { 0 } else { download };
+            let request_param = serde_json::json!({
+                "up_limit": upload_limit,
+                "dl_limit": download_limit,
+                "alt_up_limit": upload_limit,
+                "alt_dl_limit": download_limit,
+                "limit_utp_rate": true,
+                "limit_lan_peers": true,
+                "scheduler_enabled": false,
+            });
+            let form = self.set_preferences(request_param);
+            let resp = match self.post_form("/app/setPreferences", form).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    error!(
+                        "{}",
+                        tl(
+                            MSG_QB_FAILED_SAVE_SPEED_LIMITER,
+                            vec![
+                                Param::Text(self.config.name.clone()),
+                                Param::Text(self.api_base.clone()),
+                                Param::Text("N/A".to_string()),
+                                Param::Text(exception_params(&e).0),
+                                Param::Text(exception_params(&e).1),
+                            ]
+                        )
+                    );
+                    return Err(e);
+                }
+            };
+            if resp.status != 200 {
+                error!(
+                    "{}",
+                    tl(
+                        MSG_QB_FAILED_SAVE_SPEED_LIMITER,
+                        vec![
+                            Param::Text(self.config.name.clone()),
+                            Param::Text(self.api_base.clone()),
+                            Param::Text(resp.status.to_string()),
+                            Param::Text("HTTP ERROR".to_string()),
+                            Param::Text(resp.body.clone()),
+                        ]
+                    )
+                );
+                // 上游此处文案是 `"Save qBittorrent shadow banlist error: statusCode="`（原文照抄）
+                anyhow::bail!("Save qBittorrent shadow banlist error: statusCode={}", resp.status);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// 对齐上游 `e.getClass().getName()` 与 `e.getMessage()` 两个占位参数。
+///
+/// Rust 无法在运行时取得动态类型名（`dyn Error` 的 `type_name` 只会给出 trait 名），
+/// 故类名位置固定填 `anyhow::Error`，消息位置取错误链根因的 `Display`。
+fn exception_params(e: &anyhow::Error) -> (String, String) {
+    ("anyhow::Error".to_string(), e.root_cause().to_string())
+}
+
+/// 对齐上游 `tlUI` 的渲染入口（下载器不持有 locale，与服务端默认文案语言一致）。
+fn tl(key: &str, params: Vec<Param>) -> String {
+    static TRANSLATOR: OnceLock<Translator> = OnceLock::new();
+    TRANSLATOR
+        .get_or_init(Translator::embedded)
+        .render(&TranslationComponent::with_params(key, params), UI_LOCALE)
 }
 
 fn dedupe_join(items: &[String], sep: &str) -> String {
@@ -501,6 +615,7 @@ pub fn version_at_least(v: &str, major: u32, minor: u32, patch: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
 
     #[test]
     fn version_compare() {
@@ -508,5 +623,181 @@ mod tests {
         assert!(version_at_least("5.2.1", 4, 5, 0));
         assert!(!version_at_least("4.4.9", 4, 5, 0));
         assert!(version_at_least("5.0.0-beta1", 4, 5, 0));
+    }
+
+    /// 被记录到的请求。
+    #[derive(Clone, Debug)]
+    struct Recorded {
+        method: String,
+        url: String,
+        form: Option<Vec<(String, String)>>,
+    }
+
+    impl Recorded {
+        /// 表单字段 `json` 解析后的对象（`setPreferences` 的载荷）。
+        fn json_form(&self) -> Value {
+            let raw = self
+                .form
+                .as_ref()
+                .and_then(|form| form.iter().find(|(k, _)| k == "json"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            serde_json::from_str(&raw).unwrap_or(Value::Null)
+        }
+    }
+
+    /// Web API 的内存实现：`/app/preferences` 返回夹具，`/app/setPreferences` 按状态码返回。
+    struct QbMock {
+        requests: Mutex<Vec<Recorded>>,
+        preferences: Mutex<(u16, String)>,
+        set_preferences_status: Mutex<u16>,
+    }
+
+    impl QbMock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                requests: Mutex::new(Vec::new()),
+                // `up_limit` / `dl_limit` 单位就是 bytes/s
+                preferences: Mutex::new((
+                    200,
+                    json!({ "up_limit": 1_048_576, "dl_limit": 2_097_152 }).to_string(),
+                )),
+                set_preferences_status: Mutex::new(200),
+            })
+        }
+
+        fn requests(&self) -> Vec<Recorded> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn request(&self, suffix: &str) -> Recorded {
+            self.requests()
+                .into_iter()
+                .find(|r| r.url.ends_with(suffix))
+                .unwrap_or_else(|| panic!("未收到以 {suffix} 结尾的请求"))
+        }
+    }
+
+    impl HttpFetcher for QbMock {
+        fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(Recorded {
+                    method: req.method.clone(),
+                    url: req.url.clone(),
+                    form: req.form.clone(),
+                });
+                if req.url.ends_with("/app/preferences") {
+                    let (status, body) = self.preferences.lock().unwrap().clone();
+                    return Ok(HttpResponse::new(status, body));
+                }
+                if req.url.ends_with("/app/setPreferences") {
+                    let status = *self.set_preferences_status.lock().unwrap();
+                    return Ok(HttpResponse::new(status, String::new()));
+                }
+                Ok(HttpResponse::new(404, String::new()))
+            })
+        }
+    }
+
+    fn mock_downloader(mock: Arc<QbMock>) -> Arc<QBittorrentDownloader> {
+        let config = QBConfig {
+            id: "qb-test".into(),
+            name: "qBittorrent Test".into(),
+            endpoint: "http://mock.local".into(),
+            ..QBConfig::default()
+        };
+        Arc::new(
+            QBittorrentDownloader::with_fetcher(
+                config,
+                mock as Arc<dyn HttpFetcher>,
+                Duration::from_secs(65),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// 读取：`GET /api/v2/app/preferences`，单位 bytes/s（无换算）。
+    #[tokio::test]
+    async fn speed_limiter_is_read_from_preferences_in_bytes_per_second() {
+        let mock = QbMock::new();
+        let dl = mock_downloader(mock.clone());
+        let (upload, download) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!(upload, 1_048_576, "up_limit 原样返回（bytes/s）");
+        assert_eq!(download, 2_097_152, "dl_limit 原样返回（bytes/s）");
+
+        let req = mock.request("/app/preferences");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.url, "http://mock.local/api/v2/app/preferences");
+        assert!(req.form.is_none());
+    }
+
+    /// 下发 1 MiB/s：bytes 原样进入 `up_limit` / `dl_limit`（含 alt 与三个固定开关）。
+    #[tokio::test]
+    async fn speed_limiter_is_written_as_bytes_per_second() {
+        let mock = QbMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.set_speed_limiter(1_048_576, 2_097_152).await.unwrap();
+
+        let req = mock.request("/app/setPreferences");
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.url, "http://mock.local/api/v2/app/setPreferences");
+        assert_eq!(
+            req.json_form(),
+            json!({
+                "up_limit": 1_048_576,
+                "dl_limit": 2_097_152,
+                "alt_up_limit": 1_048_576,
+                "alt_dl_limit": 2_097_152,
+                "limit_utp_rate": true,
+                "limit_lan_peers": true,
+                "scheduler_enabled": false,
+            })
+        );
+        // 表单只有一个 `json` 字段（对齐 `FormBody.Builder().add("json", …)`）
+        assert_eq!(req.form.as_ref().map(|f| f.len()), Some(1));
+    }
+
+    /// `<= 0` 即 `isUploadUnlimited()` / `isDownloadUnlimited()` -> 下发 0（qB 的「不限制」）。
+    #[tokio::test]
+    async fn unlimited_speed_limiter_is_written_as_zero() {
+        let mock = QbMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.set_speed_limiter(0, -1).await.unwrap();
+        assert_eq!(
+            mock.request("/app/setPreferences").json_form(),
+            json!({
+                "up_limit": 0,
+                "dl_limit": 0,
+                "alt_up_limit": 0,
+                "alt_dl_limit": 0,
+                "limit_utp_rate": true,
+                "limit_lan_peers": true,
+                "scheduler_enabled": false,
+            })
+        );
+    }
+
+    /// 失败路径：读取非 2xx（上游 `IllegalStateException`）与下发非 2xx（上游记日志后抛异常）。
+    #[tokio::test]
+    async fn speed_limiter_failures_follow_upstream() {
+        let mock = QbMock::new();
+        *mock.preferences.lock().unwrap() = (500, String::new());
+        let dl = mock_downloader(mock.clone());
+        let err = dl.get_speed_limiter().await.unwrap_err();
+        assert!(err.to_string().contains("Request failed with code: 500"), "{err}");
+
+        // `up_limit` / `dl_limit` 缺失等价上游装箱 `Long` 的 NPE（被包成异常）
+        *mock.preferences.lock().unwrap() = (200, "{}".to_string());
+        let err = dl.get_speed_limiter().await.unwrap_err();
+        assert!(err.to_string().contains("dl_limit"), "{err}");
+
+        let mock = QbMock::new();
+        *mock.set_preferences_status.lock().unwrap() = 500;
+        let dl = mock_downloader(mock);
+        let err = dl.set_speed_limiter(1_048_576, 1_048_576).await.unwrap_err();
+        assert!(
+            err.to_string().contains("Save qBittorrent shadow banlist error: statusCode=500"),
+            "{err}"
+        );
     }
 }

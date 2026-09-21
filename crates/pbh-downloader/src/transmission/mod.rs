@@ -18,12 +18,36 @@ use crate::{
 };
 use dto::*;
 use pbh_core::defaults::qb as qbcfg;
+use pbh_core::i18n::{Param, TranslationComponent, Translator};
 use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::remap::RemapConfig;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use tracing::error;
 
 const SESSION_HEADER: &str = "X-Transmission-Session-Id";
+
+/// `RqSessionSet` 里与限速有关的字段（值逐字对齐上游 `@SerializedName`）。
+const SESSION_SET_ALT_SPEED_ENABLED: &str = "alt-speed-enabled";
+const SESSION_SET_ALT_SPEED_TIME_ENABLED: &str = "alt-speed-time-enabled";
+const SESSION_SET_SPEED_LIMIT_DOWN: &str = "speed-limit-down";
+const SESSION_SET_SPEED_LIMIT_DOWN_ENABLED: &str = "speed-limit-down-enabled";
+const SESSION_SET_SPEED_LIMIT_UP: &str = "speed-limit-up";
+const SESSION_SET_SPEED_LIMIT_UP_ENABLED: &str = "speed-limit-up-enabled";
+
+/// `RqSessionGet` 请求的 `fields`（逐字对齐 cordelia `types.Fields` 的常量值：
+/// `downloadLimit` / `downloadLimited` / `uploadLimit` / `uploadLimited`）。
+const SESSION_GET_SPEED_FIELDS: [&str; 4] =
+    ["downloadLimit", "downloadLimited", "uploadLimit", "uploadLimited"];
+
+/// Transmission 的 `speed-limit-*` 单位是 **KB/s**（response 乘 1024 -> bytes/s）。
+const SPEED_LIMIT_UNIT: i64 = 1024;
+
+const MSG_FAILED_RETRIEVE_SPEED_LIMITER: &str = "DOWNLOADER_FAILED_RETRIEVE_SPEED_LIMITER";
+const MSG_FAILED_SET_SPEED_LIMITER: &str = "DOWNLOADER_FAILED_SET_SPEED_LIMITER";
+
+/// 对齐上游 `tlUI`：下载器不持有 locale，使用服务端默认文案语言。
+const UI_LOCALE: &str = "zh_cn";
 const RPC_FIELDS: &[&str] = &[
     "id",
     "hashString",
@@ -402,6 +426,97 @@ impl Downloader for TransmissionDownloader {
             })
         })
     }
+
+    /// 对齐 `Transmission.getSpeedLimiter()`：`session-get` 带
+    /// `fields = [downloadLimit, downloadLimited, uploadLimit, uploadLimited]`，
+    /// 响应的 KB/s 值 **×1024** 转为 bytes/s；对应该方向未启用限速时归零（= 不限制）。
+    ///
+    /// 失败语义：`result != success` 时上游记日志并返回 `null`（调用方跳过）-> 本实现
+    /// 记同一文案日志后返回 `Err`；RPC/传输层异常上游直接抛出 -> 本实现透传 `Err`。
+    fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+        Box::pin(async move {
+            let (result, session) = self
+                .rpc::<SessionGet>(
+                    "session-get",
+                    serde_json::json!({ "fields": SESSION_GET_SPEED_FIELDS }),
+                )
+                .await?;
+            if result != "success" {
+                error!(
+                    "{}",
+                    tl(
+                        MSG_FAILED_RETRIEVE_SPEED_LIMITER,
+                        vec![Param::Text(self.config.name.clone()), Param::Text(result.clone())]
+                    )
+                );
+                anyhow::bail!("session-get 返回 {result}");
+            }
+            // `args.getSpeedLimitDown() * 1024L` / `args.getSpeedLimitUp() * 1024L`
+            let mut download_limit = session.speed_limit_down * SPEED_LIMIT_UNIT;
+            let mut upload_limit = session.speed_limit_up * SPEED_LIMIT_UNIT;
+            if !session.speed_limit_down_enabled {
+                download_limit = 0;
+            }
+            if !session.speed_limit_up_enabled {
+                upload_limit = 0;
+            }
+            Ok((upload_limit, download_limit))
+        })
+    }
+
+    /// 对齐 `Transmission.setSpeedLimiter()`：`session-set` 首字节序固定为
+    /// `alt-speed-enabled` / `alt-speed-time-enabled` / `speed-limit-*`（先 down 后 up），
+    /// 值按 **整数除法** 从 bytes/s 换成 KB/s；`isUploadUnlimited()` / `isDownloadUnlimited()`
+    /// （`<= 0`）时该方向写 `max(1024, 值)/1024`（= 1）并把 `*-enabled` 置 false。
+    ///
+    /// 失败语义：上游只记 `DOWNLOADER_FAILED_SET_SPEED_LIMITER` 日志，不抛错（RPC 层异常除外）。
+    fn set_speed_limiter<'a>(
+        &'a self,
+        upload: i64,
+        download: i64,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            let upload_unlimited = upload <= 0;
+            let download_unlimited = download <= 0;
+            let arguments = serde_json::json!({
+                SESSION_SET_ALT_SPEED_ENABLED: false,
+                SESSION_SET_ALT_SPEED_TIME_ENABLED: false,
+                SESSION_SET_SPEED_LIMIT_DOWN: kb_per_second(download, download_unlimited),
+                SESSION_SET_SPEED_LIMIT_UP: kb_per_second(upload, upload_unlimited),
+                SESSION_SET_SPEED_LIMIT_UP_ENABLED: !upload_unlimited,
+                SESSION_SET_SPEED_LIMIT_DOWN_ENABLED: !download_unlimited,
+            });
+            let (result, _) = self.rpc::<SessionGet>("session-set", arguments).await?;
+            if result != "success" {
+                error!(
+                    "{}",
+                    tl(
+                        MSG_FAILED_SET_SPEED_LIMITER,
+                        vec![Param::Text(self.config.name.clone()), Param::Text(result)]
+                    )
+                );
+            }
+            Ok(())
+        })
+    }
+}
+
+/// 对齐 `Transmission.setSpeedLimiter` 的换算：不限速时 `max(1024, 值) / 1024`（恒为 1），
+/// 否则 `值 / 1024`（Java 侧是 `(int)` 截断，此处保留 i64 以避免溢出）。
+fn kb_per_second(bytes_per_second: i64, unlimited: bool) -> i64 {
+    if unlimited {
+        1024i64.max(bytes_per_second) / SPEED_LIMIT_UNIT
+    } else {
+        bytes_per_second / SPEED_LIMIT_UNIT
+    }
+}
+
+/// 对齐上游 `tlUI` 的渲染入口（下载器不持有 locale，与服务端默认文案语言一致）。
+fn tl(key: &str, params: Vec<Param>) -> String {
+    static TRANSLATOR: OnceLock<Translator> = OnceLock::new();
+    TRANSLATOR
+        .get_or_init(Translator::embedded)
+        .render(&TranslationComponent::with_params(key, params), UI_LOCALE)
 }
 
 /// 生成 cache-busting 时间戳（毫秒）。避免为此引入 chrono 依赖。
@@ -410,4 +525,184 @@ fn chrono_like_now_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::HttpResponse;
+    use serde_json::{json, Value};
+
+    /// `session-get` 夹具：上传 1024 KB/s（1 MiB/s）、下载 2048 KB/s（2 MiB/s），两者都已启用。
+    fn session_get_body(down_enabled: bool, up_enabled: bool) -> String {
+        json!({
+            "result": "success",
+            "arguments": {
+                "speed-limit-down": 2048,
+                "speed-limit-down-enabled": down_enabled,
+                "speed-limit-up": 1024,
+                "speed-limit-up-enabled": up_enabled,
+                "peer-port": 51413,
+            }
+        })
+        .to_string()
+    }
+
+    /// JSON-RPC 的内存实现：记录请求体并按方法返回夹具。
+    struct TrMock {
+        requests: Mutex<Vec<Value>>,
+        /// `(method, 完整响应体, HTTP 状态码)` 的固定应答
+        session_get: Mutex<(String, u16)>,
+        session_set: Mutex<(String, u16)>,
+    }
+
+    impl TrMock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                requests: Mutex::new(Vec::new()),
+                session_get: Mutex::new((session_get_body(true, true), 200)),
+                session_set: Mutex::new((json!({ "result": "success", "arguments": {} }).to_string(), 200)),
+            })
+        }
+
+        fn request(&self, method: &str) -> Value {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r["method"] == method)
+                .cloned()
+                .unwrap_or_else(|| panic!("未收到 {method} 请求"))
+        }
+
+        /// 该方法的 `arguments`
+        fn arguments(&self, method: &str) -> Value {
+            self.request(method)["arguments"].clone()
+        }
+    }
+
+    impl HttpFetcher for TrMock {
+        fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
+            Box::pin(async move {
+                assert!(req.url.ends_with("/transmission/rpc"), "unexpected url {}", req.url);
+                let body: Value =
+                    serde_json::from_str(req.body.as_deref().unwrap_or_default()).unwrap();
+                let method = body["method"].as_str().unwrap_or_default().to_string();
+                self.requests.lock().unwrap().push(body);
+                let (response, status) = match method.as_str() {
+                    "session-get" => self.session_get.lock().unwrap().clone(),
+                    "session-set" => self.session_set.lock().unwrap().clone(),
+                    other => panic!("未预期的 RPC 方法 {other}"),
+                };
+                Ok(HttpResponse::new(status, response))
+            })
+        }
+    }
+
+    fn mock_downloader(mock: Arc<TrMock>) -> Arc<TransmissionDownloader> {
+        let config = TRConfig {
+            id: "tr-test".into(),
+            name: "Transmission Test".into(),
+            endpoint: "http://mock.local".into(),
+            ..TRConfig::default()
+        };
+        Arc::new(
+            TransmissionDownloader::with_fetcher(config, RemapConfig::default(), mock)
+                .unwrap(),
+        )
+    }
+
+    /// 读取：`session-get` 的 KB/s ×1024 -> bytes/s；未启用该方向时归零。
+    #[tokio::test]
+    async fn speed_limiter_is_read_in_kib_and_zeroed_when_disabled() {
+        let mock = TrMock::new();
+        let dl = mock_downloader(mock.clone());
+        let (upload, download) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!(upload, 1_048_576, "1024 KB/s -> 1 MiB/s");
+        assert_eq!(download, 2_097_152, "2048 KB/s -> 2 MiB/s");
+        // `fields` 用的是 cordelia `Fields` 的 camelCase 常量值
+        assert_eq!(
+            mock.arguments("session-get"),
+            json!({ "fields": ["downloadLimit", "downloadLimited", "uploadLimit", "uploadLimited"] })
+        );
+
+        let mock = TrMock::new();
+        *mock.session_get.lock().unwrap() = (session_get_body(false, false), 200);
+        let dl = mock_downloader(mock);
+        let (upload, download) = dl.get_speed_limiter().await.unwrap();
+        assert_eq!((upload, download), (0, 0), "未启用限速 -> 0（不限制）");
+    }
+
+    /// 下发 1 MiB/s 上传 + 2 MiB/s 下载：bytes/s ÷ 1024 -> KB/s，并打开两个 enabled 开关。
+    #[tokio::test]
+    async fn speed_limiter_is_written_in_kib_per_second() {
+        let mock = TrMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.set_speed_limiter(1_048_576, 2_097_152).await.unwrap();
+        assert_eq!(
+            mock.arguments("session-set"),
+            json!({
+                "alt-speed-enabled": false,
+                "alt-speed-time-enabled": false,
+                "speed-limit-down": 2048,
+                "speed-limit-up": 1024,
+                "speed-limit-up-enabled": true,
+                "speed-limit-down-enabled": true,
+            })
+        );
+    }
+
+    /// 不限制：该方向写 `max(1024, 值)/1024 = 1` KB/s 且 `*-enabled = false`（对齐上游）。
+    #[tokio::test]
+    async fn unlimited_speed_limiter_disables_the_limits() {
+        let mock = TrMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.set_speed_limiter(0, -1).await.unwrap();
+        assert_eq!(
+            mock.arguments("session-set"),
+            json!({
+                "alt-speed-enabled": false,
+                "alt-speed-time-enabled": false,
+                "speed-limit-down": 1,
+                "speed-limit-up": 1,
+                "speed-limit-up-enabled": false,
+                "speed-limit-down-enabled": false,
+            })
+        );
+    }
+
+    /// 非整 KiB 的样本：整数除法截断（例如 1 MiB + 1 字节 -> 1024 KB/s）。
+    #[tokio::test]
+    async fn speed_limiter_truncates_partial_kib() {
+        let mock = TrMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.set_speed_limiter(1_048_577, 1536).await.unwrap();
+        let args = mock.arguments("session-set");
+        assert_eq!(args["speed-limit-up"], json!(1024));
+        assert_eq!(args["speed-limit-down"], json!(1));
+    }
+
+    /// 失败路径：`result != success` 时读取报错（上游返回 null），下发只记日志。
+    #[tokio::test]
+    async fn speed_limiter_failure_semantics_follow_upstream() {
+        let mock = TrMock::new();
+        *mock.session_get.lock().unwrap() = (
+            json!({ "result": "invalid session id", "arguments": {} }).to_string(),
+            200,
+        );
+        *mock.session_set.lock().unwrap() =
+            (json!({ "result": "no such field", "arguments": {} }).to_string(), 200);
+        let dl = mock_downloader(mock);
+        assert!(dl.get_speed_limiter().await.is_err(), "session-get 失败 -> Err");
+        // 上游 setSpeedLimiter 只记日志，不抛错
+        assert!(dl.set_speed_limiter(1_048_576, 2_097_152).await.is_ok());
+
+        // RPC/HTTP 层失败：上游让异常透传（读取与下发都是）
+        let mock = TrMock::new();
+        *mock.session_get.lock().unwrap() = (String::new(), 500);
+        *mock.session_set.lock().unwrap() = (String::new(), 500);
+        let dl = mock_downloader(mock);
+        assert!(dl.get_speed_limiter().await.is_err());
+        assert!(dl.set_speed_limiter(1_048_576, 2_097_152).await.is_err());
+    }
 }
