@@ -1,0 +1,25 @@
+[package]
+name = "pbh-downloader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Downloader abstraction and qBittorrent adapter"
+
+[dependencies]
+pbh-core = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ipnet = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+pbkdf2 = { workspace = true }

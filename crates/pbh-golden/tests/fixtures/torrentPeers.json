@@ -1,0 +1,111 @@
+{
+  "full_update": true,
+  "rid": 1,
+  "show_flags": true,
+  "peers": {
+    "8.8.8.8:51413": {
+      "client": "qBittorrent v5.0.2",
+      "peer_id_client": "-qB5020-xxxxxxxxxxxx",
+      "dl_speed": 1200,
+      "downloaded": 50000,
+      "up_speed": 600,
+      "uploaded": 12000,
+      "progress": 0.5,
+      "flags": "d u X P",
+      "ip": "8.8.8.8",
+      "port": 51413,
+      "connection": "uTP"
+    },
+    "9.9.9.9:1000": {
+      "client": "",
+      "peer_id_client": "-hp001-2.0.0.0-xxxx",
+      "dl_speed": 3000,
+      "downloaded": 20000,
+      "up_speed": 100,
+      "uploaded": 4000,
+      "progress": 0.1,
+      "flags": "d u X",
+      "ip": "9.9.9.9",
+      "port": 1000,
+      "connection": "uTP"
+    },
+    "7.7.7.7:2000": {
+      "client": "xfplay/9.0.1.0",
+      "peer_id_client": "-qB5000-000000000000",
+      "dl_speed": 4000,
+      "downloaded": 30000,
+      "up_speed": 200,
+      "uploaded": 8000,
+      "progress": 0.2,
+      "flags": "d u X",
+      "ip": "7.7.7.7",
+      "port": 2000,
+      "connection": "uTP"
+    },
+    "192.168.1.5:3000": {
+      "client": "",
+      "peer_id_client": "-hp001-lan-should-skip",
+      "dl_speed": 100,
+      "downloaded": 100,
+      "up_speed": 100,
+      "uploaded": 100,
+      "progress": 0.3,
+      "flags": "d u",
+      "ip": "192.168.1.5",
+      "port": 3000,
+      "connection": "uTP"
+    },
+    "5.5.5.5:4000": {
+      "client": "HTTP Seed",
+      "peer_id_client": "",
+      "dl_speed": 0,
+      "downloaded": 0,
+      "up_speed": 0,
+      "uploaded": 0,
+      "progress": 0,
+      "flags": "",
+      "ip": "5.5.5.5",
+      "port": 4000,
+      "connection": "HTTP"
+    },
+    "1.2.3.4:5000": {
+      "client": "ghost peer empty ip",
+      "peer_id_client": "-hp001-ghost",
+      "dl_speed": 100,
+      "downloaded": 100,
+      "up_speed": 100,
+      "uploaded": 100,
+      "progress": 0.1,
+      "flags": "d u",
+      "ip": "",
+      "port": 5000,
+      "connection": "uTP"
+    },
+    "abcdefghijklmnop.onion:6000": {
+      "client": "",
+      "peer_id_client": "-hp001-onion",
+      "dl_speed": 100,
+      "downloaded": 100,
+      "up_speed": 100,
+      "uploaded": 100,
+      "progress": 0.1,
+      "flags": "d u H",
+      "ip": "2.3.4.5",
+      "port": 6000,
+      "connection": "uTP"
+    },
+    "6.6.6.6:7000": {
+      "client": "qBittorrent/4.5.0",
+      "peer_id_client": "-qB4500-yyyyyyyyyyyy",
+      "dl_speed": 9000,
+      "downloaded": 100000,
+      "up_speed": 1000,
+      "uploaded": 2000000000,
+      "progress": 0.05,
+      "flags": "d u X",
+      "ip": "6.6.6.6",
+      "port": 7000,
+      "connection": "uTP"
+    }
+  }
+}

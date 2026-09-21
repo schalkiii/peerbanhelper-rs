@@ -1,0 +1,13 @@
+{
+  "arguments": {
+    "cumulative-stats": {
+      "uploadedBytes": 111222333,
+      "downloadedBytes": 444555666
+    },
+    "current-stats": {
+      "uploadedBytes": 1,
+      "downloadedBytes": 2
+    }
+  },
+  "result": "success"
+}

@@ -1,0 +1,31 @@
+[package]
+name = "pbh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PeerBanHelper-RS executable"
+
+[[bin]]
+name = "pbh"
+path = "src/main.rs"
+
+[dependencies]
+pbh-core = { workspace = true }
+pbh-downloader = { workspace = true }
+pbh-db = { workspace = true }
+pbh-web = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "rustls-tls", "hostname"] }
+pulldown-cmark = "0.13.4"

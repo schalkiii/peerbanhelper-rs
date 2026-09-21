@@ -1,0 +1,22 @@
+[package]
+name = "pbh-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PeerBanHelper core domain model, rule engine and rule modules"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+regex = { workspace = true }
+ipnet = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rhai = { workspace = true }
+tracing = { workspace = true }
+# MaxMind-DB v2 读取器（对齐上游 com.maxmind.db / com.maxmind.geoip2），用于 GeoIP 四维度判定
+maxminddb = { version = "0.32", default-features = false }

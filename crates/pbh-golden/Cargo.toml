@@ -1,0 +1,18 @@
+[package]
+name = "pbh-golden"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Golden tests locking Rust behavior to the Java v9.5.1 baseline"
+
+[dependencies]
+pbh-core = { workspace = true }
+pbh-downloader = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

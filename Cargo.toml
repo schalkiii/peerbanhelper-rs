@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pbh-core",
+    "crates/pbh-downloader",
+    "crates/pbh-db",
+    "crates/pbh-web",
+    "crates/pbh-golden",
+    "crates/pbh",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/PBH-BTN/PeerBanHelper"
+description = "PeerBanHelper Rust faithful rewrite"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "cookies"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex = "1"
+ipnet = "2"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+base64 = "0.22"
+# BitComet WebUI 登录凭据加密（对齐上游 BCAESTool：PBKDF2-HMAC-SHA1 + AES-CBC/PKCS5 + HmacSHA256）
+sha1 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = "0.12"
+rhai = { version = "1", default-features = false, features = ["sync", "serde"] }
+
+pbh-core = { path = "crates/pbh-core" }
+pbh-downloader = { path = "crates/pbh-downloader" }
+pbh-db = { path = "crates/pbh-db" }
+pbh-web = { path = "crates/pbh-web" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

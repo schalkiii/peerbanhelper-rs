@@ -1,0 +1,24 @@
+[
+  {
+    "hash": "0101010101010101010101010101010101010101",
+    "name": "public-distro.iso",
+    "progress": 1.0,
+    "total_size": 1000000000,
+    "piece_size": 4194304,
+    "pieces_have": 239,
+    "dlspeed": 0,
+    "upspeed": 0,
+    "is_private": false
+  },
+  {
+    "hash": "0202020202020202020202020202020202020202",
+    "name": "private-torrent",
+    "progress": 0.5,
+    "total_size": 500000000,
+    "piece_size": 4194304,
+    "pieces_have": 60,
+    "dlspeed": 0,
+    "upspeed": 0,
+    "is_private": true
+  }
+]

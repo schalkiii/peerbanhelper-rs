@@ -1,0 +1,454 @@
+# PeerBanHelper-RS 配置（字段对齐上游 config.yml / profile.yml，默认值对齐 v9.5.1）
+server:
+  # Web 监听端口
+  http: 9898
+  # 监听地址
+  address: "0.0.0.0"
+  # 访问令牌；留空表示不鉴权（建议设置）
+  token: ""
+
+database:
+  # 当前阶段仅支持 sqlite
+  type: "sqlite"
+
+persist:
+  # 封禁日志保留天数
+  ban-logs-keep-days: 180
+  # 是否持久化封禁列表
+  banlist: true
+
+# GeoIP/ASN 数据库（对齐上游 config.yml 的 ip-database 段）
+# 数据库文件放在 <data>/ipdb/geoip/：GeoIP-City.mmdb、GeoIP-ASN.mmdb、GeoCN.mmdb
+# （可选 ok_data_level3.csv 行政区划表；缺失时 rev2 记录按上游「division 表查不到」处理）
+# 任一数据库缺失/损坏 ⇒ 不注入 GeoIP 数据源，`ip-address-blocker` 的
+# asn / region / city / net-type 四个维度全部不命中（与上游 IPDB 初始化失败一致）
+ip-database:
+  # 允许自动更新 GeoIP 数据库文件（上游 IPDBManager#setupIPDB；下载/解压未移植，见 PLAN.md）
+  auto-update: true
+  database-city: "GeoLite2-City"
+  database-asn: "GeoLite2-ASN"
+  database-geocn: "GeoCN"
+
+# 对应上游 profile.yml
+profile:
+  # ban wave 间隔（毫秒），上游默认 5000
+  check-interval: 5000
+  # 全局封禁时长（毫秒），14 天；模块 ban-duration 为 0 时沿用此值
+  ban-duration: 1209600000
+  # 来自这些地址的 peer 绕过所有检查
+  ignore-peers-from-addresses:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "fc00::/7"
+    - "100.64.0.0/10"
+    - "169.254.0.0/16"
+    - "127.0.0.0/8"
+    - "fe80::/10"
+  # 注意：与上游一致，**配置节缺失或缺少 enabled 键的模块会被禁用**
+  module:
+    peer-id-blacklist:
+      enabled: true
+      # 3 天
+      ban-duration: 259200000
+      banned-peer-id:
+        - '{"method":"STARTS_WITH","content":"-hp"}'
+        - '{"method":"STARTS_WITH","content":"-xm"}'
+        - '{"method":"STARTS_WITH","content":"-dt"}'
+        - '{"method":"CONTAINS","content":"-rn0.0.0"}'
+        - '{"method":"STARTS_WITH","content":"-sd"}'
+        - '{"method":"STARTS_WITH","content":"-xf"}'
+        - '{"method":"STARTS_WITH","content":"-qd"}'
+        - '{"method":"STARTS_WITH","content":"-bn"}'
+        - '{"method":"STARTS_WITH","content":"-dl"}'
+        - '{"method":"STARTS_WITH","content":"-ts"}'
+        - '{"method":"STARTS_WITH","content":"-fg"}'
+        - '{"method":"STARTS_WITH","content":"-tt"}'
+        - '{"method":"STARTS_WITH","content":"-nx"}'
+        - '{"method":"CONTAINS","content":"cacao"}'
+        - '{"method":"EQUALS","content":"Unknown"}'
+        - '{"method":"EQUALS","content":"未知"}'
+    client-name-blacklist:
+      enabled: true
+      ban-duration: 259200000
+      banned-client-name:
+        - '{"method":"STARTS_WITH","content":"hp/torrent"}'
+        - '{"method":"STARTS_WITH","content":"hp "}'
+        - '{"method":"STARTS_WITH","content":"dt/torrent"}'
+        - '{"method":"STARTS_WITH","content":"dt "}'
+        - '{"method":"STARTS_WITH","content":"xm/torrent"}'
+        - '{"method":"STARTS_WITH","content":"xm "}'
+        - '{"method":"STARTS_WITH","content":"taipei-torrent"}'
+        - '{"method":"CONTAINS","content":"rain 0.0.0"}'
+        - '{"method":"CONTAINS","content":"gopeed dev"}'
+        - '{"method":"STARTS_WITH","content":"xfplay"}'
+        - '{"method":"CONTAINS","content":"StellarPlayer"}'
+        - '{"method":"CONTAINS","content":"SP "}'
+        - '{"method":"CONTAINS","content":"flashget"}'
+        - '{"method":"CONTAINS","content":"tudou"}'
+        - '{"method":"CONTAINS","content":"torrentstorm"}'
+        - '{"method":"CONTAINS","content":"qqdownload"}'
+        - '{"method":"STARTS_WITH","content":"qbittorrent/3.3.15"}'
+        - '{"method":"STARTS_WITH","content":"github.com/thank423/trafficconsume"}'
+        - '{"method":"STARTS_WITH","content":"ޭ__"}'
+        - '{"method":"STARTS_WITH","content":"Unknown ["}'
+        - '{"method":"STARTS_WITH","content":"Gopeed bt-exp"}'
+    # 规则引擎：支持用 rhai 脚本（.av 文件，等价上游 AviatorScript）自定义封禁逻辑
+    # 脚本放在 <data>/scripts/ 目录，默认该目录为空 → 不产生任何封禁
+    expression-engine:
+      # 是否启用（上游默认 true）
+      enabled: true
+      # 封禁时长，单位毫秒；0 表示沿用全局 ban-duration
+      ban-duration: 0
+      # 可选：显式指定脚本目录，默认 <data>/scripts
+      # scripts-dir: "scripts"
+    ip-address-blocker:
+      enabled: true
+      ban-duration: 259200000
+      # 支持单 IP / CIDR / IP 范围
+      ips:
+        - "0.0.0.0"
+      ports:
+        - 0
+      # 按 ASN 封禁（需要 GeoIP-ASN 数据库）
+      asns:
+        - "0"
+      # 按国家/地区 ISO 代码封禁（需要 GeoIP-City 数据库）
+      regions:
+        - "0"
+      # 按城市/区/县封禁（GeoCN 可用时使用 GeoCN 写法）
+      cities:
+        - "示例海南"
+      # 按网络类型封禁（仅中国大陆地区 IP 有效，需要 GeoCN 数据库）
+      net-type:
+        wideband: false
+        base-station: false
+        government-and-enterprise-line: false
+        business-platform: false
+        backbone-network: false
+        ip-private-network: false
+        internet-cafe: false
+        iot: false
+        datacenter: false
+    progress-cheat-blocker:
+      enabled: true
+      minimum-size: 50000000
+      maximum-difference: 0.1
+      rewind-maximum-difference: 0.07
+      block-excessive-clients: true
+      excessive-threshold: 1.5
+      ipv4-prefix-length: 32
+      ipv6-prefix-length: 56
+      # 30 天
+      ban-duration: 2592000000
+      # 是否把 PCB 状态落库（重启后保留解封窗口与计数器）
+      enable-persist: true
+      persist-duration: 1209600000
+      max-wait-duration: 30000
+      # 快速 PCB 测试：下载量达到 10% 时短暂断开一次
+      fast-pcb-test-percentage: 0.1
+      fast-pcb-test-block-duration: 15000
+    multi-dialing-blocker:
+      enabled: true
+      # 20 天
+      ban-duration: 1296000000
+      # 同一子网内出现多少个不同 IP 视为多拨
+      subnet-mask-length: 24
+      subnet-mask-v6-length: 56
+      tolerate-num-ipv4: 2
+      tolerate-num-ipv6: 5
+      # 缓存有效期（秒）
+      cache-lifespan: 86400
+      # 追猎：已判定多拨的子网在窗口内继续封禁新出现的 peer
+      keep-hunting: false
+      # 追猎窗口（秒），30 天
+      keep-hunting-time: 2592000
+    auto-range-ban:
+      enabled: true
+      # 7 天
+      ban-duration: 604800000
+      # 与已封禁地址同前缀的 peer 一并封禁
+      ipv4: 30
+      ipv6: 48
+    # 启用来自 BTN 网络的规则
+    # 此处的 enabled 只表示本模块参与判定；真正联网还需要主配置 config.yml 的 btn.enabled: true
+    # （本实现尚未提供 BTN 传输层：未注入规则时模块恒 pass、绝不封禁，见 PLAN.md 已知缺口）
+    btn:
+      enabled: true
+      # 封禁时间，单位：毫秒，使用 default 则跟随全局设置
+      ban-duration: 259200000
+    ip-address-blocker-rules:
+      enabled: true
+      # 3 天
+      ban-duration: 259200000
+      # 规则刷新间隔（毫秒），4 小时
+      check-interval: 14400000
+      rules:
+        all-in-one:
+          enabled: true
+          name: all-in-one
+          url: https://bcr.pbh-btn.com/combine/all.txt
+    # 主动监测（不参与 peer 判定；由应用层按定时任务驱动）
+    active-monitoring:
+      enabled: true
+      # 流量监控：当日上行流量阈值告警
+      traffic-monitoring:
+        daily: -1              # -1 禁用，单位 bytes
+      # 流量滑动窗口上传限速
+      traffic-sliding-capping:
+        enabled: false
+        # 注意：上游 profile.yml 写的是 `max-allowed-upload-traffic`，但
+        # ActiveMonitoringModule 读取的是 `daily-max-allowed-upload-traffic`
+        # （由 ProfileUpdateScript v27 写入）。本移植与 Java 一致，只读 Java 的键。
+        daily-max-allowed-upload-traffic: 53687091200
+        max-speed: 10485760
+        min-speed: 0
+    # Peer 统计与分析服务（不参与 peer 判定；由应用层按定时任务驱动）
+    peer-analyse-service:
+      session-analyse:        # 会话统计与分析服务
+        enabled: true
+        data-flush-interval: 3600000
+        cleanup-interval: 3600000
+        data-retention-time: 15552000000
+      swarm-tracking:         # 用户群跟踪（重启后数据自动删除）
+        enabled: true
+        data-flush-interval: 3600000
+      peer-recording:         # 对等体跟踪记录服务
+        enabled: true
+        data-flush-interval: 900000
+        data-retention-time: 5184000000
+        data-cleanup-interval: 604800000
+    ptr-blacklist:
+      # 默认关闭（上游 registerModules 中该模块注册被注释掉，开启后本实现会生效）
+      enabled: false
+      ban-duration: 259200000
+      ptr-rules:
+        - '{"method":"EQUALS","content":"example.com"}'
+      # PTR 预热使用的 DNS 服务器；留空则不预热（模块恒不命中）
+      dns-servers: []
+    idle-connection-dos-protection:
+      # 默认关闭
+      enabled: false
+      ban-duration: 900000
+      max-allowed-idle-time: 300000
+      idle-speed-threshold: 64
+      min-status-change-percentage: 0.001
+      reset-on-status-change: true
+      # 0=按 Peer Flags 判定；1=仅保护做种；2=保护下载与做种
+      protect-mode: 0
+    anti-vampire:
+      enabled: true
+      # 4 小时
+      ban-duration: 14400000
+      presets:
+        xunlei:
+          # 做种任务禁所有迅雷；下载任务仅放行迅雷 0019
+          enabled: true
+
+# 封禁列表重映射（把单个 IP 映射为更大的网段，提高下载器封禁效率）
+banlist-remapping:
+  ipv4:
+    # 默认关闭：IPv4 地址宝贵，扩大范围易误封
+    enabled: false
+    remap-range: 30
+  ipv6:
+    enabled: true
+    remap-range: 52
+
+# IP 地址重映射（仅影响 PBH 的判定与封禁列表，不改变下载器返回的原始地址）
+ip-remapping:
+  # Teredo 地址转换为原始 IPv4 处理（默认关闭）
+  teredo: false
+  nat64:
+    enabled: true
+    prefix:
+      - "64:ff9b::/96"
+  # 自动 STUN 打洞（内置 NAT 地址翻译）。默认关闭 ⇒ 不注册任何翻译 provider，翻译严格直通。
+  # 说明：STUN 服务器列表在上游位于顶层 `stun:` 段，本移植并入本节
+  #（`stun.udp-servers` 仅被上游未移植的 UDP NAT 类型探测读取；`stun.available-test` 亦未移植）。
+  auto-stun:
+    enabled: false
+    # 友好回环映射：连接本地下载器时用 127.x.y.z 作为发起地址（仅记录，见 pbh-core/src/auto_stun.rs）
+    use-friendly-loopback-mapping: true
+    # 启用隧道的下载器列表（空 = 不注册任何下载器）
+    downloaders: []
+    # 支持 TCP 协议的 STUN 服务器列表（对齐上游 stun.tcp-servers）
+    tcp-servers:
+      - "turn.cloudflare.com:3478"
+      - "stun.nextcloud.com:3478"
+      - "stun.sipnet.com:3478"
+    # 支持 UDP 协议的 STUN 服务器列表（对齐上游 stun.udp-servers，本实现未消费）
+    udp-servers:
+      - "stun.cdnbye.com:3478"
+      - "stun.nextcloud.com:3478"
+      - "stun.miwifi.com:3478"
+      - "stun.syncthing.net:3478"
+      - "stun.l.google.com:3478"
+
+# 告警推送渠道（对齐上游 `push-notification:` 段，本实现改名为 `push:`）
+# 结构：<渠道名>: { type: <渠道类型>, ...渠道自己的字段 }
+# 渠道名会被传给 webhook 的 `{channelName}`；`type` 大小写不敏感。
+# 默认空 ⇒ 不产生任何推送流量（告警只写日志）；某个渠道配置错误只跳过该渠道并记录日志。
+push: {}
+# 示例（把 push: {} 换成下面的写法即可启用；九个渠道可任意组合、按书写顺序依次推送）：
+# push:
+#   # 1) PushPlus：https://www.pushplus.plus/send
+#   my-pushplus:
+#     type: "pushplus"
+#     token: "your-token"
+#     # 可选；留空表示不发送该字段
+#     topic: ""
+#     channel: ""
+#   # 2) ServerChan（Server 酱）：POST https://sctapi.ftqq.com/<sendkey>.send
+#   my-serverchan:
+#     type: "serverchan"
+#     sendkey: "SCTxxxx"
+#     channel: ""
+#     openid: ""
+#   # 3) SMTP 邮件：正文是告警文本按 markdown 渲染出的 HTML
+#   my-mail:
+#     type: "smtp"
+#     host: "smtp.example.com"
+#     port: 465
+#     auth: true
+#     username: "user@example.com"
+#     password: "password"
+#     sender: "pbh@example.com"
+#     # 发件人显示名，默认 PeerBanHelper
+#     name: "PeerBanHelper"
+#     receiver:
+#       - "admin@example.com"
+#     # NONE / STARTTLS / ENFORCE_STARTTLS / SSLTLS（大小写敏感，默认 SSLTLS）
+#     encryption: "SSLTLS"
+#     sendPartial: true
+#   # 4) Telegram：POST https://api.telegram.org/bot<token>/sendPhoto
+#   my-telegram:
+#     type: "telegram"
+#     token: "123456:ABC-DEF"
+#     chatid: "-1001234567890"
+#   # 5) Bark：默认 https://api.day.app/push
+#   my-bark:
+#     type: "bark"
+#     backend_url: "https://api.day.app/push"
+#     device_key: "your-device-key"
+#     message_group: "PeerBanHelper"
+#   # 6) PushDeer：默认 https://api2.pushdeer.com/message/push
+#   my-pushdeer:
+#     type: "pushdeer"
+#     endpoint: "https://api2.pushdeer.com/message/push"
+#     pushkey: "your-pushkey"
+#   # 7) Gotify：token 直接写在 endpoint 的查询参数里
+#   my-gotify:
+#     type: "gotify"
+#     endpoint: "https://push.example.de/message?token=<apptoken>"
+#     priority: 5
+#   # 8) Ntfy：默认 https://ntfy.sh
+#   my-ntfy:
+#     type: "ntfy"
+#     server_url: "https://ntfy.sh"
+#     topic: "your-topic"
+#     token: ""
+#     priority: 3
+#     tags: ""
+#   # 9) Webhook：URL 与请求体都支持 {title} {content} {level} {date} {time} {datetime} {channelName}
+#   my-webhook:
+#     type: "webhook"
+#     url: "https://example.com/hook"
+#     method: "POST"                    # 仅支持 GET / POST
+#     content-type: "application/json"
+#     body-template: |
+#       {
+#           "title":"{title}",
+#           "content":"{content}",
+#           "level":"{level}",
+#           "date":"{date}",
+#           "time":"{time}",
+#           "datetime":"{datetime}",
+#           "channelName":"{channelName}"
+#       }
+#     headers:
+#       Authorization: "Bearer your-token"
+
+# 服务端文案语言（对齐上游 Main.DEF_LOCALE 的作用；上游由系统语言决定，这里改为显式配置）
+# 可选：zh_cn / zh_tw / en_us；文案表内嵌上游 lang 资源，可用 data/lang/<locale>/messages.yml 覆盖
+language:
+  locale: "zh_cn"
+
+# 服务端对外地址（可选）：用于生成下载器可访问的 blocklist URL（Transmission 需要）
+# 留空时按 server.address 推断（0.0.0.0/:: 视为 127.0.0.1）
+
+# 下载器列表（支持 qbittorrent / transmission / deluge / biglybt / bitcomet / aria2next）
+downloaders:
+  - name: "qBittorrent"
+    type: "qbittorrent"
+    endpoint: "http://127.0.0.1:8080"
+    username: "admin"
+    password: "adminadmin"
+    api-key: null
+    ignore-private: true
+    increment-ban: true
+    verify-tls: false
+  # Transmission 示例（>= 4.1.0）；本实现会为它自动配置 blocklist 指向 PBH 的
+  # /blocklist/p2p-plain-format 端点，并强制使用「全量封禁列表」路径
+  # - name: "Transmission"
+  #   type: "transmission"
+  #   endpoint: "http://127.0.0.1:9091"
+  #   rpc-url: "/transmission/rpc"
+  #   username: ""
+  #   password: ""
+  #   ignore-private: false
+  #   verify-tls: false
+  # Deluge 示例：需要在 Deluge Web 中安装并启用 PBH-Adapter-Deluge 插件
+  # （https://github.com/PBH-BTN/PBH-Adapter-Deluge），否则登录会因缺少适配器方法而失败。
+  # 说明：上游 Deluge 适配器不使用 `ignore-private`（不过滤私有种子），
+  #       封禁同时支持增量（ban_ips）与全量列表（replace_blocklist）。
+  # - name: "Deluge"
+  #   type: "deluge"
+  #   endpoint: "http://127.0.0.1:8112"
+  #   password: "deluge"
+  #   rpc-url: "/json"
+  #   increment-ban: true
+  #   verify-tls: false
+  #   paused: false
+  # BiglyBT 示例：需要在 BiglyBT 中安装 PBH 适配器插件
+  # （https://github.com/PBH-BTN/PBH-Adapter-BiglyBT，要求插件版本 >= 1.3.0）。
+  # 说明：endpoint 填插件监听地址（端口以插件设置为准），token 为插件生成的访问令牌
+  #       （作为 `Authorization: Bearer <token>` 发送）；
+  #       上游 BiglyBT 的 `ignore-private` 默认为 false（即**包含**私有种子），与 qB 相反；
+  #       封禁同时支持增量（POST /bans）与全量列表（PUT /bans）。
+  # - name: "BiglyBT"
+  #   type: "biglybt"
+  #   endpoint: "http://127.0.0.1:0"  # 请替换为插件的实际端口
+  #   token: ""
+  #   increment-ban: true
+  #   ignore-private: false
+  #   verify-tls: false
+  #   paused: false
+  # BitComet 示例（要求 BitComet >= 2.18）：endpoint 填 BitComet 的 WebUI 地址、
+  # username/password 为 WebUI 的登录凭据（登录凭据会按上游 BCAESTool 协议加密后发送）。
+  # 说明：上游 BitComet 的 `ignore-private` 默认为 false（即**包含**私有种子），与 qB 相反；
+  #       封禁恒走「整份替换」（POST /api/config/ipfilter/upload，import_type=replace，
+  #       地址列表以 Base64 形式作为数据文件上传），故 increment-ban 对本适配器不生效。
+  # - name: "BitComet"
+  #   type: "bitcomet"
+  #   endpoint: "http://127.0.0.1:12345"  # 请替换为 BitComet WebUI 的实际监听地址与端口
+  #   username: "admin"
+  #   password: ""
+  #   increment-ban: true
+  #   ignore-private: false
+  #   verify-tls: false
+  #   paused: false
+  # Aria2Next 示例：**只支持 Aria2Next 分支**（aria2.getVersion 的 product 必须是
+  # `aria2-next`），官方 aria2 与其它分支会登录失败。endpoint 填 JSON-RPC 地址
+  # （如 http://127.0.0.1:6800/jsonrpc），token 为 aria2 的 `--rpc-secret`。
+  # 说明：token 会同时作为 `Authorization: token:<secret>` 请求头与 JSON-RPC params
+  #       的首元素发送（与上游一致）；Aria2Next 没有增量封禁 API，封禁恒为整份列表
+  #       替换（aria2.setBtPeerBlocklist），故 increment-ban 对本适配器不生效；
+  #       `ignore-private` 上游仅持久化、实际未使用（Aria2Next 上报的种子恒为非私有）。
+  # - name: "Aria2Next"
+  #   type: "aria2next"
+  #   endpoint: "http://127.0.0.1:6800/jsonrpc"
+  #   token: ""
+  #   ignore-private: false
+  #   verify-tls: false
+  #   paused: false

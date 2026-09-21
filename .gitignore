@@ -1,0 +1,15 @@
+# Rust 构建产物
+/target/
+**/*.rs.bk
+
+# 本地运行数据（配置、数据库、订阅缓存、GeoIP 库）
+/data/
+
+# 会话日志（构建/clippy/test 输出）
+*.log
+
+# 编辑器 / 操作系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

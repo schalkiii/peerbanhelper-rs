@@ -1,0 +1,19 @@
+[package]
+name = "pbh-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "axum HTTP API and static WebUI hosting"
+
+[dependencies]
+pbh-core = { workspace = true }
+pbh-db = { workspace = true }
+axum = { workspace = true }
+ipnet = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

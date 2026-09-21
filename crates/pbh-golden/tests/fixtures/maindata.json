@@ -1,0 +1,7 @@
+{
+  "server_state": {
+    "alltime_ul": 123456789,
+    "alltime_dl": 987654321,
+    "connection_status": "connected"
+  }
+}

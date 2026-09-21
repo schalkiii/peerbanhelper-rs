@@ -1,0 +1,8 @@
+{
+  "is_private": false,
+  "piece_size": 4194304,
+  "pieces_have": 239,
+  "pieces_num": 239,
+  "total_size": 1000000000,
+  "name": "public-distro.iso"
+}

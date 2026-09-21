@@ -1,0 +1,13 @@
+{
+  "arguments": {
+    "version": "4.1.0 (abcdef)",
+    "blocklist-enabled": false,
+    "blocklist-url": "",
+    "speed-limit-down": 100,
+    "speed-limit-down-enabled": true,
+    "speed-limit-up": 50,
+    "speed-limit-up-enabled": false,
+    "peer-port": 51413
+  },
+  "result": "success"
+}

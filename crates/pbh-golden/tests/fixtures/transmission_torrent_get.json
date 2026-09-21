@@ -1,0 +1,71 @@
+{
+  "arguments": {
+    "torrents": [
+      {
+        "id": 1,
+        "hashString": "0202020202020202020202020202020202020202",
+        "name": "active-public.iso",
+        "peersConnected": 2,
+        "totalSize": 800000000,
+        "rateDownload": 12345,
+        "rateUpload": 0,
+        "percentDone": 0.25,
+        "sizeWhenDone": 800000000,
+        "isPrivate": false,
+        "peers": [
+          {
+            "address": "9.9.9.9",
+            "port": 1000,
+            "clientName": "Transmission 4.1.0",
+            "flagStr": "DU",
+            "peer_id": "LVRSNDEwMC0wMDAwMDAwMDAwMDA=",
+            "progress": 0.5,
+            "rateToClient": 3000,
+            "rateToPeer": 100,
+            "bytes_to_client": 20000,
+            "bytes_to_peer": 4000
+          },
+          {
+            "address": "7.7.7.7",
+            "port": 2000,
+            "clientName": "xfplay/9.0.1.0",
+            "flagStr": "d u",
+            "peer_id": null,
+            "progress": 0.2,
+            "rateToClient": 4000,
+            "rateToPeer": 200,
+            "bytes_to_client": 30000,
+            "bytes_to_peer": 8000
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "hashString": "0303030303030303030303030303030303030303",
+        "name": "private.iso",
+        "peersConnected": 1,
+        "totalSize": 500000000,
+        "rateDownload": 0,
+        "rateUpload": 0,
+        "percentDone": 1.0,
+        "sizeWhenDone": 500000000,
+        "isPrivate": true,
+        "peers": []
+      },
+      {
+        "id": 3,
+        "hashString": "0404040404040404040404040404040404040404",
+        "name": "idle-public.iso",
+        "peersConnected": 0,
+        "totalSize": 100000000,
+        "rateDownload": 0,
+        "rateUpload": 0,
+        "percentDone": 0.5,
+        "sizeWhenDone": 100000000,
+        "isPrivate": false,
+        "peers": []
+      }
+    ]
+  },
+  "result": "success"
+}

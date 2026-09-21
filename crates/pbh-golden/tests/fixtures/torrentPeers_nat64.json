@@ -1,0 +1,46 @@
+{
+  "full_update": true,
+  "rid": 1,
+  "show_flags": true,
+  "peers": {
+    "64:ff9b::102:304:7001": {
+      "client": "qBittorrent v5.0.2",
+      "peer_id_client": "-qB5020-nat64peer",
+      "dl_speed": 1000,
+      "downloaded": 1000,
+      "up_speed": 1000,
+      "uploaded": 1000,
+      "progress": 0.5,
+      "flags": "d u",
+      "ip": "64:ff9b::1.2.3.4",
+      "port": 7001,
+      "connection": "uTP"
+    },
+    "2001:0:4136:e378:8000:63bf:3fff:fdd2:7002": {
+      "client": "qBittorrent v5.0.2",
+      "peer_id_client": "-qB5020-teredopeer",
+      "dl_speed": 1000,
+      "downloaded": 1000,
+      "up_speed": 1000,
+      "uploaded": 1000,
+      "progress": 0.5,
+      "flags": "d u",
+      "ip": "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+      "port": 7002,
+      "connection": "uTP"
+    },
+    "::ffff:5.6.7.8:7003": {
+      "client": "qBittorrent v5.0.2",
+      "peer_id_client": "-qB5020-mappedpeer",
+      "dl_speed": 1000,
+      "downloaded": 1000,
+      "up_speed": 1000,
+      "uploaded": 1000,
+      "progress": 0.5,
+      "flags": "d u",
+      "ip": "::ffff:5.6.7.8",
+      "port": 7003,
+      "connection": "uTP"
+    }
+  }
+}
