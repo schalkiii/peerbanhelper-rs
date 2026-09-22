@@ -8,15 +8,18 @@ description = "axum HTTP API and static WebUI hosting"
 [dependencies]
 pbh-core = { workspace = true }
 pbh-db = { workspace = true }
+pbh-downloader = { workspace = true }
 axum = { workspace = true }
-ipnet = { workspace = true }
-rand = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+ipnet = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 # 端点测试用 `Router::oneshot`（tower 本就是 axum 的传递依赖，版本已在 Cargo.lock 中）

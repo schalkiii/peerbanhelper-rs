@@ -688,7 +688,8 @@ fn decode_peer_id_hex(hex: &str) -> String {
     }
     chars.extend(hex.chars());
     let mut out = String::with_capacity(chars.len() / 2);
-    for pair in chars.chunks_exact(2) {
+    // 已预先补'0'保证长度恒为偶数，as_chunks 与 chunks_exact 等价且无 panic 风险
+    for pair in chars.as_chunks::<2>().0 {
         match (pair[0].to_digit(16), pair[1].to_digit(16)) {
             (Some(hi), Some(lo)) => out.push(char::from((hi * 16 + lo) as u8)),
             _ => break,

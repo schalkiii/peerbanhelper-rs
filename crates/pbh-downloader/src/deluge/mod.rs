@@ -553,7 +553,8 @@ fn peer_flag_string(peer_flag: i32, source_flag: i32) -> String {
 fn peer_id_from_hex(hex: &str) -> String {
     let bytes = hex.as_bytes();
     let mut out = String::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    // 上游 Hex 解码输入长度固定为偶数，`as_chunks` 与 chunks_exact 等价且无 panic 风险
+    for pair in bytes.as_chunks::<2>().0 {
         let (hi, lo) = (pair[0] as char, pair[1] as char);
         match (hi.to_digit(16), lo.to_digit(16)) {
             (Some(hi), Some(lo)) => out.push(char::from((hi * 16 + lo) as u8)),

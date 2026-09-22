@@ -369,6 +369,11 @@ impl TcpForwarder {
     }
 
     fn handle_connection(self: &Arc<Self>, downstream: TcpStream) {
+        // Windows 上 accept() 返回的套接字会继承监听套接字的非阻塞模式
+        // （Linux 不继承），中继采用阻塞 IO，必须显式复位为阻塞模式。
+        if let Err(e) = downstream.set_nonblocking(false) {
+            tracing::debug!("[AutoSTUN] 复位连接为非阻塞失败: {e}");
+        }
         // 上游 ProxyFrontendHandler.channelActive：远端地址缺失 ⇒ 拒绝
         let Ok(peer) = downstream.peer_addr() else {
             self.rejected.fetch_add(1, Ordering::SeqCst);

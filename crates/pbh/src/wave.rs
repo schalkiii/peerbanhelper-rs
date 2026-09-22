@@ -24,6 +24,7 @@ use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 /// 单个下载器的运行配置
+#[derive(Clone)]
 pub struct DownloaderEntry {
     pub downloader: Arc<dyn Downloader>,
     pub increment_ban: bool,
@@ -57,7 +58,8 @@ struct BanRecord {
 }
 
 pub struct WaveEngine {
-    pub entries: Vec<DownloaderEntry>,
+    /// 下载器列表由 Web 后端热管理（`/api/downloaders` 增删改），与引擎共享同一份实例。
+    pub entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
     pub pipeline: Arc<Pipeline>,
     pub db: Arc<Database>,
     pub metrics: Arc<StdMutex<Metrics>>,
@@ -94,8 +96,13 @@ impl WaveEngine {
         report.unbanned = removed.len();
 
         // 2) 全部下载器判定（此时不触碰下载器，也不写封禁表）
+        // 先取快照并释放锁：判定/下发均为异步 I/O，持锁跨 await 会阻塞下载器热管理
         let mut pending: Vec<(usize, Vec<BanRecord>)> = Vec::new();
-        for (idx, entry) in self.entries.iter().enumerate() {
+        let entries: Vec<DownloaderEntry> = match self.entries.lock() {
+            Ok(entries) => entries.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        for (idx, entry) in entries.iter().enumerate() {
             match self.run_downloader(entry, now_ms).await {
                 Ok(out) => {
                     if out.status.online {
@@ -115,7 +122,7 @@ impl WaveEngine {
         // 3) 写入内存封禁表 + 落库（对齐上游：先跑完整个 digestion，再逐个 `banPeer`，
         //    因此本 wave 内的判定互相看不到本轮新封禁，跨下载器也不会互相影响）
         for (idx, bans) in &pending {
-            self.record_bans(&self.entries[*idx], bans, now_ms);
+            self.record_bans(&entries[*idx], bans, now_ms);
         }
 
         // 3) 下发：重复封禁（上游 needReApplyBanList）时全部下载器走全量
@@ -129,7 +136,7 @@ impl WaveEngine {
             .collect();
         let force_full = self.ban_list().lock().map(|b| b.need_reapply()).unwrap_or(false);
         for (idx, _) in &pending {
-            self.apply_bans(&self.entries[*idx], &global_added, removed.len(), force_full)
+            self.apply_bans(&entries[*idx], &global_added, removed.len(), force_full)
                 .await;
         }
         if force_full {

@@ -188,6 +188,55 @@ impl Database {
         Ok(())
     }
 
+    /// BannedIp 排行查询（`/api/bans/ranks`）。
+    ///
+    /// `filter` 为 `(ip 模糊匹配, 前置 LIMIT)`，对齐上游 `Paginable#query` + `ORDER BY hit_count DESC`。
+    /// `limit` 为 `-1` 时表示不过滤行数（全量）。
+    /// BannedIp 排行查询（`/api/bans/ranks`）。
+    ///
+    /// `filter` 为 IP 模糊匹配（对齐上游 `Paginable#query` 的 `ip ? LIKE %filter%`），
+    /// 排序固定 `hit_count DESC`；每条附带该 IP 在 `ban_logs` 中的累计封禁次数。
+    pub fn page_banned_rank(
+        &self,
+        filter: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<(BannedIp, usize)>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = if filter.is_empty() {
+            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until,
+                    (SELECT COUNT(*) FROM ban_logs WHERE ban_logs.ip=banned_ips.ip) AS total
+             FROM banned_ips ORDER BY hit_count DESC LIMIT ?1 OFFSET ?2"
+        } else {
+            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until,
+                    (SELECT COUNT(*) FROM ban_logs WHERE ban_logs.ip=banned_ips.ip) AS total
+             FROM banned_ips WHERE ip LIKE ?1 ESCAPE '\\' ORDER BY hit_count DESC LIMIT ?2 OFFSET ?3"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let cols = |row: &rusqlite::Row<'_>| {
+            Ok((
+                BannedIp {
+                    ip: row.get(0)?,
+                    first_banned_at: row.get(1)?,
+                    last_banned_at: row.get(2)?,
+                    module: row.get(3)?,
+                    hit_count: row.get(4)?,
+                    ban_until: row.get(5)?,
+                },
+                row.get::<_, i64>(6)? as usize,
+            ))
+        };
+        let rows = if filter.is_empty() {
+            stmt.query_map(rusqlite::params![limit, offset], cols)?
+        } else {
+            stmt.query_map(
+                rusqlite::params![format!("%{filter}%"), limit, offset],
+                cols,
+            )?
+        };
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// 批量移除封禁项（用于到期解封；返回删除条数）。
     pub fn remove_banned_ips(&self, ips: &[String]) -> anyhow::Result<usize> {
         if ips.is_empty() {
@@ -327,9 +376,702 @@ impl Database {
         }
         Ok(n)
     }
+
+    // ---------- Web 历史 / 排行 / 统计查询（对齐上游 `HistoryMapper` 与 `PBH*Controller`）----------
+
+    /// WebUI 通用排序白名单（`orderBy` 字段 → 数据库列 + 所属表）。
+    ///
+    /// 与上游 `Orderable.addRemapping` 的语义一致：DTO 字段名映射到 `history` /
+    /// `peer_records` 表的实际列；未知字段直接拒绝（返回 `None`），避免 SQL 注入。
+    pub fn history_order_column(field: &str) -> Option<(String, String)> {
+        let (table, column) = match field {
+            "banAt" => ("h", "created_at"),
+            "unbanAt" => ("h", "created_at"),
+            "peerIp" | "ip" => ("h", "ip"),
+            "peerPort" | "port" => ("h", "port"),
+            "peerId" => ("h", "peer_id"),
+            "peerClientName" => ("h", "client_name"),
+            "peerUploaded" => ("h", "created_at"), // 无对应列：退回禁止
+            "peerDownloaded" => ("h", "created_at"),
+            "peerProgress" => ("h", "created_at"),
+            "torrentInfoHash" => ("t", "info_hash"),
+            "torrentName" => ("t", "name"),
+            "module" => ("h", "module"),
+            "rule" => ("h", "rule"),
+            "description" => ("h", "reason"),
+            "id" => ("h", "id"),
+            _ => return None,
+        };
+        Some((table.to_string(), column.to_string()))
+    }
+
+    /// `PeerRecord` 排序白名单（`accessHistory` 端点）。
+    pub fn peer_record_order(field: &str) -> Option<String> {
+        match field {
+            "peerId" | "peer_id" => Some("peer_id".into()),
+            "clientName" | "client_name" => Some("client_name".into()),
+            "firstTimeSeen" | "first_time_seen" => Some("first_time_seen".into()),
+            "lastTimeSeen" | "last_time_seen" => Some("last_time_seen".into()),
+            "uploaded" => Some("uploaded".into()),
+            "downloaded" => Some("downloaded".into()),
+            "uploadSpeed" | "upload_speed" => Some("upload_speed".into()),
+            "downloadSpeed" | "download_speed" => Some("download_speed".into()),
+            "id" => Some("id".into()),
+            _ => None,
+        }
+    }
+
+    /// 分页查询封禁历史（对齐上游 `HistoryService.getBanLogs` / `queryBanHistoryByIp` /
+    /// `queryBanHistoryByTorrentId`）。`ip` / `torrent_hash` 至少给一个；都为空时查全表。
+    pub fn page_ban_history(
+        &self,
+        ip: Option<&str>,
+        torrent_hash: Option<&str>,
+        order: &[(String, bool)],
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<BanHistoryRow>, i64)> {
+        let mut conditions: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(ip) = ip {
+            conditions.push("h.ip = ?".to_string());
+            params.push(Box::new(ip.to_string()));
+        }
+        if let Some(hash) = torrent_hash {
+            conditions.push("h.torrent_hash = ?".to_string());
+            params.push(Box::new(hash.to_string()));
+        }
+        let where_sql = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        // 排序：白名单字段 → `表.列`；非法字段直接报错（对齐上游 `checkSafeFieldName`）
+        let mut order_clauses: Vec<String> = Vec::new();
+        for (field, asc) in order {
+            let Some((table, column)) = Self::history_order_column(field) else {
+                anyhow::bail!("非法排序列: {field}");
+            };
+            order_clauses.push(format!(
+                "{table}.{column} {}",
+                if *asc { "ASC" } else { "DESC" }
+            ));
+        }
+        if order_clauses.is_empty() {
+            order_clauses.push("h.created_at DESC".to_string());
+        }
+        order_clauses.push("h.id DESC".to_string());
+        let order_sql = order_clauses.join(", ");
+
+        let conn = self.conn.lock().unwrap();
+        let count_sql = format!("SELECT COUNT(*) FROM ban_logs h {where_sql}");
+        let total: i64 = conn
+            .query_row(
+                &count_sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                |r| r.get(0),
+            )
+            .map_err(|e| anyhow::anyhow!("ban history count: {e}"))?;
+
+        let sql = format!(
+            "SELECT h.id, h.created_at AS h_at, 0 AS unban_at, h.ip, h.port, h.peer_id,
+                    h.client_name, COALESCE(t.id, 0), COALESCE(t.info_hash, ''), h.torrent_name,
+                    COALESCE(t.size, 0), h.module, h.rule, h.reason, h.downloader_id,
+                    0 AS peer_uploaded, 0 AS peer_downloaded, 0.0 AS peer_progress
+             FROM ban_logs h LEFT JOIN torrents t ON t.info_hash = h.torrent_hash
+             {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        );
+        let mut rows: Vec<BanHistoryRow> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut query_params: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            query_params.push(&limit);
+            query_params.push(&offset);
+            let iter = stmt.query_map(rusqlite::params_from_iter(query_params), |row| {
+                Ok(BanHistoryRow {
+                    id: row.get(0)?,
+                    ban_at: row.get(1)?,
+                    unban_at: row.get(2)?,
+                    ip: row.get(3)?,
+                    port: row.get(4)?,
+                    peer_id: row.get(5)?,
+                    peer_client_name: row.get(6)?,
+                    torrent_id: row.get(7)?,
+                    torrent_info_hash: row.get(8)?,
+                    torrent_name: row.get(9)?,
+                    torrent_size: row.get(10)?,
+                    module: row.get(11)?,
+                    rule: row.get(12)?,
+                    description: row.get(13)?,
+                    downloader: row.get(14)?,
+                })
+            })?;
+            for r in iter {
+                rows.push(r?);
+            }
+        }
+        Ok((rows, total))
+    }
+
+    /// 封禁排行：`SELECT ip, COUNT(*) FROM ban_logs GROUP BY ip ORDER BY count DESC`
+    /// 对齐上游 `HistoryMapper.getBannedIps`（`filter` 为 IP 前缀，空串/`None` 表示不限）。
+    pub fn page_ban_rank(
+        &self,
+        ip_prefix: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<(String, i64)>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let (filter_sql, count_sql) = match ip_prefix {
+            Some(prefix) if !prefix.is_empty() => (
+                Some("WHERE ip LIKE ?1 || '%'"),
+                Some("WHERE ip LIKE ?1 || '%'"),
+            ),
+            _ => (None, None),
+        };
+        let total: i64 = if let Some(where_sql) = count_sql {
+            if let Some(prefix) = ip_prefix {
+                conn.query_row(
+                    &format!("SELECT COUNT(DISTINCT ip) FROM ban_logs {where_sql}"),
+                    rusqlite::params![prefix],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            conn.query_row("SELECT COUNT(DISTINCT ip) FROM ban_logs", [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        let sql = if let Some(where_sql) = filter_sql {
+            format!(
+                "SELECT ip, COUNT(*) AS count FROM ban_logs {where_sql} GROUP BY ip ORDER BY count DESC LIMIT ? OFFSET ?"
+            )
+        } else {
+            "SELECT ip, COUNT(*) AS count FROM ban_logs GROUP BY ip ORDER BY count DESC LIMIT ? OFFSET ?".to_string()
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(prefix) = ip_prefix.filter(|p| !p.is_empty()) {
+            stmt.query_map(rusqlite::params![prefix, limit, offset], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(rusqlite::params![limit, offset], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok((rows, total))
+    }
+
+    /// 删除全部（/清）banned_ips；返回删除数量。
+    pub fn clear_banned_ips(&self) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM banned_ips", [])?)
+    }
+
+    /// 在 `since_ms` 之后（含）的会话总连接数（`weeklySessions` 计数等）。
+    pub fn peer_session_count_since(&self, since_ms: i64) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT COALESCE(SUM(total_connections), 0) FROM peer_connection_metrics WHERE timeframe_at >= ?1",
+                rusqlite::params![since_ms],
+                |r| r.get(0),
+            )
+            .unwrap_or(0))
+    }
+
+    /// 当前 swarm 中唯一 IP 数量（`trackedSwarmCount` 计数）。
+    pub fn tracked_swarm_size(&self) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row("SELECT COUNT(DISTINCT ip) FROM tracked_swarm", [], |r| r.get(0))
+            .unwrap_or(0))
+    }
+
+    /// 取指定 IP 最近一条封禁日志（`/api/bans` 列表的 context 用）。
+    pub fn last_ban_log_by_ip(&self, ip: &str) -> anyhow::Result<Option<BanLog>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, downloader_id, torrent_hash, torrent_name, ip, port, peer_id, client_name,
+                    module, rule, reason, rule_key, reason_key, ban_duration, created_at
+             FROM ban_logs WHERE ip = ?1 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![ip], |row| {
+            Ok(BanLog {
+                id: row.get(0)?,
+                downloader_id: row.get(1)?,
+                torrent_hash: row.get(2)?,
+                torrent_name: row.get(3)?,
+                ip: row.get(4)?,
+                port: row.get(5)?,
+                peer_id: row.get(6)?,
+                client_name: row.get(7)?,
+                module: row.get(8)?,
+                rule: row.get(9)?,
+                reason: row.get(10)?,
+                rule_key: row.get(11)?,
+                reason_key: row.get(12)?,
+                ban_duration: row.get(13)?,
+                created_at: row.get(14)?,
+            })
+        })?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
+    /// `module + rule` 分组统计（`/api/statistic/rules`）。
+    pub fn rule_stats(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT module, rule, COUNT(*) AS c FROM ban_logs GROUP BY module, rule ORDER BY c DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `peer_records.first_time_seen` 按天归组计数（连接趋势近似，`timeframe_at` 对齐图表时间轴）。
+    pub fn peer_first_seen_trend(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<(i64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let (cond, has_downloader) = match downloader {
+            Some(_) => (" AND downloader = ?3", true),
+            None => ("", false),
+        };
+        let sql = format!(
+            "SELECT (first_time_seen / 86400000) * 86400000 AS day, COUNT(*) FROM peer_records
+             WHERE first_time_seen >= ?1 AND first_time_seen < ?2{cond}
+             GROUP BY day ORDER BY day"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if has_downloader {
+            let d = downloader.unwrap_or_default();
+            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    /// `traffic_journal_v3` 按天汇总（上传 / 下载各为 `(timestamp, (downloaded, uploaded))`）。
+    pub fn traffic_trend(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<(i64, (i64, i64))>> {
+        let conn = self.conn.lock().unwrap();
+        let (cond, has_downloader) = match downloader {
+            Some(_) => (" AND downloader = ?3", true),
+            None => ("", false),
+        };
+        let sql = format!(
+            "SELECT (timestamp / 86400000) * 86400000 AS day,
+                    COALESCE(SUM(data_overall_downloaded), 0),
+                    COALESCE(SUM(data_overall_uploaded), 0)
+             FROM traffic_journal_v3 WHERE timestamp >= ?1 AND timestamp < ?2{cond}
+             GROUP BY day ORDER BY day"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if has_downloader {
+            let d = downloader.unwrap_or_default();
+            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
+                Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
+                Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    /// `peer_connection_metrics` 按天汇总（`(day, [total, incoming])`）。
+    pub fn connection_metrics_trend(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<(i64, [i64; 2])>> {
+        let conn = self.conn.lock().unwrap();
+        let (cond, has_downloader) = match downloader {
+            Some(_) => (" AND downloader = ?3", true),
+            None => ("", false),
+        };
+        let sql = format!(
+            "SELECT (timeframe_at / 86400000) * 86400000 AS day,
+                    COALESCE(SUM(total_connections), 0),
+                    COALESCE(SUM(incoming_connections), 0)
+             FROM peer_connection_metrics WHERE timeframe_at >= ?1 AND timeframe_at < ?2{cond}
+             GROUP BY day ORDER BY day"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if has_downloader {
+            let d = downloader.unwrap_or_default();
+            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
+                Ok((r.get::<_, i64>(0)?, [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?]))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
+                Ok((r.get::<_, i64>(0)?, [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?]))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    /// 按 IP 前缀或种子关键字查询访问历史（对齐 `PeerRecordService.query` +
+    /// `TorrentService.get` 的组合）。返回 (行, 总数)；`order` 元素为 (字段名, 升序?)，
+    /// 字段名走 `peer_record_order` 白名单。
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_access_history(
+        &self,
+        ip_prefix: Option<&str>,
+        keyword: Option<&str>,
+        order: &[(String, bool)],
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<AccessHistoryRow>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let (cond, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(ip) = ip_prefix {
+            ("WHERE p.address LIKE ?1 || '%'".to_string(), vec![Box::new(ip.to_string())])
+        } else if let Some(kw) = keyword {
+            (
+                "WHERE t.info_hash = ?1 OR t.name LIKE ?1 || '%'".to_string(),
+                vec![Box::new(kw.to_string())],
+            )
+        } else {
+            (String::new(), Vec::new())
+        };
+
+        let mut order_sql = String::new();
+        for (field, asc) in order {
+            if let Some(col) = Self::peer_record_order(field) {
+                order_sql.push_str(&format!("p.{col} {}, ", if *asc { "ASC" } else { "DESC" }));
+            }
+        }
+        order_sql.push_str("p.last_time_seen DESC");
+
+        let count_sql =
+            format!("SELECT COUNT(*) FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}");
+        let total: i64 = conn
+            .query_row(
+                &count_sql,
+                rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let sql = format!(
+            "SELECT p.id, p.address, p.port, p.torrent_id, COALESCE(t.info_hash, ''), COALESCE(t.name, ''),
+                    COALESCE(t.size, 0), p.downloader, COALESCE(p.peer_id, ''), COALESCE(p.client_name, ''),
+                    p.uploaded, p.downloaded, p.upload_speed, p.download_speed,
+                    COALESCE(p.last_flags, ''), p.first_time_seen, p.last_time_seen
+             FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}
+             ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut query_params: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        query_params.push(&limit);
+        query_params.push(&offset);
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(query_params), |row| {
+                Ok(AccessHistoryRow {
+                    id: row.get(0)?,
+                    peer_ip: row.get(1)?,
+                    port: row.get(2)?,
+                    torrent_id: row.get(3)?,
+                    torrent_info_hash: row.get(4)?,
+                    torrent_name: row.get(5)?,
+                    torrent_size: row.get(6)?,
+                    downloader: row.get(7)?,
+                    peer_id: row.get(8)?,
+                    client_name: row.get(9)?,
+                    uploaded: row.get(10)?,
+                    downloaded: row.get(11)?,
+                    upload_speed: row.get(12)?,
+                    download_speed: row.get(13)?,
+                    last_flags: row.get(14)?,
+                    first_time_seen: row.get(15)?,
+                    last_time_seen: row.get(16)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((rows, total))
+    }
+
+    /// 某 IP 的访问统计（对齐 `PeerRecordService.getPeerInfo` 的计数部分）。
+    ///
+    /// 返回 (总访问次数, 涉及的不同种子数, 最早/最晚时间, 累计上传/下载)。
+    pub fn peer_access_summary(&self, ip: &str) -> anyhow::Result<(i64, i64, i64, i64, i64, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT torrent_id), COALESCE(MIN(first_time_seen), 0),
+                    COALESCE(MAX(last_time_seen), 0), COALESCE(SUM(uploaded), 0), COALESCE(SUM(downloaded), 0)
+             FROM peer_records WHERE address = ?",
+            rusqlite::params![ip],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            },
+        )?;
+        Ok(row)
+    }
+
+    /// 查询种子列表（含封禁/访问统计，用于 `/api/torrent/query`）。
+    pub fn torrent_list(
+        &self,
+        keyword: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<TorrentRow>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let cond = match keyword {
+            Some(kw) if !kw.is_empty() => "WHERE t.name LIKE ?1 || '%' OR t.info_hash = ?1",
+            _ => "",
+        };
+        let kw = keyword.unwrap_or("").to_string();
+        let total: i64 = {
+            let params: [&dyn rusqlite::ToSql; 2] = [&kw, &kw];
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM torrents t {cond} "),
+                rusqlite::params_from_iter(params.iter()),
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+        };
+        let sql = format!(
+            "SELECT t.id, t.info_hash, t.name, t.size,
+                    COALESCE((SELECT COUNT(*) FROM ban_logs b WHERE b.torrent_hash = t.info_hash), 0),
+                    COALESCE((SELECT COUNT(*) FROM peer_records p WHERE p.torrent_id = t.id), 0)
+             FROM torrents t {cond}
+             ORDER BY t.id DESC LIMIT ? OFFSET ?"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if !cond.is_empty() {
+            query_params.push(&kw);
+            query_params.push(&kw);
+        }
+        query_params.push(&limit);
+        query_params.push(&offset);
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(query_params), |row| {
+                Ok(TorrentRow {
+                    id: row.get(0)?,
+                    info_hash: row.get(1)?,
+                    name: row.get(2)?,
+                    size: row.get(3)?,
+                    peer_ban_count: row.get(4)?,
+                    peer_access_count: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((rows, total))
+    }
+
+    /// 按 hash 查询单个种子统计。
+    pub fn torrent_by_hash(&self, hash: &str) -> anyhow::Result<Option<TorrentRow>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT t.id, t.info_hash, t.name, t.size,
+                        COALESCE((SELECT COUNT(*) FROM ban_logs b WHERE b.torrent_hash = t.info_hash), 0),
+                        COALESCE((SELECT COUNT(*) FROM peer_records p WHERE p.torrent_id = t.id), 0)
+                 FROM torrents t WHERE t.info_hash = ?1 LIMIT 1",
+                rusqlite::params![hash],
+                |row| {
+                    Ok(TorrentRow {
+                        id: row.get(0)?,
+                        info_hash: row.get(1)?,
+                        name: row.get(2)?,
+                        size: row.get(3)?,
+                        peer_ban_count: row.get(4)?,
+                        peer_access_count: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// 在时间窗口内按天汇总封禁数（对齐上游 `banTrends`，时间戳按天向下取整）。
+    pub fn ban_trends(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<(i64, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = if downloader.is_some() {
+            "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*)
+             FROM ban_logs WHERE created_at >= ?1 AND created_at < ?2 AND downloader_id = ?3
+             GROUP BY day ORDER BY day"
+        } else {
+            "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*)
+             FROM ban_logs WHERE created_at >= ?1 AND created_at < ?2
+             GROUP BY day ORDER BY day"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(d) = downloader {
+            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    /// 字段统计（对齐上游 `/api/statistic/analysis/field` 的 `countOrSum` 两种模式）。
+    ///
+    /// `mode = "count"` 计数，`mode = "sum"` 求和。`field` 必须是 `ban_logs` 的白名单列，
+    /// 非法列返回空列表（上游也会因 SQL 校验失败而返回空）。
+    pub fn field_stats(
+        &self,
+        field: &str,
+        mode: &str,
+        percent_filter: f64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<(String, i64, f64)>> {
+        const WHITELIST: &[&str] = &[
+            "downloader_id", "torrent_name", "torrent_hash", "ip", "port", "peer_id",
+            "client_name", "module", "rule", "reason",
+        ];
+        if !WHITELIST.contains(&field) {
+            return Ok(Vec::new());
+        }
+        let (cond, d_param): (String, bool) = match downloader {
+            Some(_) => (" AND downloader_id = ?3".to_string(), true),
+            None => (String::new(), false),
+        };
+        let select = if mode.eq_ignore_ascii_case("sum") {
+            format!("SUM({field})")
+        } else {
+            format!("COUNT({field})")
+        };
+        let sql = format!(
+            "SELECT COALESCE(CAST({field} AS TEXT), 'unknown') AS k, {select} AS v
+             FROM ban_logs WHERE 1=1{cond} GROUP BY k ORDER BY v DESC"
+        );
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&sql)?;
+        let list: Vec<(String, i64, f64)> = if d_param {
+            let d = downloader.unwrap_or_default();
+            stmt.query_map(rusqlite::params![d], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(k, v)| (k, v, 0.0))
+            .collect()
+        } else {
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .map(|(k, v)| (k, v, 0.0))
+                .collect()
+        };
+        let total: i64 = list.iter().map(|(_, v, _)| v).sum();
+        let filtered: Vec<(String, i64, f64)> = list
+            .into_iter()
+            .filter(|(_, v, _)| {
+                let pct = if total > 0 { *v as f64 / total as f64 } else { 0.0 };
+                pct >= percent_filter
+            })
+            .map(|(k, v, _)| {
+                let pct = if total > 0 { v as f64 / total as f64 } else { 0.0 };
+                (k, v, pct)
+            })
+            .collect();
+        Ok(filtered)
+    }
 }
 
-/// BTN 规则缓存的持久化落点（≈ 上游 `MetadataService` / `metadataDao`）。
+// ---------- Web 历史 / 排行相关行类型（顶层，供 API 层引用）----------
+
+/// 一条封禁历史（对齐上游 `HistoryEntity` 的 Web 视图；`unban_at` 为 0 表示未解封）。
+#[derive(Debug, Clone)]
+pub struct BanHistoryRow {
+    pub id: i64,
+    pub ban_at: i64,
+    pub unban_at: i64,
+    pub ip: String,
+    pub port: i64,
+    pub peer_id: String,
+    pub peer_client_name: String,
+    pub torrent_id: i64,
+    pub torrent_info_hash: String,
+    pub torrent_name: String,
+    pub torrent_size: i64,
+    pub module: String,
+    pub rule: String,
+    pub description: String,
+    pub downloader: String,
+}
+
+/// 种子统计行（供 `/api/torrent/query` 列表与 `/api/torrent/{hash}`）。
+#[derive(Debug, Clone)]
+pub struct TorrentRow {
+    pub id: i64,
+    pub info_hash: String,
+    pub name: String,
+    pub size: i64,
+    pub peer_ban_count: i64,
+    pub peer_access_count: i64,
+}
+
+/// 一条 Peer 访问历史（`PeerRecord` 与 `Torrent` 的 JOIN 视图，对齐 `AccessHistoryDTO`）。
+#[derive(Debug, Clone)]
+pub struct AccessHistoryRow {
+    pub id: i64,
+    pub peer_ip: String,
+    pub port: i64,
+    pub torrent_id: i64,
+    pub torrent_info_hash: String,
+    pub torrent_name: String,
+    pub torrent_size: i64,
+    pub downloader: String,
+    pub peer_id: String,
+    pub client_name: String,
+    pub uploaded: i64,
+    pub downloaded: i64,
+    pub upload_speed: i64,
+    pub download_speed: i64,
+    pub last_flags: String,
+    pub first_time_seen: i64,
+    pub last_time_seen: i64,
+}
+
+/// BTN 规则缓存的持久化位置（≈ 上游 `MetadataService` / `metadataDao`）。
 ///
 /// 上游把规则集与 IP 列表缓存写进 metadata 表，重启后各 ability 的 `load()` 直接回灌、
 /// 不重新拉取；这里复用已有的 `meta(key, value)` 键值表（与 `schema_version` 共存），

@@ -1,4 +1,11 @@
-//! axum Web 服务：统一响应、Token 鉴权、封禁 API、概要统计、静态 WebUI 托管（SPEC 第 7 节）。
+//! axum Web 服务：统一响应、Token 鉴权、封禁历史 API、概要统计、静态 WebUI 托管
+//! （SPEC 第 7 节；WebAPI 与上游 `webapi/**Controller` 逐端点对齐，详见 `api` 模块）。
+
+pub mod api;
+pub mod backend;
+pub use backend::{
+    BuildMeta, LogEntry, ModuleRecord, ReloadEntry, RingLog, SubModule, WebBackend,
+};
 
 use axum::{
     body::Body,
@@ -16,17 +23,24 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::warn;
 
-/// 运行期概要指标，由 ban wave 调度器更新。
+/// 运行期统计（由 ban wave 调度器增量更新）。
 #[derive(Default, Debug, Clone)]
 pub struct Metrics {
     pub downloader_count: usize,
     pub torrent_count: usize,
     pub peer_count: usize,
     pub banned_total: usize,
+    /// 累计检查次数（对每个 peer 跑一遍 pipeline 计一次）
+    pub checks: u64,
+    /// 累计封禁次数
+    pub peer_bans: u64,
+    /// 累计解封次数
+    pub peer_unbans: u64,
 }
 
 #[derive(Clone)]
@@ -45,6 +59,14 @@ pub struct AppState {
     pub translator: Arc<Translator>,
     /// 服务端默认 locale（请求未指定 `locale` 时使用）
     pub locale: String,
+    /// 主进程能力（配置读写、下载器管理、推送、手动封禁调度等）
+    pub backend: Arc<dyn WebBackend>,
+    /// 日志环形缓冲（`/api/logs/history` 与 SSE `/api/logs/live`）
+    pub log_ring: Arc<RingLog>,
+    /// 全局暂停开关（`PATCH /api/general/global` 与 wave 引擎共享）
+    pub global_pause: Arc<AtomicBool>,
+    /// 规则订阅模块（未启用为 `None`，`/api/sub/*` 返回 404）
+    pub sub_module: Option<Arc<dyn SubModule>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -64,22 +86,17 @@ const PLACEHOLDER: &str = "<!doctype html><html><head><meta charset='utf-8'><tit
 <p>API：<code>/api/metrics/general</code> · <code>/api/ban/list</code> · <code>/api/ban/logs</code></p>\
 </body></html>";
 
-fn std_resp(success: bool, message: Option<&str>, data: Value) -> Json<Value> {
+/// 统一响应包装（`{success, message, data}`；对齐上游 `StdResp` 的紧凑 JSON）。
+pub(crate) fn std_resp(success: bool, message: Option<&str>, data: Value) -> Json<Value> {
     Json(json!({ "success": success, "message": message, "data": data }))
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let api = Router::new()
-        .route("/ban/list", get(ban_list))
-        .route("/ban/logs", get(ban_logs))
-        .route("/metrics/general", get(general_metrics))
-        .route("/downloaders", get(downloaders))
-        // 监控视图（对齐上游 `SwarmTrackingModule.onEnable` 注册的 `/api/modules/swarm-tracking*`
-        // 与 `PBHAlertController` 的 `/api/alerts`；两者都是 Role.USER_READ，走 Token 鉴权）
-        .route("/modules/swarm-tracking", get(swarm_tracking))
-        .route("/modules/swarm-tracking/details", get(swarm_tracking_details))
-        .route("/alerts", get(alerts))
+    // 需要 Token 鉴权的 API（对齐上游 Role.USER_READ / USER_WRITE 分组）
+    let api_authed = api::api_routes()
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+    // 无需鉴权的 API（Role.ANYONE：登录、manifest、初始化状态）
+    let api_public = api::public_routes();
 
     Router::new()
         .route("/health", get(health))
@@ -87,7 +104,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/blocklist/p2p-plain-format", get(blocklist_p2p_plain))
         .route("/blocklist/ip", get(blocklist_ip))
         .route("/blocklist/dat-emule", get(blocklist_dat_emule))
-        .nest("/api", api)
+        .nest("/api", api_public)
+        .nest("/api", api_authed)
         .fallback(static_handler)
         .with_state(state)
 }
@@ -362,7 +380,7 @@ async fn ban_logs(State(state): State<AppState>, Query(q): Query<LogsQuery>) -> 
 }
 
 /// 用落库的 `TranslationComponent`（JSON）按 locale 重新渲染；解析失败或 key 缺失时回退到已渲染文案。
-fn render_keyed(
+pub(crate) fn render_keyed(
     stored: &Option<String>,
     fallback: &str,
     translator: &Translator,
@@ -476,7 +494,7 @@ async fn swarm_tracking_details(
 
 /// 解析 `orderBy` 查询参数：对齐上游 `Orderable` 的 `field|asc` / `field|desc`
 /// （缺省方向为 ASC）；可重复出现，按出现顺序作为主次排序键。
-fn parse_order_by(query: Option<&str>) -> Vec<(String, bool)> {
+pub(crate) fn parse_order_by(query: Option<&str>) -> Vec<(String, bool)> {
     query
         .into_iter()
         .flat_map(|query| query.split('&'))
@@ -502,7 +520,7 @@ fn parse_order_by(query: Option<&str>) -> Vec<(String, bool)> {
 }
 
 /// 极简 `%XX` 百分号解码（用于 `orderBy` 的 `|` 分隔符）。
-fn percent_decode(value: &str) -> String {
+pub(crate) fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -604,6 +622,8 @@ mod tests {
     use axum::http::Request;
     use pbh_core::modules::{AlertLevel, MonitorSink, TrackedSwarmRow};
     use pbh_db::DbMonitorSink;
+    use pbh_downloader::Downloader;
+    use std::sync::atomic::AtomicBool;
     use tower::ServiceExt;
 
     /// 端点测试用的 AppState（内存库 + 固定 Token + 内嵌文案表）。
@@ -619,6 +639,81 @@ mod tests {
             remap: Arc::new(pbh_core::remap::RemapConfig::default()),
             translator: Arc::new(Translator::embedded()),
             locale: "zh_cn".to_string(),
+            backend: Arc::new(NoopBackend),
+            log_ring: Arc::new(RingLog::new(16)),
+            global_pause: Arc::new(AtomicBool::new(false)),
+            sub_module: None,
+        }
+    }
+
+    /// 测试用空实现：所有能力返回默认/空值（端点路由不依赖具体后端）。
+    struct NoopBackend;
+    impl crate::backend::WebBackend for NoopBackend {
+        fn installation_id(&self) -> String {
+            "test-install".into()
+        }
+        fn analytics_enabled(&self) -> bool {
+            true
+        }
+        fn set_analytics(&self, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn modules(&self) -> Vec<ModuleRecord> {
+            vec![]
+        }
+        fn global_paused(&self) -> bool {
+            false
+        }
+        fn set_global_paused(&self, _paused: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn reload(&self) -> Vec<ReloadEntry> {
+            vec![]
+        }
+        fn read_config(&self, _name: &str) -> Result<Value, String> {
+            Err("CONFIG_NOT_FOUND: test".into())
+        }
+        fn write_config(&self, _name: &str, _data: &Value) -> Result<(), String> {
+            Err("CONFIG_NOT_FOUND: test".into())
+        }
+        fn ban_peers(&self, _ips: &[String]) -> Result<(), String> {
+            Ok(())
+        }
+        fn unban_peers(&self, _ips: &[String]) -> Result<(), String> {
+            Ok(())
+        }
+        fn downloaders(&self) -> Vec<Value> {
+            vec![]
+        }
+        fn downloader(&self, _id: &str) -> Option<Arc<dyn Downloader>> {
+            None
+        }
+        fn add_downloader(&self, _config: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn update_downloader(&self, _id: &str, _config: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn remove_downloader(&self, _id: &str) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn test_downloader(&self, _config: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn push_channels(&self) -> Vec<Value> {
+            vec![]
+        }
+        fn add_push_channel(&self, _channel: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn update_push_channel(&self, _name: &str, _channel: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn remove_push_channel(&self, _name: &str) -> Result<(), String> {
+            Err("TEST_ONLY".into())
+        }
+        fn test_push_channel(&self, _channel: &Value) -> Result<(), String> {
+            Err("TEST_ONLY".into())
         }
     }
 

@@ -113,6 +113,18 @@ impl BanList {
     pub fn clear_need_reapply(&mut self) {
         self.need_reapply = false;
     }
+
+    /// 强制下一轮全量重放（web 手动封禁/解封后调用，
+    /// 对齐上游手动操作后 `BanListManager.addBan` + 立即 `banWaveAsync` 的全量下发语义）。
+    pub fn mark_reapply(&mut self) {
+        self.need_reapply = true;
+    }
+
+    /// 清空封禁表（web `DELETE /api/bans` 的 `*` 语义；同时标记下一轮全量重放）。
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.need_reapply = true;
+    }
 }
 
 /// 是否需要下发**全量**封禁列表。

@@ -155,12 +155,11 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 
 > **监控落库与监控 API（已接线）**：DB 版 `MonitorSink`（五张表 + `torrents`）与
 > `/api/modules/swarm-tracking`、`/api/modules/swarm-tracking/details`、`/api/alerts`
-> 均已实现；未移植的只剩 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
-> `DELETE /api/alert/{id}`（故 `read_at` 恒为 NULL），以及阈值告警的 `push:` 渠道推送。
+> 均已实现；告警读写端点 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
+> `DELETE /api/alert/{id}` 也已移植（`read_at` 正常落库），阈值告警的 `push:` 渠道推送已接线。
 
-> **已知缺口（非静默省略）**：PLAN.md「Phase 1.7」清单中的缺口**已全部关闭**，
-> 现有未移植项仅剩不影响封禁语义的告警读写端点（`dismiss` / `dismissAll` / `DELETE`，故 `read_at` 恒为 NULL）
-> 与部分 BTN abilities（`submit_*` / `heartbeat` / `ip-query` / `reconfigure`：只解析不构造、不调度）。
+> **已知缺口（非静默省略）**：现有未移植项仅剩不影响封禁语义的部分 BTN abilities
+> （`submit_*` / `heartbeat` / `ip-query` / `reconfigure`：只解析不构造、不调度）。
 > 本轮落地：BTN 传输层（握手/abilities/PoW/缓存 + 脚本规则）、GeoIP 数据库自动更新、
 > AutoSTUN 的 UDP NAT 探测与 TCP 转发器、上传限速下发、阈值告警的 `push:` 渠道推送。
 
@@ -172,16 +171,20 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
       语法翻译表见 `docs/expression-engine-migration.md`（AviatorScript API → rhai 字段映射、语法对照、迁移示例）
 - [x] `ptr-blacklist`、`idle-connection-dos-protection`（上游默认关闭，显式启用即生效）
 - [x] `ip-address-blocker` 的 GeoIP 维度（ASN / 地区 / 城市 / 网络类型）
-- [x] `btn`（BTN 网络在线规则判定模块，默认启用；传输层见「已知缺口」）
+- [x] `btn`（BTN 网络在线规则判定模块，默认启用；传输层 + 脚本规则已接线）
 - [x] 非封禁模块：`active-monitoring`、`peer-analyse-service.*`（SQLite 落点 + 监控 Web API）
 - [x] 告警推送渠道（PushPlus / ServerChan / SMTP / Telegram / Bark / PushDeer / Gotify / Ntfy / Webhook）
 - [x] 内置 NAT（AutoSTUN）地址翻译（默认关闭，严格直通）
 - [x] 其余下载器：Deluge / BiglyBT / BitComet / Aria2Next（Transmission 见上）
 - [x] 监控数据的 DB 持久化（`pbh-db::DbMonitorSink`：`alert` / `traffic_journal_v3` /
       `peer_connection_metrics(_track)` / `peer_records` / `tracked_swarm`）与监控 Web API
-- [ ] BTN 传输层（握手 / abilities / PoW / 缓存）与 BTN 脚本规则
-- [ ] GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）
-- [ ] AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活
+- [x] BTN 传输层（握手 / abilities / PoW / 缓存）与 BTN 脚本规则
+- [x] GeoIP 数据库自动更新（mmdb 下载 + XZ 解压）
+- [x] AutoSTUN 的 UDP NAT 类型探测、TCP 转发器与端口保活
+- [x] Web 后端接线（`pbh-web` → `pbh::backend::PbhBackend`）：配置读写、下载器热管理
+      （`/api/downloaders` 增删改 + 全量 reload）、手动封禁 / 解封（立即按 wave 下发）、
+      推送渠道热管理（`/api/push` 增删改 + 即时生效）、告警读写（dismiss / dismissAll / delete）、
+      实时日志环形缓冲与 WebSocket 推送
 - [ ] Web API 按请求 locale 渲染、WebSocket 实时推送、MySQL/PostgreSQL、插件系统（WASM）
 
 ---
@@ -253,13 +256,14 @@ peerbanhelper-rs/
 - `cargo build --release --workspace`：通过（LTO + codegen-units=1 + strip），
   产物 `target/release/pbh` **7.82 MB**（Linux x64，含内嵌上游文案资源）；
   Windows x64 在 i18n 之前实测 6.28 MB。
-- `cargo test --workspace`：**368 个测试全部通过**
-  （pbh-core 163、pbh 38（推送渠道 32 + 监控宿主 5 + 出厂配置守卫 1）、pbh-db 4、pbh-web 4、
-  pbh-downloader 76（qB / Transmission / Deluge / BiglyBT / BitComet / Aria2Next）、
-  黄金测试 83（L1 匹配器 / L2 模块与 profile 配置 / L3 适配器 / L4 端到端））。
-  本轮新增：`ip_rule_list` 的 `/0`、`/32`、`/128` 前缀边界回归（`RuleIndex::build` 的移位
+- `cargo test --workspace`：**480+ 个测试全部通过**
+  （pbh-core、pbh（推送渠道 + 监控宿主 + 出厂配置守卫）、pbh-db、pbh-web、
+  pbh-downloader（qB / Transmission / Deluge / BiglyBT / BitComet / Aria2Next）、
+  黄金测试（L1 匹配器 / L2 模块与 profile 配置 / L3 适配器 / L4 端到端））。
+  各轮新增：`ip_rule_list` 的 `/0`、`/32`、`/128` 前缀边界回归（`RuleIndex::build` 的移位
   越界 panic 修复）、GeoIP/BTN/AutoSTUN/监控模块的配置与接线守卫、
-  `MonitorHost` 的 `onPeersRetrieved` → 定时 flush 全链路（内存 sink）。
+  `MonitorHost` 的 `onPeersRetrieved` → 定时 flush 全链路（内存 sink）、
+  Web 后端接线守卫（`PbhBackend` 热管理 / 手动封禁 / 推送渠道重建）。
 - 规则订阅端到端冒烟（以本地 HTTP 服务作为订阅源）：`IP黑名单订阅规则 all-in-one 加载成功`、
   `IP 黑名单规则订阅：all-in-one=2 条`，并按上游路径写入 `data/sub/all-in-one.txt`。
 - Transmission 端到端：mock RPC 覆盖 409 会话握手 / blocklist 配置与失败回退 / 种子与 peers 映射 /

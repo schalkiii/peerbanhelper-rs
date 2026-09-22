@@ -1,6 +1,8 @@
+mod backend;
 mod config;
 mod monitor;
 mod push;
+mod ring;
 mod rulesub;
 mod wave;
 
@@ -16,19 +18,16 @@ use pbh_core::modules::progress_cheat::PcbEntityKind;
 use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
 use pbh_core::Pipeline;
 use pbh_db::{Database, DbMetadataStore, DbMonitorSink};
-use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
-use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
-use pbh_downloader::bitcomet::{BitCometConfig, BitCometDownloader};
-use pbh_downloader::deluge::{DelugeConfig, DelugeDownloader};
 use pbh_downloader::http::ReqwestFetcher;
-use pbh_downloader::qbittorrent::{QBConfig, QBittorrentDownloader};
-use pbh_downloader::transmission::{TRConfig, TransmissionDownloader};
-use pbh_web::{build_router, AppState, DownloaderStatus, Metrics};
+use pbh_web::{build_router, AppState, DownloaderStatus, Metrics, RingLog};
+use ring::RingLayer;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 use wave::{DownloaderEntry, WaveEngine};
 
 #[derive(Parser, Debug)]
@@ -47,11 +46,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,pbh=debug,reqwest=warn".into()),
-        )
+    let ring_log = Arc::new(RingLog::new(4096));
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,pbh=debug,reqwest=warn".into());
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_thread_names(true))
+        .with(RingLayer::new(ring_log.clone()))
         .init();
 
     let args = Args::parse();
@@ -103,157 +104,24 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 下载器
-    let remap = cfg.remap_config();
+    let remap = Arc::new(cfg.remap_config());
     let blocklist_url = format!(
         "http://{}:{}/blocklist/p2p-plain-format",
         cfg.server.public_host(),
         cfg.server.http
     );
-    let mut entries: Vec<DownloaderEntry> = Vec::new();
+    let mut built_entries: Vec<DownloaderEntry> = Vec::new();
     for d in &cfg.downloaders {
-        match d.kind.as_str() {
-            "qbittorrent" => {
-                let qb_cfg = QBConfig {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    username: d.username.clone(),
-                    password: d.password.clone(),
-                    api_key: d.api_key.clone(),
-                    basic_auth: None,
-                    verify_tls: d.verify_tls,
-                    ignore_private: d.ignore_private,
-                    increment_ban: d.increment_ban,
-                    disable_same_ip_multi_connection: true,
-                    max_concurrent_slots: 128,
-                    remap: remap.clone(),
-                };
-                match QBittorrentDownloader::new(qb_cfg) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        increment_ban: d.increment_ban,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            "transmission" => {
-                let tr_cfg = TRConfig {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    username: d.username.clone(),
-                    password: d.password.clone(),
-                    verify_ssl: d.verify_tls,
-                    rpc_url: d.resolved_rpc_url("/transmission/rpc"),
-                    ignore_private: d.ignore_private,
-                    paused: false,
-                    blocklist_url: blocklist_url.clone(),
-                };
-                match TransmissionDownloader::new(tr_cfg, remap.clone()) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        // Transmission 只支持整份 blocklist 更新，必须走全量路径（对齐上游 setBanList）
-                        increment_ban: false,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            "deluge" => {
-                let deluge_cfg = DelugeConfig {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    password: d.password.clone(),
-                    verify_ssl: d.verify_tls,
-                    // 上游 Deluge 的 rpc-url 默认 /json
-                    rpc_url: d.resolved_rpc_url("/json"),
-                    paused: d.paused,
-                    remap: remap.clone(),
-                };
-                match DelugeDownloader::new(deluge_cfg) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        // 上游 Deluge 支持增量封禁（peerbanhelperadapter.ban_ips）
-                        increment_ban: d.increment_ban,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            // 上游配置节的 `type` 为 `aria2next`；`aria2` 作为等价别名一并接受
-            "aria2next" | "aria2" => {
-                let aria2_cfg = Aria2Config {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    // RPC 密钥：既进 `Authorization: token:<secret>` 头，也进 params 首元素
-                    token: d.token.clone(),
-                    verify_ssl: d.verify_tls,
-                    // 上游 Aria2Next 的默认值是「不忽略私有种子」（且该字段实际未被使用）
-                    ignore_private: d.ignore_private,
-                    paused: d.paused,
-                    remap: remap.clone(),
-                };
-                match Aria2Downloader::new(aria2_cfg) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        // Aria2Next 没有增量封禁 API：上游 `setBanList` 忽略 added/removed，
-                        // 恒为整份列表替换（`aria2.setBtPeerBlocklist`），必须固定全量路径
-                        increment_ban: false,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            "biglybt" => {
-                let biglybt_cfg = BiglyBtConfig {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    token: d.token.clone(),
-                    increment_ban: d.increment_ban,
-                    verify_ssl: d.verify_tls,
-                    // 上游 BiglyBT 的默认值是「不忽略私有种子」
-                    ignore_private: d.ignore_private,
-                    paused: d.paused,
-                    remap: remap.clone(),
-                };
-                match BiglyBtDownloader::new(biglybt_cfg) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        // 上游 BiglyBT 支持增量封禁（POST /bans）
-                        increment_ban: d.increment_ban,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            "bitcomet" => {
-                let bitcomet_cfg = BitCometConfig {
-                    id: d.name.clone(),
-                    name: d.name.clone(),
-                    endpoint: d.endpoint.clone(),
-                    username: d.username.clone(),
-                    password: d.password.clone(),
-                    increment_ban: d.increment_ban,
-                    verify_ssl: d.verify_tls,
-                    // 上游 BitComet 的默认值是「不忽略私有种子」
-                    ignore_private: d.ignore_private,
-                    paused: d.paused,
-                    remap: remap.clone(),
-                };
-                match BitCometDownloader::new(bitcomet_cfg) {
-                    Ok(dl) => entries.push(DownloaderEntry {
-                        downloader: Arc::new(dl),
-                        // 上游 v9.5.1 的 BitComet 恒走整份替换（setBanListFull）：
-                        // 增量导入（import_type=merge）自 BitComet 2.11 起不再支持，
-                        // 上游的增量分支因此被删除（登录门槛已是 2.18），必须固定全量路径
-                        increment_ban: false,
-                    }),
-                    Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
-                }
-            }
-            other => warn!("暂不支持的下载器类型: {other}（跳过）"),
+        match backend::build_downloader(d, &remap, &blocklist_url) {
+            Ok((downloader, increment)) => built_entries.push(DownloaderEntry {
+                downloader,
+                increment_ban: increment,
+            }),
+            Err(e) => warn!("下载器 {} 初始化失败: {e}", d.name),
         }
     }
-    info!("已加载 {} 个下载器", entries.len());
+    info!("已加载 {} 个下载器", built_entries.len());
+    let entries: Arc<Mutex<Vec<DownloaderEntry>>> = Arc::new(Mutex::new(built_entries));
 
     // GeoIP 数据源（对齐上游 `@Autowired IPDBManager`）：
     // `pbh.forceDisableIPDB` 打开、或 `<data>/ipdb/geoip/*.mmdb` 缺失/损坏时不注入 provider，
@@ -442,6 +310,21 @@ async fn main() -> anyhow::Result<()> {
     // Web 状态
     let metrics = Arc::new(Mutex::new(Metrics::default()));
     let statuses = Arc::new(Mutex::new(Vec::<DownloaderStatus>::new()));
+    // Web 后端：配置读写 / 下载器热管理 / 手动封禁 / 推送渠道（对齐上游各 Controller）
+    let wave_trigger = Arc::new(tokio::sync::Notify::new());
+    let global_pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let backend = Arc::new(backend::PbhBackend::new(
+        data_dir.clone(),
+        cfg.clone(),
+        remap.clone(),
+        blocklist_url.clone(),
+        pipeline.clone(),
+        db.clone(),
+        entries.clone(),
+        statuses.clone(),
+        alert_manager.clone(),
+        wave_trigger.clone(),
+    ));
     let state = AppState {
         db: db.clone(),
         token: Arc::new(Mutex::new(cfg.server.token.clone())),
@@ -450,9 +333,13 @@ async fn main() -> anyhow::Result<()> {
         downloaders: statuses.clone(),
         static_dir: Arc::new(Mutex::new(Some(data_dir.join("static")))),
         ban_list: pipeline.ban_list.clone(),
-        remap: Arc::new(remap.clone()),
+        remap: remap.clone(),
         translator: translator.clone(),
         locale: cfg.language.locale.clone(),
+        backend: backend.clone(),
+        log_ring: ring_log.clone(),
+        global_pause: global_pause.clone(),
+        sub_module: None,
     };
     let app = build_router(state);
     let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;
@@ -525,6 +412,11 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                // 全局暂停（web `/api/general/global` 切换）：暂停期跳过 ban wave，
+                // 但监控模块定时任务照常（对齐上游 pause 下任务仍执行的语义）
+                if global_pause.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
                 let now = chrono::Utc::now().timestamp_millis();
                 let report = engine.run_once(now).await;
                 wave_count += 1;
@@ -539,7 +431,10 @@ async fn main() -> anyhow::Result<()> {
                 // 监控模块的定时任务（内部按各模块的上游间隔判断到期；首次 delay 0 立即执行）：
                 // active-monitoring 每 1 分钟 updateTrafficStatus、session-analyse /
                 // peer-recording / swarm-tracking 按各自的 flush / cleanup 间隔。
-                engine.monitor.run_scheduled(&engine.entries, now).await;
+                // 快照后释放锁再 await：定时任务内有网络 I/O，持锁跨 await 会阻塞下载器热管理
+                let entries_snapshot: Vec<_> =
+                    engine.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                engine.monitor.run_scheduled(&entries_snapshot, now).await;
                 // 每 100 轮清理一次过期日志
                 if wave_count.is_multiple_of(100) && cleanup_days > 0 {
                     if let Ok(n) = db.cleanup_ban_logs(cleanup_days) {
@@ -562,13 +457,25 @@ async fn main() -> anyhow::Result<()> {
                     next_pcb_cleanup = std::time::Instant::now() + pcb_cleanup_period;
                 }
             }
+            _ = wave_trigger.notified() => {
+                // 手动封禁/解封后的立即 ban wave（对齐上游 web 手动操作即触发）
+                let now = chrono::Utc::now().timestamp_millis();
+                let report = engine.run_once(now).await;
+                if !report.errors.is_empty() {
+                    for e in &report.errors {
+                        warn!("wave error: {e}");
+                    }
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("收到退出信号，停止…");
                 // 对齐各监控模块的 onDisable：active-monitoring 再跑一次 on_tick、
                 // session-analyse 跑 flush_data、peer-recording 跑 flush。
+                let entries_snapshot: Vec<_> =
+                    engine.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 engine
                     .monitor
-                    .shutdown(&engine.entries, chrono::Utc::now().timestamp_millis())
+                    .shutdown(&entries_snapshot, chrono::Utc::now().timestamp_millis())
                     .await;
                 break;
             }

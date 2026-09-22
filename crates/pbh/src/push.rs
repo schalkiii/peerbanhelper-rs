@@ -1183,7 +1183,9 @@ struct AlertRecord {
 /// - `Main.getGuiManager().createNotification(...)` ⇒ 以同级别的 tracing 事件替代；
 /// - Sentry 上报（上游在 catch 中 `Sentry.captureException`）。
 pub struct AlertManager {
-    push_manager: Arc<PushManager>,
+    /// 可替换的推送管理器：Web 渠道管理（`/api/push`）会整体重建并热替换，
+    /// 告警推送始终使用最新实例（对齐上游 `PushManagerImpl.reloadConfig()` 的即时生效语义）。
+    push_manager: Mutex<Arc<PushManager>>,
     translator: Arc<Translator>,
     locale: String,
     /// identifier → 记录；`identifierAlertExists` = 存在且未读，
@@ -1198,7 +1200,7 @@ impl AlertManager {
         locale: impl Into<String>,
     ) -> Self {
         Self {
-            push_manager,
+            push_manager: Mutex::new(push_manager),
             translator,
             locale: locale.into(),
             alerts: Mutex::new(HashMap::new()),
@@ -1237,9 +1239,15 @@ impl AlertManager {
         }
     }
 
+    /// 热替换推送管理器（`/api/push` 保存渠道后调用，对齐上游 `PushManagerImpl`
+    /// 的 add/remove + `savePushProviders()` 即时生效语义）。
+    pub fn update_push_manager(&self, manager: Arc<PushManager>) {
+        if let Ok(mut slot) = self.push_manager.lock() {
+            *slot = manager;
+        }
+    }
+
     /// 对齐 `AlertManager.getHighestUnreadAlertLevel`（未读告警中 `ordinal()` 最大者）。
-    ///
-    /// 上游由 WebUI 概览调用；本阶段无 WebUI，可供后续接入。
     #[allow(dead_code)]
     pub fn get_highest_unread_alert_level(&self) -> Option<AlertLevel> {
         self.alerts
@@ -1283,10 +1291,15 @@ impl AlertManager {
         let title_text = self.translator.render(title, &self.locale);
         let content_text = self.translator.render(content, &self.locale);
         if push {
-            if self.push_manager.provider_list().is_empty() {
+            // 注意：只借用瞬时快照（Arc<PushManager> 是 Send），避免把
+            // MutexGuard 带过 await 导致 async block 非 Send。
+            let manager = {
+                let slot = self.push_manager.lock().unwrap_or_else(|e| e.into_inner());
+                (*slot).clone()
+            };
+            if manager.provider_list().is_empty() {
                 debug!("未配置任何推送渠道，跳过推送: {identifier}");
-            } else if !self
-                .push_manager
+            } else if !manager
                 .push_message(
                     &format!("[PeerBanHelper/{}] {title_text}", level.name()),
                     &content_text,

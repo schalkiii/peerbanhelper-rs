@@ -35,7 +35,16 @@ use pbh_core::modules::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use std::sync::{Arc, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::error;
+
+/// 当前 Unix 毫秒时间戳（告警读写与 Web 端点共用）。
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// `peer_records` 的列（读取顺序与 [`map_peer_record`] 一致）。
 pub const PEER_RECORD_COLUMNS: &str = "address, port, torrent_id, downloader, peer_id, client_name, \
@@ -879,6 +888,55 @@ impl Database {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// `/api/alert/{id}/dismiss` 的 `AlertService.getById`；不存在返回 `None`。
+    pub fn get_alert_by_id(&self, id: i64) -> anyhow::Result<Option<AlertRow>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT id, create_at, read_at, level, identifier, title, content
+             FROM alert WHERE id=?1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![id], |row| {
+            Ok(AlertRow {
+                id: row.get(0)?,
+                create_at_ms: row.get(1)?,
+                read_at_ms: row.get(2)?,
+                level: row.get(3)?,
+                identifier: row.get(4)?,
+                title: row.get(5)?,
+                content: row.get(6)?,
+            })
+        })?;
+        rows.next().transpose().map_err(Into::into)
+    }
+
+    /// `/api/alert/{id}/dismiss`：标记单条已读（`setReadAt` + `saveOrUpdate`）。
+    pub fn mark_alert_read(&self, id: i64) -> anyhow::Result<()> {
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "UPDATE alert SET read_at=?1 WHERE id=?2 AND read_at IS NULL",
+            rusqlite::params![now, id],
+        )?;
+        Ok(())
+    }
+
+    /// `/api/alert/dismissAll` 的 `AlertService.markAllAsRead`。
+    pub fn mark_all_alerts_read(&self) -> anyhow::Result<usize> {
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn.execute(
+            "UPDATE alert SET read_at=?1 WHERE read_at IS NULL",
+            rusqlite::params![now],
+        )?)
+    }
+
+    /// `/api/alert/{id}` 的 `AlertService.removeById`。
+    pub fn delete_alert_by_id(&self, id: i64) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM alert WHERE id=?1", rusqlite::params![id])?;
+        Ok(())
     }
 }
 

@@ -33,6 +33,10 @@ pub struct AppConfig {
     /// 服务端日志/入库文案语言（对齐上游 `Main.DEF_LOCALE` 的作用）
     #[serde(default = "default_language")]
     pub language: LanguageConfig,
+    /// 匿名统计开关（对齐上游 `config.yml` 的 `analytics`；
+    /// 本移植不采集任何统计，该键用于与上游配置文件/WebUI 状态完全互通）
+    #[serde(default = "p_true")]
+    pub analytics: bool,
     /// `push:` 段（告警推送渠道）
     #[serde(default)]
     pub push: PushSection,
@@ -403,6 +407,7 @@ impl Default for AppConfig {
             push: PushSection::default(),
             btn: BtnNetworkConfig::default(),
             downloaders: vec![],
+            analytics: true,
         }
     }
 }
@@ -423,6 +428,13 @@ impl AppConfig {
             let cfg: AppConfig = serde_yaml::from_str(DEFAULT_CONFIG_YAML)?;
             Ok((cfg, path))
         }
+    }
+
+    /// 序列化并写回 config.yml（Web 配置保存与下载器/推送热管理的共用写入口）。
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        let text = serde_yaml::to_string(self)?;
+        std::fs::write(path, text)?;
+        Ok(())
     }
 }
 
