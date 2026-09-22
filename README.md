@@ -57,7 +57,8 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
   - [x] 表达式规则（`expression-engine`，rhai 等价 AviatorScript；脚本取自 `<data>/scripts/*.av`，
         默认空目录 → 不产生任何封禁，返回值语义对齐上游 `ScriptEngineManager.handleResult`）
   - [x] BTN 网络在线规则（`btn`，五类规则 + 现代协议 IP 白/黑名单；按上游 `registerModules()`
-        顺序位于 `auto-range-ban` 之后；**BTN 传输层未移植** → 未注入规则时恒 pass、绝不封禁）
+        顺序位于 `auto-range-ban` 之后；传输层含规则拉取与 `submit_*` / 心跳等全部上报能力，
+        未注入规则/数据源时恒 pass、不发任何请求）
 - [x] **GeoIP 四维度**：`ip-address-blocker` 的 ASN / 国家地区 ISO / 城市 / 网络类型，
       对齐 `IPDB` + `GeoCN1|2`（逐字段覆盖式合并、CN/TW/HK/MO 回填、行政区划表前缀查询）；
       应用层按 `config.yml` 的 `ip-database` 段加载 `<data>/ipdb/geoip/*.mmdb`，
@@ -144,7 +145,7 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 | 能力 | 接线点 | 说明 |
 | --- | --- | --- |
 | GeoIP 四维度 | `config.yml` 的 `ip-database` 段 → `GeoIpDb::load(<data>/ipdb)` → `build_pipeline_with_geo(geo)` | 数据库不可用/`pbh.forceDisableIPDB` ⇒ 不注入 provider，四维度全不命中 |
-| BTN | `profile.module.btn` → `build_pipeline_with_geo` 在 `auto-range-ban` 之后实例化 `BtnNetworkOnline` | 传输层未移植：未注入规则时恒 `pass()` |
+| BTN | `profile.module.btn` → `build_pipeline_with_geo` 在 `auto-range-ban` 之后实例化 `BtnNetworkOnline` | 传输层已移植（握手/规则/上报/心跳，见上）；未注入规则时恒 `pass()` |
 | AutoSTUN | `ip-remapping.auto-stun` → 仅 `enabled: true` 时 `AutoStunConfig::build()` + `with_auto_stun()` + 后台刷新线程 | `enabled: false`（默认）为**严格 no-op**，不发起任何网络请求 |
 | 监控模块 | `profile.module.active-monitoring` / `peer-analyse-service.*` → `build_monitor_modules(sink)` → ban wave 循环按上游间隔驱动 | 落点为 `DbMonitorSink`（SQLite 五张监控表，与其余持久化共用同一个 `Database`）；启动时 `reset_tracked_swarm()`，`peer_records.peer_geoip` 由 sink 内查 IP 库填充 |
 
@@ -158,10 +159,13 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 > 均已实现；告警读写端点 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
 > `DELETE /api/alert/{id}` 也已移植（`read_at` 正常落库），阈值告警的 `push:` 渠道推送已接线。
 
-> **已知缺口（非静默省略）**：现有未移植项仅剩不影响封禁语义的部分 BTN abilities
-> （`submit_*` / `heartbeat` / `ip-query` / `reconfigure`：只解析不构造、不调度）。
-> 本轮落地：BTN 传输层（握手/abilities/PoW/缓存 + 脚本规则）、GeoIP 数据库自动更新、
-> AutoSTUN 的 UDP NAT 探测与 TCP 转发器、上传限速下发、阈值告警的 `push:` 渠道推送。
+> **BTN 上报能力（已实现）**：`submit_bans` / `submit_swarm` / `submit_histories` /
+> `heartbeat`（含 `multi_if` 多网卡）/ `ip_query` / `reconfigure`（服务端版本变更自动重新握手）
+> 与遗留协议（`min < 20`）的 `submit_peers` / `submit_bans` 均已按上游 wire contract 移植，
+> 数据经 `BtnSubmitSource` trait 注入（缺省空源 ⇒ 等价上游「无数据」语义，不发请求）。
+> 本轮落地：BTN 传输层（握手/abilities/PoW/缓存 + 脚本规则 + 全部上报能力）、
+> GeoIP 数据库自动更新、AutoSTUN 的 UDP NAT 探测与 TCP 转发器、上传限速下发、
+> 阈值告警的 `push:` 渠道推送。
 
 ### 路线图（后续阶段，见 PLAN.md / SPEC.md §9）
 

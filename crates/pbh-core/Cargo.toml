@@ -29,3 +29,6 @@ reqwest = { workspace = true, features = ["blocking"] }
 # AutoSTUN TCP 转发器 / 端口保活需要「先 bind 再 connect」（上游 StunSocketTool.getSocket() + bind）。
 # std::net 不提供该能力，用 socket2 实现（已是锁文件中的传递依赖，无新增下载）。
 socket2 = "0.6"
+# BTN 上报载荷 gzip（对齐上游 okio.GzipSink）与 InfoHash 哈希盐（对齐 guava Hashing.crc32）
+flate2 = { workspace = true }
+crc32fast = { workspace = true }

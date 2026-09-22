@@ -270,11 +270,49 @@
 ### Phase 3 — 生态能力（部分完成）
 
 - [x] GeoIP/ASN（maxminddb，GeoLite2/GeoCN），四维度接入 `ip-address-blocker`
-- [ ] BTN 网络传输（协议 v2.0.1，abilities/ping/submit）——判定模块已就位，传输层待实现
-- [x] 表达式规则（rhai 替代 AviatorScript，附语法翻译表与对照测试）— 引擎已实现，默认空目录无封禁
+- [ ] **BTN 上报类能力（submit_* / heartbeat / ip_query / reconfigure）**：拉取类（rules /
+      ip_allowlist / ip_denylist + PoW + 配置握手）已实现；上报类未构造（部署 config 默认
+      `btn.submit: true`），规格见「Phase 3.1」
+- [x] 表达式规则（rhai 替代 AviatorScript，附语法翻译表与对照测试）— 引擎已实现，默认 空目录无封禁
 - [x] 告警推送：Webhook / Telegram / 邮件（lettre）/ 及其余 6 个渠道 —— 见 Phase 1.6
-- [ ] WebSocket 实时推送，对齐 WebUI 全部 API
-- [ ] MySQL/PostgreSQL（sqlx）
+- [x] 实时日志推送（Java v9.5.1 **已弃用 WebSocket**，实际用 SSE `/api/logs/live`；Rust 以 SSE 对齐）
+- [ ] MySQL/PostgreSQL（sqlx）—— Java 默认 sqlite/h2，与对跑及默认路径无关，属扩展项
+
+### Phase 3.1 — BTN 上报能力移植规格（`btn.submit: true` 时生效）
+
+> 背景（2026-09-22 调研）：部署 config 默认 `btn.submit: true`，Java 端 submit_* 上报能力
+> 会被构造。已对照上游完整核对请求/调度语义，作为实现蓝图，如下。
+
+**调度模型（对齐 `BtnNetwork.java`，每 ability 各自独立调度，不随 rules 轮询一起跑）**：
+- 每个 ability 在 `load()` 里各自 `scheduleWithFixedDelay`；`interval` / `random_initial_delay` 各自独立。
+- 初始延迟 `ThreadLocalRandom.nextLong(random_initial_delay)`，随后固定 `interval`（fixed-delay）。
+- 失败无指数退避：非 2xx 记日志 + `setLastStatus(false)` + 中断本页分页；**游标只在成功后推进**
+  （下轮从旧游标重读 → 隐式重试）。
+- PoW：ability `pow_captcha=true` 时 `GET {pow}?type=<submit_bans|submit_swarm|submit_history|heartbeat|ip_query>`
+  取 challenge → 求解 → 追加 `X-BTN-PowID` / `X-BTN-PowSolution`，失败不追加头（Rust `gather_and_solve_captcha` 已有）。
+- 认证：`BTN-AppID/Secret`、`X-BTN-AppID/Secret`、`Authentication: Bearer <id>@<secret>`；匿名补
+  `X-BTN-InstallationID`（`BtnNetwork::request` 已实现）。
+
+| 能力（JSON key） | HTTP | 载荷 | Java 数据源 | Rust 数据源现状 |
+|---|---|---|---|---|
+| `submit_bans` | POST+gzip | `BtnBanPing{bans:[BtnBan…]}` | `history` 表 `id>cursor` 分页 100（游标 `BtnAbilitySubmitBans.cursor`）join `torrent` | `ban_logs` 表**缺** `peer_uploaded/downloaded/progress/downloader_progress/flags` ⇒ 需补列或新建 `history` 表 |
+| `submit_swarm` | POST+gzip | `BtnSwarmPing{swarms:[BtnSwarm…]}` | `tracked_swarm` 表 `last_seen+id` 游标、`flushAll` 前置 | `TrackedSwarmRow` 字段齐全，`MonitorHost::tracked_swarm()` 全量可读 ⇒ 直接支撑 |
+| `submit_history` | POST+gzip | `LegacyBtnPeerHistoryPing{populate_time,peers:[…]}` | `peer_records` `getPendingSubmitPeerRecords(lastSubmitAt)` 分页 5000、游标 `btn.submithistory.timestamp` | `PeerRecordRow` 字段齐全，`peer_records()` 全量可读，需按时间游标过滤 ⇒ 基本支撑 |
+| `reconfigure` | GET configUrl | 无 | 解析 `ability.reconfigure.version` 差异 → 重新握手 | 纯 HTTP，零新数据依赖 |
+| `heartbeat` | POST | `{"ifaddr":"default"}`（multi_if 多网卡） | 无 | 纯 HTTP，零新数据依赖 |
+| `ip_query` | GET `endpoint?ip=` | 响应 `{color,labels,bans,swarms,traffic,torrents}` | 其他模块按需 `query(address)` | 纯 HTTP，零新数据依赖 |
+
+**Rust 移植最小改动**：
+1. `btn_transport.rs`：`BtnAbilityKind` 增 `SubmitBans/SubmitSwarm/SubmitHistory/Heartbeat/IpQuery/Reconfigure`；
+   `apply_config_response` 按 `config.submit` 与 `is_implemented` 决定注册；`sync_due` 加分支。
+2. 新增 `BtnSubmitSource` trait（自 `MonitorHost` 借 `peer_records()`/`tracked_swarm()`），注入 `BtnNetwork`；
+   每能力构建 HTTP+gzip 请求与游标（存 `BtnMetadataStore`）。
+3. `InfoHashUtil.getHashedIdentifier`：`sha256(lowercase + crc32(lowercase))`（新增 `crc32fast` 依赖）。
+4. `submit_bans` 需新 `history` 数据（历史上 trace）或扩 `ban_logs`；游标键取自 metadata。
+5. 用内存 HTTP client（`ClosureHttpClient`）+ 注入时钟做**协议 golden 测试**，锁定请求体/空响应对齐 Java DTO。
+
+> 验证口径：BTN 上报面向外部 `sparkle.pbh-btn.com`，无法本地对真实实例跑，故以**协议 golden 测试**
+>（捕获请求体/头对齐 Java DTO 字段）+ 注入时钟驱动游标推进断言为主；不影响封禁决策，可后置。
 
 ### Phase 4 — 分发与打磨（待办）
 

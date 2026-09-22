@@ -44,6 +44,9 @@ aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 pbkdf2 = "0.12"
 rhai = { version = "1", default-features = false, features = ["sync", "serde"] }
+# BTN 上报载荷的 gzip 压缩（对齐 okio.GzipSink）与会话哈希盐（对齐 guava Hashing.crc32）
+flate2 = "1"
+crc32fast = "1"
 
 pbh-core = { path = "crates/pbh-core" }
 pbh-downloader = { path = "crates/pbh-downloader" }
