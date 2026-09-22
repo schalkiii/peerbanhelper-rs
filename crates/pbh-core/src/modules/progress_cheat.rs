@@ -63,7 +63,9 @@ pub struct PcbEntity {
     pub ban_delay_window_end_ms: i64,
     pub fast_pcb_test_executed: bool,
     pub last_time_seen_ms: i64,
-    /// 该 IP 首次出现时的端口（仅用于 `pcb_addr` 行主键，不参与判定）
+    /// 该实体首次出现时间（epoch ms；对齐上游 `firstTimeSeen`，落库列 `first_time_seen`）
+    pub first_time_seen_ms: i64,
+    /// 该 IP 首次出现时的端口（仅用于 `pcb_address` 行主键，不参与判定）
     pub port: u16,
     /// 自上次落库后是否有变更（对齐上游 `isDirty`）
     pub dirty: bool,
@@ -101,6 +103,8 @@ pub struct PcbPersistRow {
     pub ban_delay_window_end_ms: i64,
     pub fast_pcb_test_executed: bool,
     pub last_time_seen_ms: i64,
+    /// `pcb_address` / `pcb_range` 的 `first_time_seen` 列。
+    pub first_time_seen_ms: i64,
 }
 
 impl PcbPersistRow {
@@ -126,6 +130,12 @@ impl PcbPersistRow {
             ban_delay_window_end_ms: e.ban_delay_window_end_ms,
             fast_pcb_test_executed: e.fast_pcb_test_executed,
             last_time_seen_ms: e.last_time_seen_ms,
+            // 内存实体未记录首次出现时间时退回 `last_time_seen`（仅用于落库展示列）。
+            first_time_seen_ms: if e.first_time_seen_ms > 0 {
+                e.first_time_seen_ms
+            } else {
+                e.last_time_seen_ms
+            },
         }
     }
 
@@ -140,6 +150,7 @@ impl PcbPersistRow {
             ban_delay_window_end_ms: self.ban_delay_window_end_ms,
             fast_pcb_test_executed: self.fast_pcb_test_executed,
             last_time_seen_ms: self.last_time_seen_ms,
+            first_time_seen_ms: self.first_time_seen_ms,
             port: self.port,
             dirty: false,
         }

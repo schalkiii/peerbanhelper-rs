@@ -31,6 +31,61 @@ impl PeerAction {
     pub fn is_ban(&self) -> bool {
         matches!(self, PeerAction::Ban | PeerAction::BanForDisconnect)
     }
+
+    /// 对齐 `PeerAction.excludeFromReport`（仅 `BAN_FOR_DISCONNECT` 为 true）：
+    /// 该类封禁不写入 `history`（`PersistMetrics.recordPeerBan` 直接 return）。
+    pub fn exclude_from_report(&self) -> bool {
+        matches!(self, PeerAction::BanForDisconnect)
+    }
+
+    /// 对齐 `PeerAction.excludeFromDisplay`（仅 `BAN_FOR_DISCONNECT` 为 true）：
+    /// WebUI 的 `/api/bans` 默认过滤这类条目。
+    pub fn exclude_from_display(&self) -> bool {
+        matches!(self, PeerAction::BanForDisconnect)
+    }
+}
+
+/// 未收录模块的占位类名（调用方可据此回退为 configName）。
+pub const UNKNOWN_MODULE_CLASS: &str = "com.ghostchu.peerbanhelper.module.UnknownModule";
+
+/// 模块 `configName` → 上游 Java 类全名。
+///
+/// 上游 `CheckResult.moduleContext` 是 `Class<?>`，落库到 `history.module_name`、
+/// 写进 `banlist.metadata.context`，并原样上报给 BTN（`BtnBan.module`）；
+/// WebUI 的 `/api/metadata/manifest` 也用同一类名作为模块开关的唯一键。
+/// 本移植的模块实现没有 Java 类，这里按上游包路径给出等价类名。
+///
+/// 注意：`peer-name-black-rule-list` 在 v9.5.1 整文件被注释（模块已停用），故不在此表。
+pub fn java_module_class(config_name: &str) -> &'static str {
+    match config_name {
+        "ip-address-blocker" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IPBlackList"),
+        "peer-id-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PeerIdBlacklist"),
+        "client-name-blacklist" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ClientNameBlacklist")
+        }
+        "expression-engine" | "expression-rule" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ExpressionRule")
+        }
+        "progress-cheat-blocker" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ProgressCheatBlocker")
+        }
+        "multi-dialing-blocker" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "MultiDialingBlocker")
+        }
+        "auto-range-ban" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "AutoRangeBan"),
+        "btn" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "BtnNetworkOnline"),
+        "ip-address-blocker-rules" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IPBlackRuleList")
+        }
+        "anti-vampire" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "AntiVampire"),
+        "ptr-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PTRBlacklist"),
+        "idle-connection-dos-protection" => {
+            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IdleConnectionDosProtection")
+        }
+        // 上游已删除的旧模块名（WebUI manifest 兼容保留）
+        "peer-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PeerBlacklist"),
+        _ => UNKNOWN_MODULE_CLASS,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

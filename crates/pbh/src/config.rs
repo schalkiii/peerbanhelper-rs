@@ -9,6 +9,7 @@ use pbh_core::config::{IpDatabaseConfig, ProfileConfig};
 use pbh_core::remap::{BanlistRemapping, IpRemapConfig, RemapConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -49,6 +50,12 @@ pub struct AppConfig {
     pub btn: BtnNetworkConfig,
     #[serde(default)]
     pub downloaders: Vec<DownloaderConfig>,
+    /// 上游 `client:` 段（下载器 UUID → 配置）；加载时并入 [`AppConfig::downloaders`]。
+    #[serde(rename = "client", default)]
+    pub clients: Option<serde_yaml::Mapping>,
+    /// 上游 `push-notification:` 段（渠道名 → 渠道配置）；加载时并入 [`AppConfig::push`]。
+    #[serde(rename = "push-notification", default)]
+    pub push_notification: Option<PushSection>,
 }
 
 /// `push:` 段：渠道名 → 渠道配置（段内 `type` 决定渠道类型）。
@@ -94,7 +101,8 @@ pub enum PushProviderConfig {
     Smtp {
         #[serde(default)]
         host: String,
-        #[serde(default)]
+        /// 上游示例配置把端口写成**字符串**（`port: '587'`），这里两种写法都接受。
+        #[serde(default, deserialize_with = "deserialize_port_string_or_number")]
         port: u16,
         #[serde(default)]
         auth: bool,
@@ -233,11 +241,71 @@ fn default_webhook_body_template() -> String {
     DEFAULT_WEBHOOK_BODY_TEMPLATE.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 端口类配置：上游示例把端口写成字符串（`port: '587'`），数字与字符串都接受。
+fn deserialize_port_string_or_number<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Number(u16),
+        Text(String),
+    }
+    match Raw::deserialize(deserializer)? {
+        Raw::Number(port) => Ok(port),
+        Raw::Text(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Ok(0)
+            } else {
+                text.parse::<u16>().map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageConfig {
     /// 文案语言，如 `zh_cn` / `zh_tw` / `en_us`
-    #[serde(default = "default_locale")]
     pub locale: String,
+}
+
+/// 上游 `language:` 是**字符串**（`default` 跟随系统 / `zh_cn` / `en_us` / `zh_tw`），
+/// 本移植的既有配置是 `{ locale: ... }` 结构体；两者都接受，写回时统一输出字符串。
+impl<'de> Deserialize<'de> for LanguageConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Name(String),
+            Locale { locale: String },
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Name(name) => LanguageConfig { locale: resolve_locale_name(&name) },
+            Raw::Locale { locale } => LanguageConfig { locale },
+        })
+    }
+}
+
+impl Serialize for LanguageConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.locale)
+    }
+}
+
+/// `default`（跟随系统）→ 本移植内嵌文案的可用 locale；未知值原样保留（查不到时回退 zh_cn）。
+fn resolve_locale_name(name: &str) -> String {
+    match name.trim() {
+        "" | "default" => default_locale(),
+        other => other.to_string(),
+    }
 }
 
 fn default_locale() -> String {
@@ -269,6 +337,10 @@ pub struct ServerConfig {
     /// 对外地址（用于生成下载器可访问的 blocklist URL；留空则按监听地址推断）
     #[serde(default, rename = "external-address")]
     pub external_address: Option<String>,
+    /// 上游 `server.prefix`：完整 URL（如 `http://127.0.0.1:9898`），
+    /// 仅用于推导对外 host（本移植自行拼接 `/blocklist/...` 路径）。
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 impl ServerConfig {
@@ -277,6 +349,19 @@ impl ServerConfig {
         if let Some(addr) = &self.external_address {
             if !addr.trim().is_empty() {
                 return addr.trim().to_string();
+            }
+        }
+        // 上游 `prefix` 是完整 URL，取其中的 host
+        if let Some(prefix) = &self.prefix {
+            let prefix = prefix.trim();
+            if !prefix.is_empty() {
+                if let Some(rest) = prefix.split("://").nth(1) {
+                    let host = rest.split('/').next().unwrap_or(rest);
+                    let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+                    if !host.is_empty() && host != "0.0.0.0" && host != "::" {
+                        return host.to_string();
+                    }
+                }
             }
         }
         match self.address.as_str() {
@@ -294,8 +379,9 @@ pub struct DatabaseConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct PersistConfig {
-    #[serde(default = "p_keep_days")]
+    #[serde(default = "p_keep_days", alias = "ban_logs_keep_days")]
     pub ban_logs_keep_days: i64,
     #[serde(default = "p_true")]
     pub banlist: bool,
@@ -303,6 +389,10 @@ pub struct PersistConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloaderConfig {
+    /// 下载器 ID：上游用配置键（UUID）作为 ID（`history.downloader` / `pcb_*` 等表都用它），
+    /// 本移植的单文件布局缺省回退为 `name`。
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default = "p_qb_name")]
     pub name: String,
     #[serde(default = "p_qb_type")]
@@ -343,6 +433,17 @@ pub struct DownloaderConfig {
 }
 
 impl DownloaderConfig {
+    /// 下载器 ID（配置里的 `id`，缺省回退 `name`）。
+    ///
+    /// 对齐上游：`client:` 段的键（UUID）就是下载器 ID，`history.downloader` /
+    /// `pcb_address.downloader` / `peer_records.downloader` 等表都存这个值。
+    pub fn resolved_id(&self) -> String {
+        match &self.id {
+            Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+            _ => self.name.clone(),
+        }
+    }
+
     /// `rpc-url` 留空时按下载器类型取默认值。
     pub fn resolved_rpc_url(&self, default: &str) -> String {
         let value = self.rpc_url.trim();
@@ -381,6 +482,7 @@ fn default_server() -> ServerConfig {
         address: p_addr(),
         token: String::new(),
         external_address: None,
+        prefix: None,
     }
 }
 fn default_database() -> DatabaseConfig {
@@ -407,6 +509,8 @@ impl Default for AppConfig {
             push: PushSection::default(),
             btn: BtnNetworkConfig::default(),
             downloaders: vec![],
+            clients: None,
+            push_notification: None,
             analytics: true,
         }
     }
@@ -415,13 +519,31 @@ impl Default for AppConfig {
 const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yml");
 
 impl AppConfig {
-    /// 从 data 目录加载 config.yml；不存在则写入默认配置。
+    /// 从 data 目录加载配置；不存在则写入默认配置。
+    ///
+    /// 支持两种布局（上游优先）：
+    /// 1. **上游部署布局**：`<data>/config/config.yml` + `<data>/config/profile.yml`
+    ///    （`profile.yml` 存在时覆盖 `config.yml` 里的 `profile:` 段，对齐上游分文件存储）；
+    /// 2. **本移植单文件布局**：`<data>/config.yml`（`profile:` 内嵌）。
     pub fn load_or_create(data_dir: &Path) -> anyhow::Result<(Self, PathBuf)> {
         std::fs::create_dir_all(data_dir)?;
+        let upstream_config = data_dir.join("config").join("config.yml");
+        if upstream_config.exists() {
+            let text = std::fs::read_to_string(&upstream_config)?;
+            let mut cfg: AppConfig = serde_yaml::from_str(&text)?;
+            let upstream_profile = data_dir.join("config").join("profile.yml");
+            if upstream_profile.exists() {
+                let profile_text = std::fs::read_to_string(&upstream_profile)?;
+                cfg.profile = serde_yaml::from_str(&profile_text)?;
+            }
+            cfg.normalize_upstream();
+            return Ok((cfg, upstream_config));
+        }
         let path = data_dir.join("config.yml");
         if path.exists() {
             let text = std::fs::read_to_string(&path)?;
-            let cfg: AppConfig = serde_yaml::from_str(&text)?;
+            let mut cfg: AppConfig = serde_yaml::from_str(&text)?;
+            cfg.normalize_upstream();
             Ok((cfg, path))
         } else {
             std::fs::write(&path, DEFAULT_CONFIG_YAML)?;
@@ -430,10 +552,58 @@ impl AppConfig {
         }
     }
 
-    /// 序列化并写回 config.yml（Web 配置保存与下载器/推送热管理的共用写入口）。
+    /// 把**上游布局**的配置段并入本移植结构：
+    /// - `client:` 映射（下载器 UUID → 配置）→ `downloaders` 列表（UUID 作为下载器 ID）；
+    /// - `push-notification:` 段 → `push` 段。
+    ///
+    /// 两者都只在目标段为空时生效，避免覆盖本移植自身的写法。
+    pub fn normalize_upstream(&mut self) {
+        if self.downloaders.is_empty() {
+            if let Some(mapping) = self.clients.take() {
+                for (key, value) in mapping {
+                    let Some(uuid) = key.as_str() else {
+                        warn!("client 段存在非字符串键，已跳过: {key:?}");
+                        continue;
+                    };
+                    match serde_yaml::from_value::<DownloaderConfig>(value) {
+                        Ok(mut config) => {
+                            if config.id.is_none() {
+                                config.id = Some(uuid.to_string());
+                            }
+                            if config.name.is_empty() {
+                                config.name = uuid.to_string();
+                            }
+                            self.downloaders.push(config);
+                        }
+                        Err(e) => warn!("client.{uuid} 解析失败，已跳过: {e}"),
+                    }
+                }
+            }
+        }
+        if self.push.is_empty() {
+            if let Some(mapping) = self.push_notification.take() {
+                self.push = mapping;
+            }
+        }
+    }
+
+    /// 序列化并写回配置文件（Web 配置保存与下载器/推送热管理的共用写入口）。
+    ///
+    /// 若加载自上游布局（`<data>/config/config.yml`），同步维护同目录的 `profile.yml`，
+    /// 保证 Java 端与本移植可以共用同一数据目录（`profile` 段独立成文件）。
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         let text = serde_yaml::to_string(self)?;
         std::fs::write(path, text)?;
+        let from_config_dir = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .map(|name| name == "config")
+            .unwrap_or(false);
+        if from_config_dir {
+            let profile_path = path.with_file_name("profile.yml");
+            let profile_text = serde_yaml::to_string(&self.profile)?;
+            std::fs::write(profile_path, profile_text)?;
+        }
         Ok(())
     }
 }
@@ -500,5 +670,86 @@ mod tests {
         assert!(remap.ip_remapping.auto_stun_registry.is_none());
         assert_eq!(remap.ip_remapping.auto_stun.tcp_servers.len(), 3);
         assert_eq!(remap.ip_remapping.auto_stun.udp_servers.len(), 5);
+    }
+
+    /// 上游部署布局：`<data>/config/config.yml` + `<data>/config/profile.yml`，
+    /// 覆盖 `language: default`、`client:` 映射、`push-notification:`、字符串端口、
+    /// `ban-duration: default` 等上游写法（对跑验证时逐条修过的兼容点）。
+    #[test]
+    fn upstream_layout_loads_client_mapping_and_profile_file() {
+        let dir = std::env::temp_dir().join(format!("pbh-cfg-upstream-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(
+            dir.join("config").join("config.yml"),
+            r#"
+config-version: 47
+language: default
+server:
+  http: 9898
+  address: 0.0.0.0
+  prefix: http://127.0.0.1:9898
+  token: test-token
+persist:
+  ban-logs-keep-days: 30
+  banlist: true
+client:
+  bbe015c9-31bc-423b-b6b2-2d17c37a5113:
+    type: qbittorrent
+    name: qBittorrent_a
+    endpoint: http://127.0.0.1:9091
+    username: admin
+    password: 'secret'
+    increment-ban: true
+    ignore-private: false
+push-notification:
+  example:
+    type: ntfy
+    server_url: https://ntfy.example.com
+    token: t
+  email-example:
+    type: smtp
+    host: smtp.example.com
+    port: '587'
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("config").join("profile.yml"),
+            "check-interval: 120000\nban-duration: 1209600000\nmodule:\n  expression-engine:\n    enabled: true\n    ban-duration: default\n",
+        )
+        .unwrap();
+
+        let (cfg, path) = AppConfig::load_or_create(&dir).unwrap();
+        assert_eq!(path, dir.join("config").join("config.yml"));
+        assert_eq!(cfg.language.locale, "zh_cn", "language: default → 服务端默认 locale");
+        assert_eq!(cfg.server.public_host(), "127.0.0.1", "server.prefix 推导对外 host");
+        assert_eq!(cfg.persist.ban_logs_keep_days, 30, "kebab-case 键名");
+        assert_eq!(cfg.downloaders.len(), 1);
+        assert_eq!(
+            cfg.downloaders[0].resolved_id(),
+            "bbe015c9-31bc-423b-b6b2-2d17c37a5113",
+            "client 段的键（UUID）即下载器 ID，供 history/pcb 等表关联"
+        );
+        assert_eq!(cfg.downloaders[0].name, "qBittorrent_a");
+        assert!(!cfg.downloaders[0].ignore_private);
+        assert!(
+            cfg.push.contains_key(serde_yaml::Value::String("example".into())),
+            "push-notification 段并入 push"
+        );
+        assert!(
+            cfg.push.contains_key(serde_yaml::Value::String("email-example".into())),
+            "SMTP 字符串端口（'587'）也要能解析"
+        );
+        assert_eq!(cfg.profile.check_interval, 120_000, "profile.yml 覆盖 config.yml");
+        let engine = cfg.profile.module.expression_engine.as_ref().expect("expression-engine");
+        assert_eq!(engine.ban_duration_ms, 0, "ban-duration: default → 0（回退全局）");
+
+        // 保存时同步维护同目录的 profile.yml（保证 Java 端仍可读取）
+        cfg.save_to(&path).unwrap();
+        let profile_text =
+            std::fs::read_to_string(dir.join("config").join("profile.yml")).unwrap();
+        assert!(profile_text.contains("check-interval"), "{profile_text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

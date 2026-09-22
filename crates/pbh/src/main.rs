@@ -42,6 +42,10 @@ struct Args {
     /// 覆盖监听地址
     #[arg(long)]
     address: Option<String>,
+    /// 演练模式：照常登录/拉取/判定/落库，但不向下载器下发封禁、解封与限速
+    /// （用于与 Java 版并行观察，避免改动下载器状态）
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[tokio::main]
@@ -67,12 +71,26 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.address = addr;
     }
 
-    // 数据库
-    let db_path = data_dir.join("peerbanhelper.db");
+    // 数据库：对齐上游部署布局 `<data>/persist/peerbanhelper-nt.db`；
+    // 无 `persist/` 目录时沿用本移植的单文件布局 `<data>/peerbanhelper.db`。
+    let db_path = {
+        let upstream = data_dir.join("persist").join("peerbanhelper-nt.db");
+        if upstream.exists() || data_dir.join("persist").is_dir() {
+            upstream
+        } else {
+            data_dir.join("peerbanhelper.db")
+        }
+    };
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let db = Arc::new(Database::open(
         db_path.to_str().unwrap_or("peerbanhelper.db"),
     )?);
     info!("SQLite 已打开: {}", db_path.display());
+    if args.dry_run {
+        info!("已启用演练模式（--dry-run）：不会向下载器下发封禁/解封/限速");
+    }
 
     // 内置 NAT（AutoSTUN）：`ip-remapping.auto-stun.enabled=false` 时**严格 no-op**
     //（对齐上游 `BTStunManager.load()`：不注册任何 provider，翻译恒直通）。
@@ -298,21 +316,32 @@ async fn main() -> anyhow::Result<()> {
         pcb.load_persisted(rows);
     }
 
-    // 内存封禁表：从数据库恢复未到期条目（对齐上游 loadBanListToMemory）
-    // 封禁表由 pipeline 持有，auto-range-ban 模块会读取它
+    // 内存封禁表：从数据库恢复未到期条目（对齐上游 loadBanListToMemory）。
+    // 封禁表由 pipeline 持有，auto-range-ban 模块会读取它。
+    // `banlist.metadata` 是 `BanMetadata` 的 JSON；解析失败的行跳过（对齐上游
+    // `readBanList` 的 `catch` 语义：个别坏数据不阻塞启动）。
     if cfg.persist.banlist {
         let now = chrono::Utc::now().timestamp_millis();
-        let records: Vec<BannedRecord> = db
-            .list_banned_ips()?
-            .into_iter()
-            .filter(|b| b.ban_until <= 0 || b.ban_until > now)
-            .map(|b| BannedRecord {
-                ip: b.ip,
-                unban_at_ms: b.ban_until,
-                module: b.module,
-                ban_for_disconnect: false,
-            })
-            .collect();
+        let mut records: Vec<BannedRecord> = Vec::new();
+        for (address, metadata) in db.read_ban_list()? {
+            let parsed: pbh_core::banlist::BanMetadata = match serde_json::from_str(&metadata) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    warn!("封禁记录 {address} 的 metadata 解析失败，已跳过: {e}");
+                    continue;
+                }
+            };
+            if parsed.unban_at_ms > 0 && parsed.unban_at_ms <= now {
+                continue; // 已过期
+            }
+            records.push(BannedRecord {
+                ip: address,
+                unban_at_ms: parsed.unban_at_ms,
+                module: parsed.context.clone(),
+                ban_for_disconnect: parsed.ban_for_disconnect,
+                metadata: parsed,
+            });
+        }
         info!("已从数据库恢复 {} 条封禁记录", records.len());
         if let Ok(mut list) = pipeline.ban_list.lock() {
             list.load(records);
@@ -331,7 +360,6 @@ async fn main() -> anyhow::Result<()> {
         remap.clone(),
         blocklist_url.clone(),
         pipeline.clone(),
-        db.clone(),
         entries.clone(),
         statuses.clone(),
         alert_manager.clone(),
@@ -402,9 +430,8 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         metrics,
         statuses,
-        translator,
-        locale: cfg.language.locale.clone(),
         persist_banlist: cfg.persist.banlist,
+        dry_run: args.dry_run,
         max_concurrent: 128,
         alert_manager,
         monitor,
@@ -417,6 +444,9 @@ async fn main() -> anyhow::Result<()> {
     // 避免某轮耗时超过间隔时立刻补跑（突发）导致下载器被连续冲击。
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let cleanup_days = cfg.persist.ban_logs_keep_days;
+    // 封禁列表落库节奏（对齐上游 `saveBanList` 的 10s 首延迟 + 1h 固定间隔）
+    let banlist_save_period = Duration::from_secs(3600);
+    let mut next_banlist_save = std::time::Instant::now() + Duration::from_secs(10);
     let mut wave_count: u64 = 0;
     // PCB 过期清理：对齐上游 `scheduleWithFixedDelay(this::cleanDatabase, 0, 8, HOURS)`
     let pcb_cleanup_period = Duration::from_secs(8 * 3600);
@@ -448,10 +478,17 @@ async fn main() -> anyhow::Result<()> {
                 // 快照后释放锁再 await：定时任务内有网络 I/O，持锁跨 await 会阻塞下载器热管理
                 let entries_snapshot: Vec<_> =
                     engine.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                engine.monitor.run_scheduled(&entries_snapshot, now).await;
-                // 每 100 轮清理一次过期日志
+                engine.monitor.run_scheduled(&entries_snapshot, now, args.dry_run).await;
+                // 封禁列表落库（对齐上游 `scheduleWithFixedDelay(saveBanList, 10s, 1h)`：
+                // 首轮后 10 秒内首次保存，之后每小时一次）
+                if cfg.persist.banlist && std::time::Instant::now() >= next_banlist_save {
+                    let written = engine.persist_ban_list();
+                    debug!("封禁列表已落库 {written} 条");
+                    next_banlist_save = std::time::Instant::now() + banlist_save_period;
+                }
+                // 每 100 轮清理一次过期封禁历史（`persist.ban-logs-keep-days`）
                 if wave_count.is_multiple_of(100) && cleanup_days > 0 {
-                    if let Ok(n) = db.cleanup_ban_logs(cleanup_days) {
+                    if let Ok(n) = db.cleanup_history(cleanup_days) {
                         if n > 0 { info!("清理过期封禁日志 {n} 条"); }
                     }
                 }

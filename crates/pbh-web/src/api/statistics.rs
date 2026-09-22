@@ -20,7 +20,8 @@ fn week_start_ms() -> i64 {
 /// `GET /api/statistic/counter`：总体计数器（对齐上游 `BasicMetrics` + `HistoryService`）。
 pub async fn counter(State(state): State<AppState>) -> Response {
     let metrics = state.metrics.lock().unwrap_or_else(|e| e.into_inner());
-    let banned_ips = state.db.list_banned_ips().map(|l| l.len() as u64).unwrap_or(0);
+    // 对齐上游 `BasicMetrics`：封禁计数取内存封禁表（`BanList`）的大小
+    let banned_ips = state.ban_list.lock().map(|l| l.len() as u64).unwrap_or(0);
     let peers = metrics.peer_count as u64;
     let data = json!({
         "checkCounter": metrics.checks,

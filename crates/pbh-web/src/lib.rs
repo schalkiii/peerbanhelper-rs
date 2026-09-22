@@ -344,34 +344,33 @@ async fn ban_logs(State(state): State<AppState>, Query(q): Query<LogsQuery>) -> 
     let offset = (q.page.max(1) - 1) * size;
     // 请求的 locale：显式 > 服务端默认；归一化以便查表（zh-CN → zh_cn）
     let locale = normalize_locale(q.locale.as_deref().unwrap_or(&state.locale));
-    match state.db.list_ban_logs(size, offset) {
+    match state.db.page_history(&[], size, offset) {
         Ok((logs, total)) => {
             let data = json!({
                 "total": total,
                 "page": q.page.max(1),
                 "size": size,
                 "results": logs.iter().map(|l| {
-                    // 用落库的 `TranslationComponent` 按请求 locale 重新本地化；
-                    // 缺 key 时回退到落库时已渲染的文案
-                    let rule = render_keyed(&l.rule_key, &l.rule, &state.translator, &locale);
-                    let reason = render_keyed(&l.reason_key, &l.reason, &state.translator, &locale);
+                    // 用落库的 `TranslationComponent`（JSON）按请求 locale 重新本地化；
+                    // 解析失败时回退到原始字符串
+                    let rule = render_keyed(&Some(l.rule.clone()), &l.rule, &state.translator, &locale);
+                    let reason =
+                        render_keyed(&Some(l.description.clone()), &l.description, &state.translator, &locale);
                     json!({
                         "id": l.id,
-                        "downloaderId": l.downloader_id,
-                        "torrentHash": l.torrent_hash,
-                        "torrentName": l.torrent_name,
+                        "downloaderId": l.downloader,
+                        "torrentHash": l.torrent_info_hash.clone().unwrap_or_default(),
+                        "torrentName": l.torrent_name.clone().unwrap_or_default(),
                         "ip": l.ip,
                         "port": l.port,
-                        "peerId": l.peer_id,
-                        "clientName": l.client_name,
+                        "peerId": l.peer_id.clone().unwrap_or_default(),
+                        "clientName": l.peer_client_name.clone().unwrap_or_default(),
                         "module": l.module,
                         "rule": rule,
                         "reason": reason,
-                        "ruleKey": l.rule_key,
-                        "reasonKey": l.reason_key,
-                        "banDuration": l.ban_duration,
-                        "createdAt": ms_to_rfc3339(l.created_at),
-                        "createdAtMs": l.created_at,
+                        "banDuration": if l.unban_at > l.ban_at { l.unban_at - l.ban_at } else { 0 },
+                        "createdAt": ms_to_rfc3339(l.ban_at),
+                        "createdAtMs": l.ban_at,
                     })
                 }).collect::<Vec<_>>()
             });
@@ -402,31 +401,19 @@ pub(crate) fn render_keyed(
 }
 
 async fn ban_list(State(state): State<AppState>) -> Response {
-    match state.db.list_banned_ips() {
-        Ok(list) => {
-            let data = json!(list
-                .iter()
-                .map(|b| json!({
-                    "ip": b.ip,
-                    "module": b.module,
-                    "hitCount": b.hit_count,
-                    "firstBannedAt": ms_to_rfc3339(b.first_banned_at),
-                    "lastBannedAt": ms_to_rfc3339(b.last_banned_at),
-                    "banUntil": if b.ban_until > 0 { ms_to_rfc3339(b.ban_until) } else { String::new() },
-                }))
-                .collect::<Vec<_>>());
-            (StatusCode::OK, std_resp(true, None, data)).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
-                .into_response()
-        }
-    }
+    // 旧版路径 `/api/ban/list`：数据源为内存封禁表（含完整 `BanMetadata`）
+    let locale = state.locale.clone();
+    let records = state.ban_list.lock().map(|list| list.records_sorted()).unwrap_or_default();
+    let data = json!(records
+        .iter()
+        .map(|record| crate::api::bans::ban_dto(&state, &locale, &record.ip, &record.metadata))
+        .collect::<Vec<_>>());
+    (StatusCode::OK, std_resp(true, None, data)).into_response()
 }
 
 async fn general_metrics(State(state): State<AppState>) -> Response {
     let m = state.metrics.lock().map(|m| m.clone()).unwrap_or_default();
-    let banned = state.db.list_banned_ips().map(|l| l.len()).unwrap_or(0);
+    let banned = state.ban_list.lock().map(|l| l.len()).unwrap_or(0);
     let uptime = state.started.elapsed().as_secs();
     let data = json!({
         "downloaders": m.downloader_count,

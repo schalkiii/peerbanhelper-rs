@@ -1,8 +1,89 @@
-CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+-- ===========================================================================
+-- 应用自有表（上游对应物，表名/列名逐字对齐上游 SQLite 迁移脚本）。
+-- ===========================================================================
+
+-- 对齐 `MetadataEntity`（表 `metadata`）：键值元数据（BTN 能力缓存 / 游标等）。
+CREATE TABLE IF NOT EXISTS metadata (
+    k TEXT NOT NULL PRIMARY KEY,
+    v TEXT NULL
 );
 
+-- 对齐 `BanListEntity`（表 `banlist`）：持久化封禁列表，
+-- `address` = IP 的压缩文本（`IPAddress.toCompressedString()`），
+-- `metadata` = `BanMetadata` 的 JSON（`JsonUtil.tiny()` 语义：忽略 null 字段）。
+-- 写入方式对齐 `BanListServiceImpl.saveBanList`：整表替换。
+CREATE TABLE IF NOT EXISTS banlist (
+    address  TEXT NOT NULL PRIMARY KEY,
+    metadata TEXT NOT NULL
+);
+
+-- 对齐 `PCBAddressEntity`（表 `pcb_address`）：ProgressCheatBlocker 的逐 IP 历史。
+-- 时间列均为 epoch 毫秒（对齐 `OffsetDateTimeTypeHandlerForSQLite`）。
+CREATE TABLE IF NOT EXISTS pcb_address (
+    id                               INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    ip                               TEXT    NOT NULL,
+    port                             INTEGER NOT NULL,
+    torrent_id                       TEXT    NOT NULL,
+    last_report_progress             REAL    NOT NULL,
+    last_report_uploaded             INTEGER NULL,
+    tracking_uploaded_increase_total INTEGER NULL,
+    rewind_counter                   INTEGER NOT NULL,
+    progress_difference_counter      INTEGER NOT NULL,
+    first_time_seen                  INTEGER NOT NULL,
+    last_time_seen                   INTEGER NOT NULL,
+    downloader                       TEXT    NOT NULL,
+    ban_delay_window_end_at          INTEGER NOT NULL,
+    fast_pcb_test_execute_at         INTEGER NOT NULL,
+    last_torrent_completed_size      INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcb_address_unique
+    ON pcb_address (ip, port, torrent_id, downloader);
+CREATE INDEX IF NOT EXISTS idx_pcb_address_last_time_seen ON pcb_address (last_time_seen);
+
+-- 对齐 `PCBRangeEntity`（表 `pcb_range`）：前缀聚合版本的 PCB 历史（无 `port` 列）。
+CREATE TABLE IF NOT EXISTS pcb_range (
+    id                               INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    ip_range                         TEXT    NOT NULL,
+    torrent_id                       TEXT    NOT NULL,
+    last_report_progress             REAL    NOT NULL,
+    last_report_uploaded             INTEGER NULL,
+    tracking_uploaded_increase_total INTEGER NULL,
+    rewind_counter                   INTEGER NOT NULL,
+    progress_difference_counter      INTEGER NOT NULL,
+    first_time_seen                  INTEGER NOT NULL,
+    last_time_seen                   INTEGER NOT NULL,
+    downloader                       TEXT    NOT NULL,
+    ban_delay_window_end_at          INTEGER NOT NULL,
+    fast_pcb_test_execute_at         INTEGER NOT NULL,
+    last_torrent_completed_size      INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcb_range_unique
+    ON pcb_range (ip_range, torrent_id, downloader);
+CREATE INDEX IF NOT EXISTS idx_pcb_range_last_time_seen ON pcb_range (last_time_seen);
+
+-- 对齐 `RuleSubInfoEntity`（表 `rule_sub_info`）：规则订阅的当前状态。
+CREATE TABLE IF NOT EXISTS rule_sub_info (
+    rule_id     TEXT NOT NULL PRIMARY KEY,
+    enabled     INTEGER NOT NULL,
+    rule_name   TEXT NOT NULL,
+    sub_url     TEXT NOT NULL,
+    last_update INTEGER NULL,
+    ent_count   INTEGER NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_sub_info_rule_id ON rule_sub_info (rule_id);
+
+-- 对齐 `RuleSubLogEntity`（表 `rule_sub_log`）：规则订阅的更新日志（WebUI 展示更新历史）。
+CREATE TABLE IF NOT EXISTS rule_sub_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    rule_id     TEXT    NOT NULL,
+    update_time INTEGER NOT NULL,
+    count       INTEGER NOT NULL,
+    update_type TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_sub_logs_rule_id ON rule_sub_log (rule_id, update_time DESC);
+
+-- 已废弃（仅为老库平滑升级保留）：早期版本的自建封禁日志表，
+-- 现由对齐上游的 `history` 表（下表）取代，新代码不再读写。
 CREATE TABLE IF NOT EXISTS ban_logs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     downloader_id TEXT    NOT NULL,
@@ -22,50 +103,6 @@ CREATE TABLE IF NOT EXISTS ban_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_ban_logs_created ON ban_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_ban_logs_ip ON ban_logs(ip);
-
-CREATE TABLE IF NOT EXISTS banned_ips (
-    ip              TEXT PRIMARY KEY,
-    first_banned_at INTEGER NOT NULL,
-    last_banned_at  INTEGER NOT NULL,
-    module          TEXT    NOT NULL,
-    hit_count       INTEGER NOT NULL DEFAULT 1,
-    ban_until       INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_banned_ips_until ON banned_ips(ban_until);
-
-CREATE TABLE IF NOT EXISTS pcb_addr (
-    downloader_id                       TEXT    NOT NULL,
-    torrent_id                          TEXT    NOT NULL,
-    key                                 TEXT    NOT NULL,
-    port                                INTEGER NOT NULL,
-    last_report_uploaded                INTEGER NOT NULL DEFAULT 0,
-    tracking_uploaded_increase_total    INTEGER NOT NULL DEFAULT 0,
-    last_report_progress                REAL    NOT NULL DEFAULT 0,
-    last_torrent_completed_size         INTEGER NOT NULL DEFAULT 0,
-    progress_difference_counter         INTEGER NOT NULL DEFAULT 0,
-    rewind_counter                      INTEGER NOT NULL DEFAULT 0,
-    ban_delay_window_end_ms             INTEGER NOT NULL DEFAULT 0,
-    fast_pcb_test_executed              INTEGER NOT NULL DEFAULT 0,
-    last_time_seen_ms                   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (downloader_id, torrent_id, key, port)
-);
-
-CREATE TABLE IF NOT EXISTS pcb_range (
-    downloader_id                       TEXT    NOT NULL,
-    torrent_id                          TEXT    NOT NULL,
-    key                                 TEXT    NOT NULL,
-    port                                INTEGER NOT NULL DEFAULT 0,
-    last_report_uploaded                INTEGER NOT NULL DEFAULT 0,
-    tracking_uploaded_increase_total    INTEGER NOT NULL DEFAULT 0,
-    last_report_progress                REAL    NOT NULL DEFAULT 0,
-    last_torrent_completed_size         INTEGER NOT NULL DEFAULT 0,
-    progress_difference_counter         INTEGER NOT NULL DEFAULT 0,
-    rewind_counter                      INTEGER NOT NULL DEFAULT 0,
-    ban_delay_window_end_ms             INTEGER NOT NULL DEFAULT 0,
-    fast_pcb_test_executed              INTEGER NOT NULL DEFAULT 0,
-    last_time_seen_ms                   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (downloader_id, torrent_id, key, port)
-);
 
 -- ===========================================================================
 -- 监控模块（`active-monitoring` / `peer-analyse-service.*`）的落库表。

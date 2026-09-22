@@ -10,7 +10,6 @@ use crate::wave::DownloaderEntry;
 
 use pbh_core::pipeline::Pipeline;
 use pbh_core::remap::RemapConfig;
-use pbh_db::Database;
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
 use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
 use pbh_downloader::bitcomet::{BitCometConfig, BitCometDownloader};
@@ -31,26 +30,18 @@ use tracing::{info, warn};
 /// 手动封禁使用的模块名（对齐上游 `ManualModule` 的 configName）。
 const MANUAL_MODULE: &str = "Manual";
 
-/// 上游 rule 模块的 Java 类名映射（`/api/metadata/manifest` 的 `class_name`，
+/// 上游 rule 模块的 Java 类名（`/api/metadata/manifest` 的 `class_name`，
 /// WebUI 用该类名作为模块开关的唯一键，必须与上游一致）。
+///
+/// 与 `history.module_name` / `banlist.metadata.context` 共用同一张映射表
+/// （[`pbh_core::module::java_module_class`]）；未收录的模块回退为 configName 本身。
 fn module_class_name(config_name: &str) -> String {
-    let rule_class = match config_name {
-        "auto-range-ban" => "AutoRangeBan",
-        "btn" => "BtnNetworkOnline",
-        "client-name-blacklist" => "ClientNameBlacklist",
-        "ip-address-blocker" => "IPBlackList",
-        "ip-address-blocker-rules" => "IPBlackRuleList",
-        "peer-id-blacklist" => "PeerIdBlacklist",
-        "peer-blacklist" => "PeerBlacklist",
-        "progress-cheat-blocker" => "ProgressCheatBlocker",
-        "expression-rule" => "ExpressionRule",
-        "anti-vampire" => "AntiVampire",
-        "idle-connection-dos-protection" => "IdleConnectionDosProtection",
-        "multi-dialing-blocker" => "MultiDialingBlocker",
-        "ptr-blacklist" => "PTRBlacklist",
-        other => return other.to_string(),
-    };
-    format!("com.ghostchu.peerbanhelper.module.impl.rule.{rule_class}")
+    let class = pbh_core::module::java_module_class(config_name);
+    if class == pbh_core::module::UNKNOWN_MODULE_CLASS {
+        config_name.to_string()
+    } else {
+        class.to_string()
+    }
 }
 
 pub struct PbhBackend {
@@ -59,7 +50,6 @@ pub struct PbhBackend {
     remap: Arc<RemapConfig>,
     blocklist_url: String,
     pipeline: Arc<Pipeline>,
-    db: Arc<Database>,
     entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
     statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
     alert_manager: Arc<AlertManager>,
@@ -79,7 +69,6 @@ impl PbhBackend {
         remap: Arc<RemapConfig>,
         blocklist_url: String,
         pipeline: Arc<Pipeline>,
-        db: Arc<Database>,
         entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
         statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
         alert_manager: Arc<AlertManager>,
@@ -101,7 +90,6 @@ impl PbhBackend {
             remap,
             blocklist_url,
             pipeline,
-            db,
             entries,
             statuses,
             alert_manager,
@@ -255,13 +243,11 @@ impl WebBackend for PbhBackend {
     }
 
     fn ban_peers(&self, ips: &[String]) -> Result<(), String> {
+        // 只改内存封禁表（对齐上游 `scheduleBanPeerNoAssign`）：持久化由 ban wave 的
+        // 定时全量 `saveBanList` 完成（`WaveEngine::persist_ban_list`）。
         let mut list = self.pipeline.ban_list.lock().unwrap_or_else(|e| e.into_inner());
         for ip in ips {
-            let fresh = !list.contains(ip);
             list.add(ip, 0, MANUAL_MODULE, false);
-            if fresh {
-                let _ = self.db.upsert_banned_ip(ip, MANUAL_MODULE, 0);
-            }
         }
         list.mark_reapply();
         drop(list);
@@ -274,12 +260,9 @@ impl WebBackend for PbhBackend {
         if ips.iter().any(|ip| ip == "*") {
             // 对齐上游 DELETE /api/bans 的 `*` 清空语义
             list.clear();
-            let _ = self.db.clear_banned_ips();
         } else {
             for ip in ips {
-                if list.remove(ip).is_some() {
-                    let _ = self.db.remove_banned_ip(ip);
-                }
+                list.remove(ip);
             }
         }
         list.mark_reapply();
@@ -517,7 +500,7 @@ pub fn build_downloader(
     let (downloader, increment): (Arc<dyn Downloader>, bool) = match d.kind.as_str() {
         "qbittorrent" => {
             let qb_cfg = QBConfig {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 username: d.username.clone(),
@@ -538,7 +521,7 @@ pub fn build_downloader(
         }
         "transmission" => {
             let tr_cfg = TRConfig {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 username: d.username.clone(),
@@ -560,7 +543,7 @@ pub fn build_downloader(
         }
         "deluge" => {
             let deluge_cfg = DelugeConfig {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 password: d.password.clone(),
@@ -577,7 +560,7 @@ pub fn build_downloader(
         // 配置节 `type` 为 `aria2next`；`aria2` 作为等价别名一并接受
         "aria2next" | "aria2" => {
             let aria2_cfg = Aria2Config {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 token: d.token.clone(),
@@ -594,7 +577,7 @@ pub fn build_downloader(
         }
         "biglybt" => {
             let biglybt_cfg = BiglyBtConfig {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 token: d.token.clone(),
@@ -611,7 +594,7 @@ pub fn build_downloader(
         }
         "bitcomet" => {
             let bitcomet_cfg = BitCometConfig {
-                id: d.name.clone(),
+                id: d.resolved_id(),
                 name: d.name.clone(),
                 endpoint: d.endpoint.clone(),
                 username: d.username.clone(),

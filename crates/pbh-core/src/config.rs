@@ -18,7 +18,7 @@ use crate::modules::{
     ActiveMonitoringModule, AntiVampire, AntiVampireSettings, AutoRangeBan, BtnNetworkOnline,
     ExpressionEngine, IdleConnectionDosProtection, IdleProtectionSettings, IpBlacklist,
     IpRuleListModule, MonitorSink, MultiDialingBlocker, PcbConfig, PeerRecordingServiceModule,
-    ProgressCheatBlocker, ProtectionMode, PtrBlacklist, SessionAnalyseServiceModule, StringBlacklist,
+    ProgressCheatBlocker, ProtectionMode, SessionAnalyseServiceModule, StringBlacklist,
     SwarmTrackingModule,
 };
 use crate::module::RuleModule;
@@ -32,6 +32,32 @@ fn default_check_interval() -> u64 {
 
 fn default_global_ban_duration() -> i64 {
     defaults::DEFAULT_BAN_DURATION_MS
+}
+
+/// 模块 `ban-duration` 的反序列化：接受上游的字符串 `default`（等价 0 = 回退全局设置），
+/// 也接受数字（毫秒）与数字字符串。
+fn deserialize_ban_duration<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Keyword(String),
+        Millis(i64),
+    }
+    match Raw::deserialize(deserializer)? {
+        Raw::Millis(ms) => Ok(ms),
+        Raw::Keyword(text) => {
+            let text = text.trim();
+            if text.is_empty() || text.eq_ignore_ascii_case("default") {
+                // 0 ⇒ 使用全局 `ban-duration`（对齐上游 `use default to fallback to global settings`）
+                Ok(0)
+            } else {
+                text.parse::<i64>().map_err(serde::de::Error::custom)
+            }
+        }
+    }
 }
 
 fn default_ignore_addresses() -> Vec<String> {
@@ -48,7 +74,7 @@ pub struct ProfileConfig {
     #[serde(rename = "check-interval", default = "default_check_interval")]
     pub check_interval: u64,
     /// 全局封禁时长（毫秒），模块 ban-duration 为 0/缺省时使用
-    #[serde(rename = "ban-duration", default = "default_global_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_global_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration: i64,
     #[serde(rename = "ignore-peers-from-addresses", default = "default_ignore_addresses")]
     pub ignore_peers_from_addresses: Vec<String>,
@@ -115,7 +141,7 @@ pub struct ModulesSection {
 pub struct PtrBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_ptr_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_ptr_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "ptr-rules", default = "default_ptr_rules")]
     pub ptr_rules: Vec<String>,
@@ -137,7 +163,7 @@ fn default_ptr_rules() -> Vec<String> {
 pub struct IdleProtectionConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_idle_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_idle_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "max-allowed-idle-time", default = "default_idle_max")]
     pub max_allowed_idle_time_ms: i64,
@@ -172,7 +198,7 @@ fn default_idle_status_change() -> f64 {
 pub struct ExpressionEngineConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     /// 显式指定脚本目录（默认 `<data>/scripts`）；留空则按 `PBH_DATA_DIR` 解析
     #[serde(rename = "scripts-dir", default)]
@@ -184,7 +210,7 @@ pub struct ExpressionEngineConfig {
 pub struct IpRuleListConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_ip_rule_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_ip_rule_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     /// 检查（刷新）间隔，毫秒；上游 profile.yml 默认 14400000（4 小时），代码内默认 86400000
     #[serde(rename = "check-interval", default = "default_ip_rule_check_interval")]
@@ -219,7 +245,7 @@ fn default_ip_rule_check_interval() -> i64 {
 pub struct AntiVampireConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_anti_vampire_duration")]
+    #[serde(rename = "ban-duration", default = "default_anti_vampire_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(default)]
     pub presets: AntiVampirePresets,
@@ -247,7 +273,7 @@ fn default_anti_vampire_duration() -> i64 {
 pub struct MultiDialingBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "subnet-mask-length", default = "default_mdb_subnet_v4")]
     pub subnet_mask_length: u8,
@@ -306,7 +332,7 @@ fn default_mdb_keep_hunting_time() -> i64 {
 pub struct AutoRangeBanConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(default = "default_arb_ipv4")]
     pub ipv4: u8,
@@ -330,7 +356,7 @@ fn enabled_or_disabled(v: &Option<bool>) -> bool {
 pub struct PeerIdBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "banned-peer-id", default = "default_banned_peer_id")]
     pub banned_peer_id: Vec<String>,
@@ -344,7 +370,7 @@ fn default_banned_peer_id() -> Vec<String> {
 pub struct ClientNameBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "banned-client-name", default = "default_banned_client_name")]
     pub banned_client_name: Vec<String>,
@@ -358,7 +384,7 @@ fn default_banned_client_name() -> Vec<String> {
 pub struct IpAddressBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default)]
+    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(default)]
     pub ips: Vec<String>,
@@ -566,7 +592,7 @@ fn default_database_geocn() -> String {
 pub struct ProgressCheatBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_pcb_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_pcb_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
     #[serde(rename = "minimum-size", default = "default_pcb_minimum_size")]
     pub minimum_size: i64,
@@ -665,7 +691,7 @@ impl ProgressCheatBlockerConfig {
 pub struct BtnConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_btn_ban_duration")]
+    #[serde(rename = "ban-duration", default = "default_btn_ban_duration", deserialize_with = "deserialize_ban_duration")]
     pub ban_duration_ms: i64,
 }
 
@@ -881,9 +907,6 @@ impl ProfileConfig {
             // 封禁表由 wave 维护（启动恢复、每轮解封），模块共享同一实例
             ban_list: std::sync::Arc::new(std::sync::Mutex::new(crate::banlist::BanList::new())),
         };
-        // PTR 结果缓存（应用层预热；PTR 模块只读）
-        let ptr_cache = std::sync::Arc::new(crate::modules::PtrCache::new());
-
         if let Some(cfg) = &self.module.ip_address_blocker {
             if enabled_or_disabled(&cfg.enabled) {
                 pipeline.add_module(Box::new(
@@ -959,18 +982,18 @@ impl ProfileConfig {
                 pipeline.add_module(Box::new(IpRuleListModule::new(cfg.ban_duration_ms)));
             }
         }
-        // 上游 `registerModules()` 中 PTRBlacklist 的注册被注释掉；这里按「显式启用即注册」处理
+        // 上游 `registerModules()` 中 `//moduleClasses.add(PTRBlacklist.class);` 被注释掉，
+        // 因此**即使 profile.yml 打开该模块也不会生效**；本移植同样不注册（配置仍可解析，
+        // 保证与上游配置文件互通），仅提示一次以免使用者误以为已生效。
         if let Some(cfg) = &self.module.ptr_blacklist {
             if enabled_or_disabled(&cfg.enabled) {
-                if let Ok(rules) = RuleSet::from_json_text(&cfg.ptr_rules) {
-                    pipeline.add_module(Box::new(PtrBlacklist::new(
-                        rules,
-                        cfg.ban_duration_ms,
-                        ptr_cache.clone(),
-                    )));
-                }
+                tracing::warn!(
+                    "ptr-blacklist 已在 profile.yml 启用，但上游 v9.5.1 的 registerModules() 未注册该模块，\
+                     本移植按上游行为跳过（不参与判定）"
+                );
             }
         }
+
         if let Some(cfg) = &self.module.idle_connection_dos_protection {
             if enabled_or_disabled(&cfg.enabled) {
                 pipeline.add_module(Box::new(IdleConnectionDosProtection::new(

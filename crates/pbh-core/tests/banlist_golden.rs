@@ -9,12 +9,7 @@
 use pbh_core::banlist::{needs_full_ban_list, BanList, BannedRecord};
 
 fn record(ip: &str, unban_at_ms: i64) -> BannedRecord {
-    BannedRecord {
-        ip: ip.to_string(),
-        unban_at_ms,
-        module: "peer-id-blacklist".to_string(),
-        ban_for_disconnect: false,
-    }
+    BannedRecord::minimal(ip, unban_at_ms, "peer-id-blacklist", false)
 }
 
 #[test]

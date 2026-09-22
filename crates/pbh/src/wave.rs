@@ -7,15 +7,18 @@
 //!    否则走增量 `/transfer/banPeers`；两者都无变化时不触碰下载器。
 
 use crate::push::{AlertLevel, AlertManager};
-use pbh_core::banlist::{needs_full_ban_list, BanList, BannedRecord};
+use pbh_core::banlist::{
+    needs_full_ban_list, random_id, BanList, BanMetadata, BannedPeer, BannedPeerAddress,
+    BannedRecord, BannedTorrent, DownloaderBasicInfo,
+};
 use pbh_core::geoip::GeoIpProvider;
-use pbh_core::i18n::{Param, TranslationComponent, Translator};
+use pbh_core::i18n::{Param, TranslationComponent};
 use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::{CheckContext, CheckResult};
 use pbh_core::modules::ProgressCheatBlocker;
 use pbh_core::pipeline::Decision;
 use pbh_core::Pipeline;
-use pbh_db::{peer_geoip_json, BanLog, Database, HistoryRecord};
+use pbh_db::{peer_geoip_json, Database, HistoryRecord};
 use pbh_downloader::{BanEntry, Downloader};
 use pbh_web::{DownloaderStatus, Metrics};
 use std::net::IpAddr;
@@ -66,6 +69,14 @@ struct BanRecord {
     torrent_is_private: Option<bool>,
     flags: Option<String>,
     structured_data: serde_json::Value,
+    /// 上游 `CheckResult.moduleContext` 的 Java 类全名（落 `history.module_name` 与 BTN 上报）
+    module_class: String,
+    /// peer 瞬时速率（`BanMetadata.peer.downloadSpeed` / `uploadSpeed`）
+    peer_dl_speed: i64,
+    peer_up_speed: i64,
+    /// torrent 瞬时速率（`BanMetadata.torrent.rtDownloadSpeed` / `rtUploadSpeed`）
+    torrent_dl_speed: i64,
+    torrent_up_speed: i64,
 }
 
 pub struct WaveEngine {
@@ -75,11 +86,9 @@ pub struct WaveEngine {
     pub db: Arc<Database>,
     pub metrics: Arc<StdMutex<Metrics>>,
     pub statuses: Arc<StdMutex<Vec<DownloaderStatus>>>,
-    /// 文案表（内嵌上游 lang + 可选 data/lang 覆盖）
-    pub translator: Arc<Translator>,
-    /// 落库/日志使用的文案语言
-    pub locale: String,
     pub persist_banlist: bool,
+    /// 演练模式（`--dry-run`）：照常判定与落库，但不向下载器下发封禁/解封/限速。
+    pub dry_run: bool,
     pub max_concurrent: usize,
     /// 告警/推送管理器（对齐上游注入到 `DigestionSession` → `RunCheckModuleOrgan` 的
     /// `AlertManager`）
@@ -195,7 +204,7 @@ impl WaveEngine {
         self.pipeline.module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
     }
 
-    /// 解封到期条目并同步清理数据库。
+    /// 解封到期条目（内存封禁表为准；持久化由 [`WaveEngine::persist_ban_list`] 定时全量保存）。
     fn remove_expired_bans(&self, now_ms: i64) -> Vec<BannedRecord> {
         let expired = match self.ban_list().lock() {
             Ok(mut list) => list.remove_expired(now_ms),
@@ -204,29 +213,11 @@ impl WaveEngine {
         if expired.is_empty() {
             return expired;
         }
-        let ips: Vec<String> = expired.iter().map(|e| e.ip.clone()).collect();
-        if self.persist_banlist {
-            if let Err(e) = self.db.remove_banned_ips(&ips) {
-                warn!("清理到期封禁失败: {e}");
-            }
-        }
         let normal = expired.iter().filter(|e| !e.ban_for_disconnect).count();
         if normal > 0 {
             info!("解封到期对等体 {normal} 个");
         }
         expired
-    }
-
-    /// 渲染可翻译文案；缺失 key 时回退到内部标识。
-    fn render_text(
-        &self,
-        key: &Option<TranslationComponent>,
-        fallback: &str,
-    ) -> String {
-        match key {
-            Some(component) => self.translator.render(component, &self.locale),
-            None => fallback.to_string(),
-        }
     }
 
     /// 查询 IP 库并转成 `peer_geoip` 的 JSON（缺省 = 未装 IP 库，落 NULL）。
@@ -240,28 +231,70 @@ impl WaveEngine {
     fn record_bans(&self, entry: &DownloaderEntry, bans: &[BanRecord], now_ms: i64) {
         for b in bans {
             let unban_at_ms = if b.duration > 0 { now_ms + b.duration } else { 0 };
-            let log = BanLog {
-                id: None,
-                downloader_id: entry.downloader.id().to_string(),
-                torrent_hash: b.torrent_hash.clone(),
-                torrent_name: b.torrent_name.clone(),
-                ip: b.entry.ip.clone(),
-                port: b.entry.port as i64,
-                peer_id: b.peer_id.clone(),
-                client_name: b.client_name.clone(),
-                module: b.module.clone(),
-                // 与上游一致：落库的是按服务端语言渲染后的文案（作为无 key 时的兜底）
-                rule: self.render_text(&b.rule_key, &b.rule),
-                reason: self.render_text(&b.reason_key, &b.reason),
-                // 同时落库结构化 `TranslationComponent`（JSON），供 API 按请求 locale 重新本地化
-                rule_key: b.rule_key.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default()),
-                reason_key: b.reason_key.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default()),
-                ban_duration: b.duration,
-                created_at: now_ms,
+            // 上游 `BanMetadata`（`banlist.metadata` 列的载体，同时供 Web 展示与遗留上报）
+            let rule_component = b
+                .rule_key
+                .clone()
+                .unwrap_or_else(|| TranslationComponent::new(&b.rule));
+            let description_component = b
+                .reason_key
+                .clone()
+                .unwrap_or_else(|| TranslationComponent::new(&b.reason));
+            let metadata = BanMetadata {
+                context: b.module_class.clone(),
+                random_id: random_id(),
+                ban_at_ms: now_ms,
+                unban_at_ms,
+                ban_for_disconnect: b.ban_for_disconnect,
+                exclude_from_report: b.ban_for_disconnect,
+                exclude_from_display: b.ban_for_disconnect,
+                rule: rule_component.clone(),
+                description: description_component.clone(),
+                structured_data: if b.structured_data.is_null() {
+                    None
+                } else {
+                    Some(b.structured_data.clone())
+                },
+                downloader: DownloaderBasicInfo {
+                    id: entry.downloader.id().to_string(),
+                    name: entry.downloader.name().to_string(),
+                    kind: entry.downloader.downloader_type().to_string(),
+                },
+                torrent: BannedTorrent {
+                    id: b.torrent_hash.clone(),
+                    size: b.torrent_size,
+                    completed_size: ((b.torrent_size as f64) * b.torrent_progress.clamp(0.0, 1.0))
+                        as i64,
+                    name: b.torrent_name.clone(),
+                    hash: b.torrent_hash.clone(),
+                    private_torrent: b.torrent_is_private.unwrap_or(false),
+                    progress: b.torrent_progress,
+                    rt_upload_speed: b.torrent_up_speed,
+                    rt_download_speed: b.torrent_dl_speed,
+                },
+                peer: BannedPeer {
+                    address: BannedPeerAddress {
+                        downloader_raw_ip: b.entry.raw_ip.clone(),
+                        downloader_raw_port: b.entry.port,
+                        teredo_client_udp_port: 0,
+                        natted_client_port: 0,
+                        ip: b.entry.ip.clone(),
+                        port: b.entry.port,
+                        nat_translated: false,
+                        teredo_translated: false,
+                    },
+                    raw_ip: b.entry.raw_ip.clone(),
+                    id: b.peer_id.clone(),
+                    client_name: b.client_name.clone(),
+                    downloaded: b.peer_downloaded,
+                    download_speed: b.peer_dl_speed,
+                    uploaded: b.peer_uploaded,
+                    upload_speed: b.peer_up_speed,
+                    progress: b.peer_progress,
+                    flags: b.flags.clone(),
+                },
+                reverse_lookup: "N/A".to_string(),
             };
-            if let Err(e) = self.db.insert_ban_log(&log) {
-                warn!("insert ban log failed: {e}");
-            }
             // 封禁历史（`PersistMetrics.recordPeerBan`）：`ban-for-disconnect` 不落 history
             if !b.ban_for_disconnect {
                 let history = HistoryRecord {
@@ -283,16 +316,17 @@ impl WaveEngine {
                         piece_size: 0,
                         pieces_have: 0,
                         completed_override: None,
-                        dlspeed: 0,
-                        upspeed: 0,
+                        dlspeed: b.torrent_dl_speed,
+                        upspeed: b.torrent_up_speed,
                         is_private: b.torrent_is_private,
                     },
-                    module_name: b.module.clone(),
-                    // `rule_name` / `description` 落 `TranslationComponent` 的 JSON（对齐上游
+                    // `module_name` 落上游 `CheckResult.moduleContext` 的 Java 类全名
+                    module_name: b.module_class.clone(),
+                    // `rule_name` / `description` 落 `TranslationComponent` 的 JSON（对齐
                     // `TranslationComponentTypeHandler`）；缺 key 时把渲染文本包成组件，
                     // `Translator` 查不到模板会原样返回，与直接落文本等价
-                    rule_name: rule_component_json(&b.rule_key, &b.rule),
-                    description: rule_component_json(&b.reason_key, &b.reason),
+                    rule_name: serde_json::to_string(&rule_component).unwrap_or_default(),
+                    description: serde_json::to_string(&description_component).unwrap_or_default(),
                     flags: b.flags.clone(),
                     downloader: entry.downloader.id().to_string(),
                     structured_data: Some(b.structured_data.to_string()),
@@ -302,17 +336,41 @@ impl WaveEngine {
                     warn!("insert history failed: {e}");
                 }
             }
-            if self.persist_banlist {
-                if let Err(e) = self.db.upsert_banned_ip(&b.entry.ip, &b.module, b.duration) {
-                    warn!("upsert banned ip failed: {e}");
-                }
-            }
             let duplicate = match self.ban_list().lock() {
-                Ok(mut list) => list.add(&b.entry.ip, unban_at_ms, &b.module, b.ban_for_disconnect),
+                Ok(mut list) => list.add_record(BannedRecord {
+                    ip: b.entry.ip.clone(),
+                    unban_at_ms,
+                    module: b.module.clone(),
+                    ban_for_disconnect: b.ban_for_disconnect,
+                    metadata,
+                }),
                 Err(_) => false,
             };
             if duplicate {
                 warn!("对等体 {} 已在封禁表中，下一轮将全量重放封禁列表", b.entry.ip);
+            }
+        }
+    }
+
+    /// 把内存封禁表整表写回 `banlist`（对齐 `DownloaderServerImpl.saveBanList`：
+    /// `delete all` + 逐条 `insert` 的 JSON 元数据）。由调度循环按上游间隔调用。
+    pub fn persist_ban_list(&self) -> usize {
+        if !self.persist_banlist {
+            return 0;
+        }
+        let records = self.ban_list().lock().map(|list| list.records_sorted()).unwrap_or_default();
+        let entries: Vec<(String, String)> = records
+            .iter()
+            .map(|record| {
+                let metadata = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string());
+                (record.ip.clone(), metadata)
+            })
+            .collect();
+        match self.db.save_ban_list(&entries) {
+            Ok(written) => written,
+            Err(e) => {
+                warn!("封禁列表落库失败: {e}");
+                0
             }
         }
     }
@@ -332,6 +390,14 @@ impl WaveEngine {
         }
         let dl = entry.downloader.clone();
         let full = needs_full_ban_list(removed_count, entry.increment_ban, force_full);
+        if self.dry_run {
+            info!(
+                "[dry-run] 跳过向下载器 {} 下发封禁列表（full={full}，新增 {}，解封 {removed_count}）",
+                dl.id(),
+                added.len()
+            );
+            return;
+        }
         if full {
             let ips = self
                 .ban_list()
@@ -437,6 +503,12 @@ impl WaveEngine {
                             torrent_is_private: torrent.is_private,
                             flags: peer.flags.clone(),
                             structured_data: result.data.clone(),
+                            module_class: pbh_core::module::java_module_class(&result.module)
+                                .to_string(),
+                            peer_dl_speed: peer.dl_speed,
+                            peer_up_speed: peer.up_speed,
+                            torrent_dl_speed: torrent.dlspeed,
+                            torrent_up_speed: torrent.upspeed,
                         }),
                     }
                 }
@@ -469,19 +541,6 @@ struct DownloaderOutput {
     peers: usize,
     skipped: usize,
     bans: Vec<BanRecord>,
-}
-
-/// `history.rule_name` / `description` 的落库值：`TranslationComponent` 的 JSON
-/// （对齐上游 `TranslationComponentTypeHandler`）。
-///
-/// 缺 key 时把渲染文本包成组件：`Translator` 查不到模板会原样返回 key，
-/// 与直接落文本等价，且保证列内容始终是合法 JSON。
-fn rule_component_json(key: &Option<TranslationComponent>, fallback: &str) -> String {
-    let component = match key {
-        Some(component) => component.clone(),
-        None => TranslationComponent::new(fallback),
-    };
-    serde_json::to_string(&component).unwrap_or_else(|_| fallback.to_string())
 }
 
 /// 该 SKIP 是否来自 bypass 分支（`ignore-peers-from-addresses`）。
@@ -662,7 +721,7 @@ mod tests {
     }
 
     fn engine(db: Arc<Database>) -> WaveEngine {
-        let translator = Arc::new(Translator::embedded());
+        let translator = Arc::new(pbh_core::i18n::Translator::embedded());
         let push_manager =
             crate::push::PushManager::from_config(&Default::default(), Arc::new(NoopFetcher));
         let alert_manager = Arc::new(AlertManager::new(
@@ -681,9 +740,8 @@ mod tests {
             db,
             metrics: Arc::new(StdMutex::new(Metrics::default())),
             statuses: Arc::new(StdMutex::new(Vec::new())),
-            translator,
-            locale: "zh_cn".to_string(),
             persist_banlist: false,
+            dry_run: false,
             max_concurrent: 1,
             alert_manager,
             monitor,
@@ -713,6 +771,11 @@ mod tests {
             torrent_is_private: Some(true),
             flags: Some("U".to_string()),
             structured_data: serde_json::json!({ "type": "test" }),
+            module_class: pbh_core::module::java_module_class("peer-analyse-service").to_string(),
+            peer_dl_speed: 128,
+            peer_up_speed: 256,
+            torrent_dl_speed: 512,
+            torrent_up_speed: 1024,
         }
     }
 
@@ -727,8 +790,11 @@ mod tests {
         engine.record_bans(&entry, &[ban("1.1.1.1", false), ban("1.1.1.2", true)], 1_700_000_000_000);
 
         // ban_logs 记录全部封禁；history 只记录非 disconnect
-        let source =
-            DbBtnSubmitSource::new(db.clone(), Arc::new(Translator::embedded()), "zh_cn");
+        let source = DbBtnSubmitSource::new(
+            db.clone(),
+            Arc::new(pbh_core::i18n::Translator::embedded()),
+            "zh_cn",
+        );
         let rows = source.batch_ban_history(0, 100);
         assert_eq!(rows.len(), 1, "ban-for-disconnect 不落 history");
         let row = &rows[0];

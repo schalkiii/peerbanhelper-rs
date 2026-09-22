@@ -18,43 +18,93 @@ use tracing::warn;
 
 pub const SCHEMA_VERSION: i64 = 1;
 
+/// `history` 表的一行 + `torrents` 表 JOIN 结果。
+///
+/// 字段即上游 `BanLogDTO` / `BtnBan` 的取值来源；`rule` / `description` 存
+/// `TranslationComponent` 的 JSON，读取方按需渲染（对齐 `TranslationComponentTypeHandler`）。
 #[derive(Clone, Debug)]
-pub struct BanLog {
-    pub id: Option<i64>,
-    pub downloader_id: String,
-    pub torrent_hash: String,
-    pub torrent_name: String,
+pub struct HistoryRow {
+    pub id: i64,
+    pub ban_at: i64,
+    pub unban_at: i64,
     pub ip: String,
     pub port: i64,
-    pub peer_id: String,
-    pub client_name: String,
+    pub peer_id: Option<String>,
+    pub peer_client_name: Option<String>,
+    pub peer_uploaded: Option<i64>,
+    pub peer_downloaded: Option<i64>,
+    pub peer_progress: f64,
+    pub downloader_progress: f64,
     pub module: String,
     pub rule: String,
-    pub reason: String,
-    /// 上游 `CheckResult.rule` 的可翻译形式（`TranslationComponent` 的 JSON），落库后可由 API 按请求 locale 重新本地化。
-    pub rule_key: Option<String>,
-    /// 上游 `CheckResult.reason` 的可翻译形式（`TranslationComponent` 的 JSON）。
-    pub reason_key: Option<String>,
-    pub ban_duration: i64,
-    pub created_at: i64,
+    pub description: String,
+    pub flags: Option<String>,
+    pub downloader: String,
+    pub structured_data: Option<String>,
+    pub peer_geoip: Option<String>,
+    /// `torrents.info_hash`（JOIN 不到时为 `None`，对齐上游 `TorrentEntityDTO.from(null)` 的容忍）
+    pub torrent_info_hash: Option<String>,
+    pub torrent_name: Option<String>,
+    pub torrent_size: i64,
 }
 
+/// `rule_sub_log` 的一行（规则订阅更新日志）。
 #[derive(Clone, Debug)]
-pub struct BannedIp {
-    pub ip: String,
-    pub first_banned_at: i64,
-    pub last_banned_at: i64,
-    pub module: String,
-    pub hit_count: i64,
-    pub ban_until: i64,
+pub struct RuleSubLogRow {
+    pub id: i64,
+    pub rule_id: String,
+    pub update_time: i64,
+    pub count: i64,
+    /// `AUTO` / `MANUAL`（对齐 `IPBanRuleUpdateType`）
+    pub update_type: String,
 }
 
-/// `pcb_addr` / `pcb_range` 对应的表名（对齐上游实体表）。
-fn pcb_table(kind: PcbEntityKind) -> &'static str {
-    match kind {
-        PcbEntityKind::Addr => "pcb_addr",
-        PcbEntityKind::Range => "pcb_range",
-    }
+/// `history` 的读取列（含 `torrents` LEFT JOIN；顺序与 [`map_history_row`] 一致）。
+const HISTORY_SELECT_SQL: &str = "SELECT h.id, h.ban_at, h.unban_at, h.ip, h.port, h.peer_id, \
+     h.peer_client_name, h.peer_uploaded, h.peer_downloaded, h.peer_progress, \
+     h.downloader_progress, h.module_name, h.rule_name, h.description, h.flags, h.downloader, \
+     h.structured_data, h.peer_geoip, t.info_hash, t.name, t.size \
+     FROM history h LEFT JOIN torrents t ON t.id = h.torrent_id";
+
+/// `history` 允许排序的列（对齐上游 `Orderable` 只用表自身的列名，防注入）。
+const HISTORY_ORDER_COLUMNS: &[&str] = &[
+    "id",
+    "ban_at",
+    "unban_at",
+    "ip",
+    "port",
+    "peer_uploaded",
+    "peer_downloaded",
+    "peer_progress",
+    "downloader_progress",
+    "module_name",
+    "downloader",
+];
+
+fn map_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryRow> {
+    Ok(HistoryRow {
+        id: row.get(0)?,
+        ban_at: row.get(1)?,
+        unban_at: row.get(2)?,
+        ip: row.get(3)?,
+        port: row.get(4)?,
+        peer_id: row.get(5)?,
+        peer_client_name: row.get(6)?,
+        peer_uploaded: row.get(7)?,
+        peer_downloaded: row.get(8)?,
+        peer_progress: row.get(9)?,
+        downloader_progress: row.get(10)?,
+        module: row.get(11)?,
+        rule: row.get(12)?,
+        description: row.get(13)?,
+        flags: row.get(14)?,
+        downloader: row.get(15)?,
+        structured_data: row.get(16)?,
+        peer_geoip: row.get(17)?,
+        torrent_info_hash: row.get(18)?,
+        torrent_name: row.get(19)?,
+        torrent_size: row.get::<_, Option<i64>>(20)?.unwrap_or(0),
+    })
 }
 
 pub struct Database {
@@ -90,6 +140,105 @@ pub(crate) fn select_torrent(
         .optional()?)
 }
 
+/// 老库（本移植早期版本的自建表）向「对齐上游」的表结构做一次性搬运。
+///
+/// 仅当旧表存在且新表为空时执行；旧表保留不删（便于人工回滚/排查）。
+/// 封禁列表的完整 `BanMetadata` 已不可恢复，用最小结构重建（保留地址/时间/模块）。
+fn migrate_legacy_tables(conn: &Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "meta")? {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO metadata(k, v) SELECT key, value FROM meta",
+            [],
+        );
+    }
+    if table_exists(conn, "pcb_addr")? && table_is_empty(conn, "pcb_address")? {
+        let _ = conn.execute(
+            "INSERT INTO pcb_address
+               (ip, port, torrent_id, last_report_progress, last_report_uploaded,
+                tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                fast_pcb_test_execute_at, last_torrent_completed_size)
+             SELECT key, port, torrent_id, last_report_progress, last_report_uploaded,
+                    tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                    last_time_seen_ms, last_time_seen_ms, downloader_id, ban_delay_window_end_ms,
+                    CASE WHEN fast_pcb_test_executed != 0 THEN last_time_seen_ms ELSE 0 END,
+                    last_torrent_completed_size
+             FROM pcb_addr",
+            [],
+        );
+    }
+    if table_exists(conn, "pcb_range")? && table_is_empty(conn, "pcb_range")? {
+        let _ = conn.execute(
+            "INSERT INTO pcb_range
+               (ip_range, torrent_id, last_report_progress, last_report_uploaded,
+                tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                fast_pcb_test_execute_at, last_torrent_completed_size)
+             SELECT key, torrent_id, last_report_progress, last_report_uploaded,
+                    tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                    last_time_seen_ms, last_time_seen_ms, downloader_id, ban_delay_window_end_ms,
+                    CASE WHEN fast_pcb_test_executed != 0 THEN last_time_seen_ms ELSE 0 END,
+                    last_torrent_completed_size
+             FROM pcb_range",
+            [],
+        );
+    }
+    if table_exists(conn, "banned_ips")? && table_is_empty(conn, "banlist")? {
+        let mut stmt = conn.prepare(
+            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until
+             FROM banned_ips",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (ip, first_banned_at, last_banned_at, module, hit_count, ban_until) in rows {
+            let metadata = serde_json::json!({
+                "context": module,
+                "banAt": first_banned_at,
+                "unbanAt": ban_until,
+                "banForDisconnect": false,
+                "excludeFromReport": false,
+                "excludeFromDisplay": false,
+                "rule": { "key": module, "params": [] },
+                "description": { "key": module, "params": [] },
+                "hitCount": hit_count,
+                "lastBanTime": last_banned_at,
+            });
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO banlist (address, metadata) VALUES (?1, ?2)",
+                rusqlite::params![ip, metadata.to_string()],
+            );
+        }
+    }
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            rusqlite::params![name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn table_is_empty(conn: &Connection, name: &str) -> anyhow::Result<bool> {
+    let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {name}"), [], |r| r.get(0))?;
+    Ok(count == 0)
+}
+
 impl Database {
     pub fn open(path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
@@ -110,6 +259,7 @@ impl Database {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(include_str!("schema.sql"))?;
+        migrate_legacy_tables(&conn)?;
         // 增量迁移（老库缺列时补齐；新库已含列，忽略重复列错误）
         for sql in [
             "ALTER TABLE ban_logs ADD COLUMN rule_key TEXT",
@@ -118,7 +268,7 @@ impl Database {
             let _ = conn.execute(sql, []);
         }
         conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?1)",
+            "INSERT OR IGNORE INTO metadata(k, v) VALUES ('schema_version', ?1)",
             rusqlite::params![SCHEMA_VERSION],
         )?;
         Ok(())
@@ -161,173 +311,204 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("torrents upsert 后取不到行: {}", torrent.hash))
     }
 
-    // ---------- 封禁日志 ----------
+    // ---------- 封禁历史（`history`，对齐上游 `HistoryService`） ----------
 
-    pub fn insert_ban_log(&self, log: &BanLog) -> anyhow::Result<i64> {
+    /// WebUI 封禁日志分页（`/api/bans/logs`）。
+    ///
+    /// `order` 为 `(history 列名, 是否升序)` 列表（调用方先用
+    /// [`Database::history_order_column`] 把 DTO 字段名映射为列名）；空列表按
+    /// 上游默认 `ban_at DESC`。
+    pub fn page_history(
+        &self,
+        order: &[(String, bool)],
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<HistoryRow>, i64)> {
+        let mut clauses: Vec<String> = Vec::new();
+        for (column, asc) in order {
+            if !HISTORY_ORDER_COLUMNS.contains(&column.as_str()) {
+                continue;
+            }
+            clauses.push(format!("h.{column} {}", if *asc { "ASC" } else { "DESC" }));
+        }
+        if clauses.is_empty() {
+            clauses.push("h.ban_at DESC".to_string());
+        }
+        let sql = format!(
+            "{HISTORY_SELECT_SQL} ORDER BY {} LIMIT ?1 OFFSET ?2",
+            clauses.join(", ")
+        );
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO ban_logs
-             (downloader_id, torrent_hash, torrent_name, ip, port, peer_id, client_name,
-              module, rule, reason, rule_key, reason_key, ban_duration, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-            rusqlite::params![
-                log.downloader_id,
-                log.torrent_hash,
-                log.torrent_name,
-                log.ip,
-                log.port,
-                log.peer_id,
-                log.client_name,
-                log.module,
-                log.rule,
-                log.reason,
-                log.rule_key,
-                log.reason_key,
-                log.ban_duration,
-                log.created_at,
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn list_ban_logs(&self, limit: i64, offset: i64) -> anyhow::Result<(Vec<BanLog>, i64)> {
-        let conn = self.conn.lock().unwrap();
-        let total: i64 = conn.query_row("SELECT COUNT(*) FROM ban_logs", [], |r| r.get(0))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, downloader_id, torrent_hash, torrent_name, ip, port, peer_id, client_name,
-                    module, rule, reason, rule_key, reason_key, ban_duration, created_at
-             FROM ban_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![limit, offset], map_ban_log)?;
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM history", [], |r| r.get(0))?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![limit, offset], map_history_row)?;
         Ok((rows.collect::<Result<Vec<_>, _>>()?, total))
     }
 
-    /// 删除超过 keep_days 天的日志，返回删除条数。
-    pub fn cleanup_ban_logs(&self, keep_days: i64) -> anyhow::Result<usize> {
-        let cutoff = now_ms() - keep_days * 86_400_000;
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute("DELETE FROM ban_logs WHERE created_at < ?1", rusqlite::params![cutoff])?)
-    }
-
-    // ---------- 封禁列表 ----------
-
-    pub fn upsert_banned_ip(&self, ip: &str, module: &str, ban_duration_ms: i64) -> anyhow::Result<()> {
-        let now = now_ms();
-        let until = if ban_duration_ms > 0 { now + ban_duration_ms } else { 0 };
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO banned_ips (ip, first_banned_at, last_banned_at, module, hit_count, ban_until)
-             VALUES (?1, ?2, ?2, ?3, 1, ?4)
-             ON CONFLICT(ip) DO UPDATE SET
-               last_banned_at=excluded.last_banned_at,
-               module=excluded.module,
-               hit_count=hit_count+1,
-               ban_until=excluded.ban_until",
-            rusqlite::params![ip, now, module, until],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_banned_ips(&self) -> anyhow::Result<Vec<BannedIp>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until
-             FROM banned_ips ORDER BY last_banned_at DESC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(BannedIp {
-                ip: row.get(0)?,
-                first_banned_at: row.get(1)?,
-                last_banned_at: row.get(2)?,
-                module: row.get(3)?,
-                hit_count: row.get(4)?,
-                ban_until: row.get(5)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn remove_banned_ip(&self, ip: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM banned_ips WHERE ip=?1", rusqlite::params![ip])?;
-        Ok(())
-    }
-
-    /// BannedIp 排行查询（`/api/bans/ranks`）。
+    /// 指定 torrent（info_hash）的封禁历史（`GET /api/torrent/{info_hash}/banHistory`）。
     ///
-    /// `filter` 为 `(ip 模糊匹配, 前置 LIMIT)`，对齐上游 `Paginable#query` + `ORDER BY hit_count DESC`。
-    /// `limit` 为 `-1` 时表示不过滤行数（全量）。
-    /// BannedIp 排行查询（`/api/bans/ranks`）。
-    ///
-    /// `filter` 为 IP 模糊匹配（对齐上游 `Paginable#query` 的 `ip ? LIKE %filter%`），
-    /// 排序固定 `hit_count DESC`；每条附带该 IP 在 `ban_logs` 中的累计封禁次数。
-    pub fn page_banned_rank(
+    /// `history` 通过 `torrent_id` 关联 `torrents`，按 info_hash 过滤需要 JOIN。
+    pub fn history_by_torrent(
         &self,
-        filter: &str,
+        info_hash: &str,
         limit: i64,
         offset: i64,
-    ) -> anyhow::Result<Vec<(BannedIp, usize)>> {
+    ) -> anyhow::Result<(Vec<HistoryRow>, i64)> {
+        let sql =
+            format!("{HISTORY_SELECT_SQL} WHERE t.info_hash = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3");
         let conn = self.conn.lock().unwrap();
-        let sql = if filter.is_empty() {
-            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until,
-                    (SELECT COUNT(*) FROM ban_logs WHERE ban_logs.ip=banned_ips.ip) AS total
-             FROM banned_ips ORDER BY hit_count DESC LIMIT ?1 OFFSET ?2"
-        } else {
-            "SELECT ip, first_banned_at, last_banned_at, module, hit_count, ban_until,
-                    (SELECT COUNT(*) FROM ban_logs WHERE ban_logs.ip=banned_ips.ip) AS total
-             FROM banned_ips WHERE ip LIKE ?1 ESCAPE '\\' ORDER BY hit_count DESC LIMIT ?2 OFFSET ?3"
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM history h JOIN torrents t ON t.id = h.torrent_id
+             WHERE t.info_hash = ?1",
+            rusqlite::params![info_hash],
+            |r| r.get(0),
+        )?;
+        let mut rows: Vec<HistoryRow> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let iter = stmt.query_map(rusqlite::params![info_hash, limit, offset], map_history_row)?;
+            for row in iter {
+                rows.push(row?);
+            }
+        }
+        Ok((rows, total))
+    }
+
+    /// 指定 IP 的封禁历史（`GET /api/peer/{ip}/banHistory`），按 `ban_at` 倒序分页。
+    pub fn history_by_ip(
+        &self,
+        ip: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<HistoryRow>, i64)> {
+        let sql =
+            format!("{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3");
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM history WHERE ip = ?1",
+            rusqlite::params![ip],
+            |r| r.get(0),
+        )?;
+        let mut rows: Vec<HistoryRow> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let iter = stmt.query_map(rusqlite::params![ip, limit, offset], map_history_row)?;
+            for row in iter {
+                rows.push(row?);
+            }
+        }
+        Ok((rows, total))
+    }
+
+    /// 指定 IP 的封禁次数（`/api/peer/{ip}` 的 `banCount`）。
+    pub fn history_count_by_ip(&self, ip: &str) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM history WHERE ip = ?1",
+            rusqlite::params![ip],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// 最近一条历史（`/api/bans` 列表的上下文兜底；对齐上游从 `history` 取最后一条的展示语义）。
+    pub fn last_history_by_ip(&self, ip: &str) -> anyhow::Result<Option<HistoryRow>> {
+        let sql = format!("{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT 1");
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&sql)?;
+        Ok(stmt.query_row(rusqlite::params![ip], map_history_row).optional()?)
+    }
+
+    /// `HistoryService.getBannedIps`：按 IP 聚合的封禁次数排行（`/api/bans/ranks`）。
+    ///
+    /// `filter` 为 IP 模糊匹配（`LIKE %filter%`）；排序固定 `COUNT(*) DESC`。
+    pub fn page_history_rank(
+        &self,
+        filter: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<(Vec<(String, i64)>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let (total, sql): (i64, String) = match filter {
+            Some(_) => (
+                conn.query_row(
+                    "SELECT COUNT(DISTINCT ip) FROM history WHERE ip LIKE ?1 ESCAPE '\\'",
+                    rusqlite::params![format!("%{}%", filter.unwrap_or_default())],
+                    |r| r.get(0),
+                )?,
+                "SELECT ip, COUNT(*) AS c FROM history WHERE ip LIKE ?1 ESCAPE '\\' \
+                 GROUP BY ip ORDER BY c DESC LIMIT ?2 OFFSET ?3"
+                    .to_string(),
+            ),
+            None => (
+                conn.query_row("SELECT COUNT(DISTINCT ip) FROM history", [], |r| r.get(0))?,
+                "SELECT ip, COUNT(*) AS c FROM history GROUP BY ip ORDER BY c DESC LIMIT ?1 OFFSET ?2"
+                    .to_string(),
+            ),
         };
-        let mut stmt = conn.prepare(sql)?;
-        let cols = |row: &rusqlite::Row<'_>| {
-            Ok((
-                BannedIp {
-                    ip: row.get(0)?,
-                    first_banned_at: row.get(1)?,
-                    last_banned_at: row.get(2)?,
-                    module: row.get(3)?,
-                    hit_count: row.get(4)?,
-                    ban_until: row.get(5)?,
-                },
-                row.get::<_, i64>(6)? as usize,
-            ))
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = match filter {
+            Some(keyword) => stmt
+                .query_map(
+                    rusqlite::params![format!("%{keyword}%"), limit, offset],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => stmt
+                .query_map(rusqlite::params![limit, offset], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
         };
-        let rows = if filter.is_empty() {
-            stmt.query_map(rusqlite::params![limit, offset], cols)?
-        } else {
-            stmt.query_map(
-                rusqlite::params![format!("%{filter}%"), limit, offset],
-                cols,
-            )?
-        };
+        Ok((rows, total))
+    }
+
+    /// 删除 `ban_at` 早于 `keep_days` 天的历史（`persist.ban-logs-keep-days`），返回删除条数。
+    pub fn cleanup_history(&self, keep_days: i64) -> anyhow::Result<usize> {
+        let cutoff = now_ms() - keep_days * 86_400_000;
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM history WHERE ban_at < ?1", rusqlite::params![cutoff])?)
+    }
+
+    // ---------- 持久化封禁列表（`banlist`，对齐上游 `BanListService`） ----------
+
+    /// `BanListService.readBanList`：读回 `(address, BanMetadata JSON)` 列表。
+    pub fn read_ban_list(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT address, metadata FROM banlist")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// 批量移除封禁项（用于到期解封；返回删除条数）。
-    pub fn remove_banned_ips(&self, ips: &[String]) -> anyhow::Result<usize> {
-        if ips.is_empty() {
-            return Ok(0);
-        }
+    /// `BanListService.saveBanList`：整表替换（事务内先清空再写入，返回写入条数）。
+    pub fn save_ban_list(&self, entries: &[(String, String)]) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
-        let mut removed = 0usize;
+        tx.execute("DELETE FROM banlist", [])?;
+        let mut written = 0usize;
         {
-            let mut stmt = tx.prepare("DELETE FROM banned_ips WHERE ip=?1")?;
-            for ip in ips {
-                removed += stmt.execute(rusqlite::params![ip])?;
+            let mut stmt = tx.prepare("INSERT INTO banlist (address, metadata) VALUES (?1, ?2)")?;
+            for (address, metadata) in entries {
+                written += stmt.execute(rusqlite::params![address, metadata])?;
             }
         }
         tx.commit()?;
-        Ok(removed)
+        Ok(written)
     }
 
-    // ---------- 键值元数据（meta） ----------
+    /// 清空持久化封禁列表（`DELETE /api/bans` 的 `*` 落库部分）。
+    pub fn clear_ban_list(&self) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM banlist", [])?)
+    }
+
+    // ---------- 键值元数据（`metadata`，对齐上游 `MetadataService`） ----------
 
     /// 读回一个键（不存在 ⇒ `None`）。
     pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         Ok(conn
             .query_row(
-                "SELECT value FROM meta WHERE key=?1",
+                "SELECT v FROM metadata WHERE k=?1",
                 rusqlite::params![key],
                 |row| row.get(0),
             )
@@ -338,9 +519,83 @@ impl Database {
     pub fn set_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO meta(key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            "INSERT INTO metadata(k, v) VALUES (?1, ?2)
+             ON CONFLICT(k) DO UPDATE SET v=excluded.v",
             rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    // ---------- 规则订阅（`rule_sub_info` / `rule_sub_log`，对齐上游 `RuleSub*Service`） ----------
+
+    /// `RuleSubLogService.save`：追加一条规则更新日志。
+    pub fn insert_rule_sub_log(
+        &self,
+        rule_id: &str,
+        count: usize,
+        update_type: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO rule_sub_log (rule_id, update_time, count, update_type)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![rule_id, now_ms, count as i64, update_type],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// 规则更新日志（按 `update_time` 倒序，WebUI 展示历史）。
+    pub fn list_rule_sub_log(
+        &self,
+        rule_id: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<RuleSubLogRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut rows: Vec<RuleSubLogRow> = Vec::new();
+        if let Some(id) = rule_id {
+            let mut stmt = conn.prepare(
+                "SELECT id, rule_id, update_time, count, update_type FROM rule_sub_log
+                 WHERE rule_id = ?1 ORDER BY update_time DESC LIMIT ?2",
+            )?;
+            let iter = stmt.query_map(rusqlite::params![id, limit], map_rule_sub_log)?;
+            for row in iter {
+                rows.push(row?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, rule_id, update_time, count, update_type FROM rule_sub_log
+                 ORDER BY update_time DESC LIMIT ?1",
+            )?;
+            let iter = stmt.query_map(rusqlite::params![limit], map_rule_sub_log)?;
+            for row in iter {
+                rows.push(row?);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// `RuleSubInfoService.save`：写入/覆盖规则订阅状态。
+    pub fn upsert_rule_sub_info(
+        &self,
+        rule_id: &str,
+        enabled: bool,
+        rule_name: &str,
+        sub_url: &str,
+        last_update: Option<i64>,
+        ent_count: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO rule_sub_info (rule_id, enabled, rule_name, sub_url, last_update, ent_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(rule_id) DO UPDATE SET
+               enabled=excluded.enabled,
+               rule_name=excluded.rule_name,
+               sub_url=excluded.sub_url,
+               last_update=excluded.last_update,
+               ent_count=excluded.ent_count",
+            rusqlite::params![rule_id, enabled as i64, rule_name, sub_url, last_update, ent_count],
         )?;
         Ok(())
     }
@@ -356,75 +611,125 @@ impl Database {
         let tx = conn.unchecked_transaction()?;
         let mut written = 0usize;
         for row in rows {
-            let table = pcb_table(row.kind);
-            let sql = format!(
-                "INSERT INTO {table}
-                 (downloader_id, torrent_id, key, port, last_report_uploaded,
-                  tracking_uploaded_increase_total, last_report_progress, last_torrent_completed_size,
-                  progress_difference_counter, rewind_counter, ban_delay_window_end_ms,
-                  fast_pcb_test_executed, last_time_seen_ms)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-                 ON CONFLICT(downloader_id, torrent_id, key, port) DO UPDATE SET
-                   last_report_uploaded=excluded.last_report_uploaded,
-                   tracking_uploaded_increase_total=excluded.tracking_uploaded_increase_total,
-                   last_report_progress=excluded.last_report_progress,
-                   last_torrent_completed_size=excluded.last_torrent_completed_size,
-                   progress_difference_counter=excluded.progress_difference_counter,
-                   rewind_counter=excluded.rewind_counter,
-                   ban_delay_window_end_ms=excluded.ban_delay_window_end_ms,
-                   fast_pcb_test_executed=excluded.fast_pcb_test_executed,
-                   last_time_seen_ms=excluded.last_time_seen_ms"
-            );
-            written += tx.execute(
-                &sql,
-                rusqlite::params![
-                    row.downloader_id,
-                    row.torrent_id,
-                    row.key,
-                    row.port as i64,
-                    row.last_report_uploaded,
-                    row.tracking_uploaded_increase_total,
-                    row.last_report_progress,
-                    row.last_torrent_completed_size,
-                    row.progress_difference_counter,
-                    row.rewind_counter,
-                    row.ban_delay_window_end_ms,
-                    row.fast_pcb_test_executed as i64,
-                    row.last_time_seen_ms,
-                ],
-            )?;
+            // `pcb_address` 按 (ip, port, torrent_id, downloader) 唯一；`pcb_range` 无 port 列，
+            // 唯一键为 (ip_range, torrent_id, downloader)（均对齐上游实体/索引）。
+            if row.kind.is_addr() {
+                written += tx.execute(
+                    "INSERT INTO pcb_address
+                       (ip, port, torrent_id, last_report_progress, last_report_uploaded,
+                        tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                        first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                        fast_pcb_test_execute_at, last_torrent_completed_size)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                     ON CONFLICT(ip, port, torrent_id, downloader) DO UPDATE SET
+                       last_report_progress=excluded.last_report_progress,
+                       last_report_uploaded=excluded.last_report_uploaded,
+                       tracking_uploaded_increase_total=excluded.tracking_uploaded_increase_total,
+                       rewind_counter=excluded.rewind_counter,
+                       progress_difference_counter=excluded.progress_difference_counter,
+                       last_time_seen=excluded.last_time_seen,
+                       ban_delay_window_end_at=excluded.ban_delay_window_end_at,
+                       fast_pcb_test_execute_at=excluded.fast_pcb_test_execute_at,
+                       last_torrent_completed_size=excluded.last_torrent_completed_size",
+                    rusqlite::params![
+                        row.key,
+                        row.port as i64,
+                        row.torrent_id,
+                        row.last_report_progress,
+                        row.last_report_uploaded,
+                        row.tracking_uploaded_increase_total,
+                        row.rewind_counter,
+                        row.progress_difference_counter,
+                        row.first_time_seen_ms,
+                        row.last_time_seen_ms,
+                        row.downloader_id,
+                        row.ban_delay_window_end_ms,
+                        // 上游 `fast_pcb_test_execute_at` 是时间戳列；本移植内部用布尔，
+                        // 落库时换算为「执行时刻 = last_time_seen」或 0（未执行）。
+                        if row.fast_pcb_test_executed { row.last_time_seen_ms } else { 0 },
+                        row.last_torrent_completed_size,
+                    ],
+                )?;
+            } else {
+                written += tx.execute(
+                    "INSERT INTO pcb_range
+                       (ip_range, torrent_id, last_report_progress, last_report_uploaded,
+                        tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                        first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                        fast_pcb_test_execute_at, last_torrent_completed_size)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                     ON CONFLICT(ip_range, torrent_id, downloader) DO UPDATE SET
+                       last_report_progress=excluded.last_report_progress,
+                       last_report_uploaded=excluded.last_report_uploaded,
+                       tracking_uploaded_increase_total=excluded.tracking_uploaded_increase_total,
+                       rewind_counter=excluded.rewind_counter,
+                       progress_difference_counter=excluded.progress_difference_counter,
+                       last_time_seen=excluded.last_time_seen,
+                       ban_delay_window_end_at=excluded.ban_delay_window_end_at,
+                       fast_pcb_test_execute_at=excluded.fast_pcb_test_execute_at,
+                       last_torrent_completed_size=excluded.last_torrent_completed_size",
+                    rusqlite::params![
+                        row.key,
+                        row.torrent_id,
+                        row.last_report_progress,
+                        row.last_report_uploaded,
+                        row.tracking_uploaded_increase_total,
+                        row.rewind_counter,
+                        row.progress_difference_counter,
+                        row.first_time_seen_ms,
+                        row.last_time_seen_ms,
+                        row.downloader_id,
+                        row.ban_delay_window_end_ms,
+                        if row.fast_pcb_test_executed { row.last_time_seen_ms } else { 0 },
+                        row.last_torrent_completed_size,
+                    ],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(written)
     }
 
-    /// 读取某个类型（`pcb_addr` / `pcb_range`）的全部持久化实体。
+    /// 读取某个类型（`pcb_address` / `pcb_range`）的全部持久化实体。
     pub fn load_pcb_rows(&self, kind: PcbEntityKind) -> anyhow::Result<Vec<PcbPersistRow>> {
-        let table = pcb_table(kind);
-        let sql = format!(
-            "SELECT downloader_id, torrent_id, key, port, last_report_uploaded,
-                    tracking_uploaded_increase_total, last_report_progress, last_torrent_completed_size,
-                    progress_difference_counter, rewind_counter, ban_delay_window_end_ms,
-                    fast_pcb_test_executed, last_time_seen_ms FROM {table}"
-        );
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&sql)?;
+        let is_addr = kind.is_addr();
+        let sql = if is_addr {
+            "SELECT ip, port, torrent_id, last_report_progress, last_report_uploaded,
+                    tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                    first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                    fast_pcb_test_execute_at, last_torrent_completed_size FROM pcb_address"
+        } else {
+            "SELECT ip_range, torrent_id, last_report_progress, last_report_uploaded,
+                    tracking_uploaded_increase_total, rewind_counter, progress_difference_counter,
+                    first_time_seen, last_time_seen, downloader, ban_delay_window_end_at,
+                    fast_pcb_test_execute_at, last_torrent_completed_size FROM pcb_range"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| {
+            // 两个分支的列序不同（`pcb_range` 没有 `port` 列）：
+            // `base` 为 `torrent_id` 所在的下标，其余业务列紧随其后。
+            let (key, port, base) = if is_addr {
+                (r.get::<_, String>(0)?, r.get::<_, i64>(1)?, 2usize)
+            } else {
+                (r.get::<_, String>(0)?, 0i64, 1usize)
+            };
             Ok(PcbPersistRow {
                 kind,
-                downloader_id: r.get(0)?,
-                torrent_id: r.get(1)?,
-                key: r.get(2)?,
-                port: r.get::<_, i64>(3)?.clamp(0, u16::MAX as i64) as u16,
-                last_report_uploaded: r.get(4)?,
-                tracking_uploaded_increase_total: r.get(5)?,
-                last_report_progress: r.get(6)?,
-                last_torrent_completed_size: r.get(7)?,
-                progress_difference_counter: r.get(8)?,
-                rewind_counter: r.get(9)?,
-                ban_delay_window_end_ms: r.get(10)?,
-                fast_pcb_test_executed: r.get::<_, i64>(11)? != 0,
-                last_time_seen_ms: r.get(12)?,
+                key,
+                port: port.clamp(0, u16::MAX as i64) as u16,
+                torrent_id: r.get(base)?,
+                last_report_progress: r.get(base + 1)?,
+                last_report_uploaded: r.get(base + 2)?,
+                tracking_uploaded_increase_total: r.get(base + 3)?,
+                rewind_counter: r.get(base + 4)?,
+                progress_difference_counter: r.get(base + 5)?,
+                first_time_seen_ms: r.get(base + 6)?,
+                last_time_seen_ms: r.get(base + 7)?,
+                downloader_id: r.get(base + 8)?,
+                ban_delay_window_end_ms: r.get(base + 9)?,
+                fast_pcb_test_executed: r.get::<_, i64>(base + 10)? != 0,
+                last_torrent_completed_size: r.get(base + 11)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -433,9 +738,9 @@ impl Database {
     pub fn cleanup_pcb(&self, older_than_ms: i64) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let mut n = 0;
-        for t in ["pcb_addr", "pcb_range"] {
+        for t in ["pcb_address", "pcb_range"] {
             n += conn.execute(
-                &format!("DELETE FROM {t} WHERE last_time_seen_ms < ?1"),
+                &format!("DELETE FROM {t} WHERE last_time_seen < ?1"),
                 rusqlite::params![older_than_ms],
             )?;
         }
@@ -444,30 +749,29 @@ impl Database {
 
     // ---------- Web 历史 / 排行 / 统计查询（对齐上游 `HistoryMapper` 与 `PBH*Controller`）----------
 
-    /// WebUI 通用排序白名单（`orderBy` 字段 → 数据库列 + 所属表）。
+    /// WebUI 通用排序白名单（`orderBy` 的 DTO 字段名 → `history` 列名）。
     ///
-    /// 与上游 `Orderable.addRemapping` 的语义一致：DTO 字段名映射到 `history` /
-    /// `peer_records` 表的实际列；未知字段直接拒绝（返回 `None`），避免 SQL 注入。
-    pub fn history_order_column(field: &str) -> Option<(String, String)> {
-        let (table, column) = match field {
-            "banAt" => ("h", "created_at"),
-            "unbanAt" => ("h", "created_at"),
-            "peerIp" | "ip" => ("h", "ip"),
-            "peerPort" | "port" => ("h", "port"),
-            "peerId" => ("h", "peer_id"),
-            "peerClientName" => ("h", "client_name"),
-            "peerUploaded" => ("h", "created_at"), // 无对应列：退回禁止
-            "peerDownloaded" => ("h", "created_at"),
-            "peerProgress" => ("h", "created_at"),
-            "torrentInfoHash" => ("t", "info_hash"),
-            "torrentName" => ("t", "name"),
-            "module" => ("h", "module"),
-            "rule" => ("h", "rule"),
-            "description" => ("h", "reason"),
-            "id" => ("h", "id"),
+    /// 与上游 `PBHBanController.handleLogs` 的 `Orderable.addRemapping` 一致；
+    /// 未知字段直接拒绝（返回 `None`），避免 SQL 注入。
+    pub fn history_order_column(field: &str) -> Option<String> {
+        let column = match field {
+            "banAt" => "ban_at",
+            "unbanAt" => "unban_at",
+            "peerIp" | "ip" => "ip",
+            "peerPort" | "port" => "port",
+            "peerId" => "peer_id",
+            "peerClientName" => "peer_client_name",
+            "peerUploaded" => "peer_uploaded",
+            "peerDownloaded" => "peer_downloaded",
+            "peerProgress" => "peer_progress",
+            "module" => "module_name",
+            "rule" => "rule_name",
+            "description" => "description",
+            "downloader" => "downloader",
+            "id" => "id",
             _ => return None,
         };
-        Some((table.to_string(), column.to_string()))
+        Some(column.to_string())
     }
 
     /// `PeerRecord` 排序白名单（`accessHistory` 端点）。
@@ -484,159 +788,6 @@ impl Database {
             "id" => Some("id".into()),
             _ => None,
         }
-    }
-
-    /// 分页查询封禁历史（对齐上游 `HistoryService.getBanLogs` / `queryBanHistoryByIp` /
-    /// `queryBanHistoryByTorrentId`）。`ip` / `torrent_hash` 至少给一个；都为空时查全表。
-    pub fn page_ban_history(
-        &self,
-        ip: Option<&str>,
-        torrent_hash: Option<&str>,
-        order: &[(String, bool)],
-        limit: i64,
-        offset: i64,
-    ) -> anyhow::Result<(Vec<BanHistoryRow>, i64)> {
-        let mut conditions: Vec<String> = Vec::new();
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(ip) = ip {
-            conditions.push("h.ip = ?".to_string());
-            params.push(Box::new(ip.to_string()));
-        }
-        if let Some(hash) = torrent_hash {
-            conditions.push("h.torrent_hash = ?".to_string());
-            params.push(Box::new(hash.to_string()));
-        }
-        let where_sql = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        // 排序：白名单字段 → `表.列`；非法字段直接报错（对齐上游 `checkSafeFieldName`）
-        let mut order_clauses: Vec<String> = Vec::new();
-        for (field, asc) in order {
-            let Some((table, column)) = Self::history_order_column(field) else {
-                anyhow::bail!("非法排序列: {field}");
-            };
-            order_clauses.push(format!(
-                "{table}.{column} {}",
-                if *asc { "ASC" } else { "DESC" }
-            ));
-        }
-        if order_clauses.is_empty() {
-            order_clauses.push("h.created_at DESC".to_string());
-        }
-        order_clauses.push("h.id DESC".to_string());
-        let order_sql = order_clauses.join(", ");
-
-        let conn = self.conn.lock().unwrap();
-        let count_sql = format!("SELECT COUNT(*) FROM ban_logs h {where_sql}");
-        let total: i64 = conn
-            .query_row(
-                &count_sql,
-                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-                |r| r.get(0),
-            )
-            .map_err(|e| anyhow::anyhow!("ban history count: {e}"))?;
-
-        let sql = format!(
-            "SELECT h.id, h.created_at AS h_at, 0 AS unban_at, h.ip, h.port, h.peer_id,
-                    h.client_name, COALESCE(t.id, 0), COALESCE(t.info_hash, ''), h.torrent_name,
-                    COALESCE(t.size, 0), h.module, h.rule, h.reason, h.downloader_id,
-                    0 AS peer_uploaded, 0 AS peer_downloaded, 0.0 AS peer_progress
-             FROM ban_logs h LEFT JOIN torrents t ON t.info_hash = h.torrent_hash
-             {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
-        );
-        let mut rows: Vec<BanHistoryRow> = Vec::new();
-        {
-            let mut stmt = conn.prepare(&sql)?;
-            let mut query_params: Vec<&dyn rusqlite::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
-            query_params.push(&limit);
-            query_params.push(&offset);
-            let iter = stmt.query_map(rusqlite::params_from_iter(query_params), |row| {
-                Ok(BanHistoryRow {
-                    id: row.get(0)?,
-                    ban_at: row.get(1)?,
-                    unban_at: row.get(2)?,
-                    ip: row.get(3)?,
-                    port: row.get(4)?,
-                    peer_id: row.get(5)?,
-                    peer_client_name: row.get(6)?,
-                    torrent_id: row.get(7)?,
-                    torrent_info_hash: row.get(8)?,
-                    torrent_name: row.get(9)?,
-                    torrent_size: row.get(10)?,
-                    module: row.get(11)?,
-                    rule: row.get(12)?,
-                    description: row.get(13)?,
-                    downloader: row.get(14)?,
-                })
-            })?;
-            for r in iter {
-                rows.push(r?);
-            }
-        }
-        Ok((rows, total))
-    }
-
-    /// 封禁排行：`SELECT ip, COUNT(*) FROM ban_logs GROUP BY ip ORDER BY count DESC`
-    /// 对齐上游 `HistoryMapper.getBannedIps`（`filter` 为 IP 前缀，空串/`None` 表示不限）。
-    pub fn page_ban_rank(
-        &self,
-        ip_prefix: Option<&str>,
-        limit: i64,
-        offset: i64,
-    ) -> anyhow::Result<(Vec<(String, i64)>, i64)> {
-        let conn = self.conn.lock().unwrap();
-        let (filter_sql, count_sql) = match ip_prefix {
-            Some(prefix) if !prefix.is_empty() => (
-                Some("WHERE ip LIKE ?1 || '%'"),
-                Some("WHERE ip LIKE ?1 || '%'"),
-            ),
-            _ => (None, None),
-        };
-        let total: i64 = if let Some(where_sql) = count_sql {
-            if let Some(prefix) = ip_prefix {
-                conn.query_row(
-                    &format!("SELECT COUNT(DISTINCT ip) FROM ban_logs {where_sql}"),
-                    rusqlite::params![prefix],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            conn.query_row("SELECT COUNT(DISTINCT ip) FROM ban_logs", [], |r| r.get(0))
-                .unwrap_or(0)
-        };
-        let sql = if let Some(where_sql) = filter_sql {
-            format!(
-                "SELECT ip, COUNT(*) AS count FROM ban_logs {where_sql} GROUP BY ip ORDER BY count DESC LIMIT ? OFFSET ?"
-            )
-        } else {
-            "SELECT ip, COUNT(*) AS count FROM ban_logs GROUP BY ip ORDER BY count DESC LIMIT ? OFFSET ?".to_string()
-        };
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = if let Some(prefix) = ip_prefix.filter(|p| !p.is_empty()) {
-            stmt.query_map(rusqlite::params![prefix, limit, offset], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        } else {
-            stmt.query_map(rusqlite::params![limit, offset], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        };
-        Ok((rows, total))
-    }
-
-    /// 删除全部（/清）banned_ips；返回删除数量。
-    pub fn clear_banned_ips(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        Ok(conn.execute("DELETE FROM banned_ips", [])?)
     }
 
     /// 在 `since_ms` 之后（含）的会话总连接数（`weeklySessions` 计数等）。
@@ -659,41 +810,12 @@ impl Database {
             .unwrap_or(0))
     }
 
-    /// 取指定 IP 最近一条封禁日志（`/api/bans` 列表的 context 用）。
-    pub fn last_ban_log_by_ip(&self, ip: &str) -> anyhow::Result<Option<BanLog>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, downloader_id, torrent_hash, torrent_name, ip, port, peer_id, client_name,
-                    module, rule, reason, rule_key, reason_key, ban_duration, created_at
-             FROM ban_logs WHERE ip = ?1 ORDER BY created_at DESC, id DESC LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map(rusqlite::params![ip], |row| {
-            Ok(BanLog {
-                id: row.get(0)?,
-                downloader_id: row.get(1)?,
-                torrent_hash: row.get(2)?,
-                torrent_name: row.get(3)?,
-                ip: row.get(4)?,
-                port: row.get(5)?,
-                peer_id: row.get(6)?,
-                client_name: row.get(7)?,
-                module: row.get(8)?,
-                rule: row.get(9)?,
-                reason: row.get(10)?,
-                rule_key: row.get(11)?,
-                reason_key: row.get(12)?,
-                ban_duration: row.get(13)?,
-                created_at: row.get(14)?,
-            })
-        })?;
-        rows.next().transpose().map_err(Into::into)
-    }
-
-    /// `module + rule` 分组统计（`/api/statistic/rules`）。
+    /// `module + rule` 分组统计（`/api/statistic/rules`，数据源 `history`）。
     pub fn rule_stats(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT module, rule, COUNT(*) AS c FROM ban_logs GROUP BY module, rule ORDER BY c DESC",
+            "SELECT module_name, rule_name, COUNT(*) AS c FROM history
+             GROUP BY module_name, rule_name ORDER BY c DESC",
         )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
@@ -1083,26 +1205,6 @@ impl Database {
 
 // ---------- Web 历史 / 排行相关行类型（顶层，供 API 层引用）----------
 
-/// 一条封禁历史（对齐上游 `HistoryEntity` 的 Web 视图；`unban_at` 为 0 表示未解封）。
-#[derive(Debug, Clone)]
-pub struct BanHistoryRow {
-    pub id: i64,
-    pub ban_at: i64,
-    pub unban_at: i64,
-    pub ip: String,
-    pub port: i64,
-    pub peer_id: String,
-    pub peer_client_name: String,
-    pub torrent_id: i64,
-    pub torrent_info_hash: String,
-    pub torrent_name: String,
-    pub torrent_size: i64,
-    pub module: String,
-    pub rule: String,
-    pub description: String,
-    pub downloader: String,
-}
-
 /// 种子统计行（供 `/api/torrent/query` 列表与 `/api/torrent/{hash}`）。
 #[derive(Debug, Clone)]
 pub struct TorrentRow {
@@ -1178,23 +1280,13 @@ impl BtnMetadataStore for DbMetadataStore {
     }
 }
 
-fn map_ban_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<BanLog> {
-    Ok(BanLog {
-        id: Some(row.get(0)?),
-        downloader_id: row.get(1)?,
-        torrent_hash: row.get(2)?,
-        torrent_name: row.get(3)?,
-        ip: row.get(4)?,
-        port: row.get(5)?,
-        peer_id: row.get(6)?,
-        client_name: row.get(7)?,
-        module: row.get(8)?,
-        rule: row.get(9)?,
-        reason: row.get(10)?,
-        rule_key: row.get(11)?,
-        reason_key: row.get(12)?,
-        ban_duration: row.get(13)?,
-        created_at: row.get(14)?,
+fn map_rule_sub_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuleSubLogRow> {
+    Ok(RuleSubLogRow {
+        id: row.get(0)?,
+        rule_id: row.get(1)?,
+        update_time: row.get(2)?,
+        count: row.get(3)?,
+        update_type: row.get(4)?,
     })
 }
 
@@ -1209,76 +1301,163 @@ pub fn ms_to_rfc3339(ms: i64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ban_log_crud_and_pagination() {
-        let db = Database::open_in_memory().unwrap();
-        for i in 0..5 {
-            db.insert_ban_log(&BanLog {
-                id: None,
-                downloader_id: "qb".into(),
-                torrent_hash: format!("h{i}"),
-                torrent_name: "t".into(),
-                ip: format!("1.2.3.{i}"),
-                port: 1000 + i,
-                peer_id: "-hp".into(),
-                client_name: "hp".into(),
-                module: "peer-id-blacklist".into(),
-                rule: "rule".into(),
-                reason: "r".into(),
-                rule_key: None,
-                reason_key: None,
-                ban_duration: 1000,
-                created_at: now_ms(),
-            })
-            .unwrap();
+    fn torrent(hash: &str) -> TorrentData {
+        TorrentData {
+            hash: hash.to_string(),
+            name: "示例种子".to_string(),
+            progress: 0.5,
+            total_size: 1024,
+            piece_size: 0,
+            pieces_have: 0,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
         }
-        let (page, total) = db.list_ban_logs(2, 0).unwrap();
-        assert_eq!(total, 5);
-        assert_eq!(page.len(), 2);
     }
 
-    #[test]
-    fn banned_ip_upsert_counts() {
-        let db = Database::open_in_memory().unwrap();
-        db.upsert_banned_ip("1.2.3.4", "peer-id-blacklist", 1000).unwrap();
-        db.upsert_banned_ip("1.2.3.4", "peer-id-blacklist", 1000).unwrap();
-        let list = db.list_banned_ips().unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].hit_count, 2);
+    fn history_record(ip: &str) -> HistoryRecord {
+        HistoryRecord {
+            ban_at_ms: 1_700_000_000_000,
+            unban_at_ms: 0,
+            ip: ip.to_string(),
+            port: 6881,
+            peer_id: Some("peer".into()),
+            peer_client_name: Some("client".into()),
+            peer_uploaded: Some(1),
+            peer_downloaded: Some(2),
+            peer_progress: 0.1,
+            downloader_progress: 0.2,
+            torrent: torrent("hash-1"),
+            module_name:
+                "com.ghostchu.peerbanhelper.module.impl.rule.PeerIdBlacklist".to_string(),
+            rule_name: r#"{"key":"MODULE_IPB_RULE","params":[]}"#.to_string(),
+            description: r#"{"key":"MODULE_IPB_RULE_DESCRIPTION","params":[]}"#.to_string(),
+            flags: Some("U".into()),
+            downloader: "qb".into(),
+            structured_data: None,
+            peer_geoip: None,
+        }
     }
 
+    /// `history` 落库 + Web 查询（分页 / 按 IP / 排行 / 清理）。
     #[test]
-    fn ban_log_roundtrips_translation_keys() {
+    fn history_roundtrip_and_queries() {
         let db = Database::open_in_memory().unwrap();
-        let rule_key = serde_json::to_string(
-            &pbh_core::i18n::TranslationComponent::with_params(
-                "MODULE_IBL_MATCH_IP",
-                vec!["1.2.3.0/24".into()],
-            ),
+        for i in 0..3 {
+            db.insert_history(&history_record(&format!("1.2.3.{i}"))).unwrap();
+        }
+        db.insert_history(&history_record("1.2.3.1")).unwrap();
+
+        let (rows, total) = db.page_history(&[], 10, 0).unwrap();
+        assert_eq!(total, 4);
+        assert_eq!(rows.len(), 4);
+        // JOIN `torrents` 的字段可用于 `BanLogDTO`
+        assert_eq!(rows[0].torrent_info_hash.as_deref(), Some("hash-1"));
+        assert_eq!(rows[0].torrent_name.as_deref(), Some("示例种子"));
+        assert_eq!(rows[0].torrent_size, 1024);
+
+        let (by_ip, by_ip_total) = db.history_by_ip("1.2.3.1", 10, 0).unwrap();
+        assert_eq!(by_ip.len(), 2);
+        assert_eq!(by_ip_total, 2);
+        assert_eq!(db.history_count_by_ip("1.2.3.1").unwrap(), 2);
+        let (by_torrent, torrent_total) = db.history_by_torrent("hash-1", 10, 0).unwrap();
+        assert_eq!(torrent_total, 4);
+        assert_eq!(by_torrent.len(), 4);
+        assert!(db.last_history_by_ip("1.2.3.1").unwrap().is_some());
+        assert!(db.last_history_by_ip("1.2.3.9").unwrap().is_none());
+
+        let (rank, rank_total) = db.page_history_rank(None, 10, 0).unwrap();
+        assert_eq!(rank_total, 3);
+        assert_eq!(rank[0], ("1.2.3.1".to_string(), 2));
+        let (filtered, filtered_total) = db.page_history_rank(Some("1.2.3.2"), 10, 0).unwrap();
+        assert_eq!(filtered_total, 1);
+        assert_eq!(filtered.len(), 1);
+
+        // 排序：白名单列名（调用方用 `history_order_column` 把 DTO 字段名映射为列名）
+        assert_eq!(Database::history_order_column("peerIp").as_deref(), Some("ip"));
+        let order = vec![("ip".to_string(), false)];
+        let (rows, _) = db.page_history(&order, 10, 0).unwrap();
+        assert_eq!(rows[0].ip, "1.2.3.2");
+        // 非法字段被忽略，退回默认 `ban_at DESC`
+        let (rows, _) = db.page_history(&[("nope".to_string(), true)], 10, 0).unwrap();
+        assert_eq!(rows.len(), 4);
+
+        // 清理：`ban_at` 早于 cutoff 的行被删除
+        assert_eq!(db.cleanup_history(3650).unwrap(), 0);
+        assert_eq!(db.cleanup_history(0).unwrap(), 4);
+        assert_eq!(db.page_history(&[], 10, 0).unwrap().1, 0);
+    }
+
+    /// `banlist` 整表替换（对齐 `BanListServiceImpl.saveBanList`）。
+    #[test]
+    fn ban_list_save_replaces_all_rows() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_ban_list(&[("1.2.3.4".into(), r#"{"banAt":1}"#.into())]).unwrap();
+        let rows = db.read_ban_list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "1.2.3.4");
+        assert_eq!(rows[0].1, r#"{"banAt":1}"#);
+
+        let written = db
+            .save_ban_list(&[
+                ("5.6.7.8".into(), r#"{"banAt":2}"#.into()),
+                ("5.6.7.9".into(), r#"{"banAt":3}"#.into()),
+            ])
+            .unwrap();
+        assert_eq!(written, 2);
+        let rows = db.read_ban_list().unwrap();
+        assert_eq!(rows.len(), 2, "整表替换：旧行不再存在");
+        assert!(rows.iter().all(|(addr, _)| addr.starts_with("5.6.7")));
+
+        assert_eq!(db.clear_ban_list().unwrap(), 2);
+        assert!(db.read_ban_list().unwrap().is_empty());
+    }
+
+    /// `rule_sub_info` / `rule_sub_log` 往返（规则订阅状态与更新日志）。
+    #[test]
+    fn rule_sub_tables_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_rule_sub_info(
+            "all-in-one",
+            true,
+            "all-in-one",
+            "https://bcr.pbh-btn.com/combine/all.txt",
+            Some(1000),
+            Some(42),
         )
         .unwrap();
-        db.insert_ban_log(&BanLog {
-            id: None,
-            downloader_id: "qb".into(),
-            torrent_hash: "h".into(),
-            torrent_name: "t".into(),
-            ip: "1.2.3.4".into(),
-            port: 1,
-            peer_id: "".into(),
-            client_name: "".into(),
-            module: "ip-address-blocker".into(),
-            rule: "匹配 IP 规则: 1.2.3.0/24".into(),
-            reason: "r".into(),
-            rule_key: Some(rule_key.clone()),
-            reason_key: None,
-            ban_duration: 0,
-            created_at: 0,
-        })
+        db.upsert_rule_sub_info(
+            "all-in-one",
+            true,
+            "all-in-one",
+            "https://bcr.pbh-btn.com/combine/all.txt",
+            Some(2000),
+            Some(43),
+        )
         .unwrap();
-        let (logs, total) = db.list_ban_logs(10, 0).unwrap();
-        assert_eq!(total, 1);
-        assert_eq!(logs[0].rule_key.as_deref(), Some(rule_key.as_str()));
-        assert!(logs[0].reason_key.is_none());
+        {
+            let conn = db.conn.lock().unwrap();
+            let (enabled, last, count): (i64, Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT enabled, last_update, ent_count FROM rule_sub_info WHERE rule_id='all-in-one'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(enabled, 1);
+            assert_eq!(last, Some(2000), "覆盖写");
+            assert_eq!(count, Some(43));
+        }
+
+        db.insert_rule_sub_log("all-in-one", 42, "AUTO", 1000).unwrap();
+        db.insert_rule_sub_log("all-in-one", 43, "MANUAL", 2000).unwrap();
+        let logs = db.list_rule_sub_log(Some("all-in-one"), 10).unwrap();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].count, 43, "按 update_time 倒序");
+        assert_eq!(logs[0].update_type, "MANUAL");
+        assert_eq!(db.list_rule_sub_log(None, 10).unwrap().len(), 2);
+        assert!(db.list_rule_sub_log(Some("other"), 10).unwrap().is_empty());
     }
 
     #[test]
@@ -1292,6 +1471,8 @@ mod tests {
             port: 51413,
             tracking_uploaded_increase_total: 99,
             ban_delay_window_end_ms: 12_345,
+            first_time_seen_ms: 111,
+            last_time_seen_ms: 222,
             ..default_pcb_row()
         };
         assert_eq!(db.upsert_pcb_rows(std::slice::from_ref(&row)).unwrap(), 1);
@@ -1300,14 +1481,26 @@ mod tests {
         assert_eq!(loaded[0].tracking_uploaded_increase_total, 99);
         assert_eq!(loaded[0].port, 51413);
         assert_eq!(loaded[0].ban_delay_window_end_ms, 12_345);
+        assert_eq!(loaded[0].first_time_seen_ms, 111);
+        assert_eq!(loaded[0].last_time_seen_ms, 222);
         // 同一主键再次写入为更新而非新增
         assert_eq!(db.upsert_pcb_rows(std::slice::from_ref(&row)).unwrap(), 1);
         assert_eq!(db.load_pcb_rows(PcbEntityKind::Addr).unwrap().len(), 1);
-        // range 表相互独立
+        // range 表相互独立（列结构不同：无 port）
         assert!(db.load_pcb_rows(PcbEntityKind::Range).unwrap().is_empty());
+        let range_row = PcbPersistRow {
+            kind: PcbEntityKind::Range,
+            key: "1.2.3.0/24".into(),
+            port: 0,
+            ..default_pcb_row()
+        };
+        assert_eq!(db.upsert_pcb_rows(std::slice::from_ref(&range_row)).unwrap(), 1);
+        let loaded = db.load_pcb_rows(PcbEntityKind::Range).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].key, "1.2.3.0/24");
     }
 
-    /// BTN 规则缓存复用 `meta` 键值表（`BtnMetadataStore` 契约：get / set 覆盖写）
+    /// BTN 规则缓存复用 `metadata` 键值表（`BtnMetadataStore` 契约：get / set 覆盖写）。
     #[test]
     fn metadata_store_persists_btn_cache() {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -1320,7 +1513,68 @@ mod tests {
         assert_eq!(store.get("btn.ability.rules.cache").as_deref(), Some(r#"{"version":"v2"}"#));
         // 与 `schema_version` 共用同一张表，互不干扰
         assert_eq!(db.get_meta("schema_version").unwrap().as_deref(), Some("1"));
-        assert_eq!(db.get_meta("btn.ability.rules.cache").unwrap().as_deref(), Some(r#"{"version":"v2"}"#));
+        assert_eq!(
+            db.get_meta("btn.ability.rules.cache").unwrap().as_deref(),
+            Some(r#"{"version":"v2"}"#)
+        );
+    }
+
+    /// 老库（本移植早期自建表）向对齐上游的表结构做一次性搬运。
+    #[test]
+    fn legacy_tables_migrate_into_upstream_layout() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE banned_ips (
+                 ip TEXT PRIMARY KEY, first_banned_at INTEGER NOT NULL, last_banned_at INTEGER NOT NULL,
+                 module TEXT NOT NULL, hit_count INTEGER NOT NULL DEFAULT 1, ban_until INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE pcb_addr (
+                 downloader_id TEXT NOT NULL, torrent_id TEXT NOT NULL, key TEXT NOT NULL,
+                 port INTEGER NOT NULL, last_report_uploaded INTEGER NOT NULL DEFAULT 0,
+                 tracking_uploaded_increase_total INTEGER NOT NULL DEFAULT 0,
+                 last_report_progress REAL NOT NULL DEFAULT 0,
+                 last_torrent_completed_size INTEGER NOT NULL DEFAULT 0,
+                 progress_difference_counter INTEGER NOT NULL DEFAULT 0, rewind_counter INTEGER NOT NULL DEFAULT 0,
+                 ban_delay_window_end_ms INTEGER NOT NULL DEFAULT 0,
+                 fast_pcb_test_executed INTEGER NOT NULL DEFAULT 0,
+                 last_time_seen_ms INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (downloader_id, torrent_id, key, port));
+             INSERT INTO meta VALUES ('btn.ability.rules.cache', '{\"v\":1}');
+             INSERT INTO banned_ips VALUES ('1.2.3.4', 100, 200, 'ip-address-blocker', 3, 300);
+             INSERT INTO pcb_addr VALUES ('qb', 'h', '1.2.3.4', 6881, 1, 2, 0.5, 3, 4, 5, 6, 1, 700);",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        migrate_legacy_tables(&conn).unwrap();
+
+        let meta: String = conn
+            .query_row("SELECT v FROM metadata WHERE k='btn.ability.rules.cache'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(meta, r#"{"v":1}"#);
+
+        let (address, metadata): (String, String) = conn
+            .query_row("SELECT address, metadata FROM banlist", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(address, "1.2.3.4");
+        assert!(metadata.contains("\"unbanAt\":300"), "{metadata}");
+        assert!(metadata.contains("\"context\":\"ip-address-blocker\""), "{metadata}");
+
+        let (ip, port, downloader, first, last, delay): (String, i64, String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT ip, port, downloader, first_time_seen, last_time_seen, ban_delay_window_end_at
+                 FROM pcb_address",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!((ip.as_str(), port, downloader.as_str()), ("1.2.3.4", 6881, "qb"));
+        assert_eq!((first, last), (700, 700), "旧表无 first_time_seen，用 last_time_seen 兜底");
+        assert_eq!(delay, 6);
+
+        // 再次迁移不产生重复行（新表非空即跳过）
+        migrate_legacy_tables(&conn).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM banlist", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
     }
 
     fn default_pcb_row() -> PcbPersistRow {
@@ -1339,6 +1593,7 @@ mod tests {
             ban_delay_window_end_ms: 0,
             fast_pcb_test_executed: false,
             last_time_seen_ms: 0,
+            first_time_seen_ms: 0,
         }
     }
 }

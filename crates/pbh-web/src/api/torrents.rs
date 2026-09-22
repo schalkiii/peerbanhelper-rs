@@ -3,6 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use pbh_core::i18n::normalize_locale;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -141,45 +142,13 @@ pub async fn ban_history(
     Path(info_hash): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
-    let size = params
-        .get("pageSize")
-        .or_else(|| params.get("size"))
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30)
-        .clamp(1, 500);
-    let order: Vec<(String, bool)> = params
-        .iter()
-        .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
-        .flat_map(|(_, value)| crate::parse_order_by(Some(value)))
-        .collect();
-    match state
-        .db
-        .page_ban_history(None, Some(&info_hash), &order, size, (page - 1) * size)
-    {
+    let (page, size) = crate::api::pagination(&params);
+    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
+    match state.db.history_by_torrent(&info_hash, size, (page - 1) * size) {
         Ok((rows, total)) => {
             let results = rows
                 .iter()
-                .map(|h| {
-                    json!({
-                        "banAt": h.ban_at,
-                        "unbanAt": if h.unban_at > 0 { json!(h.unban_at) } else { json!(null) },
-                        "peerIp": h.ip,
-                        "peerPort": h.port,
-                        "peerId": h.peer_id,
-                        "peerClientName": h.peer_client_name,
-                        "peerUploaded": 0,
-                        "peerDownloaded": 0,
-                        "peerProgress": 0.0,
-                        "torrentInfoHash": h.torrent_info_hash,
-                        "torrentName": h.torrent_name,
-                        "torrentSize": h.torrent_size,
-                        "downloader": h.downloader,
-                        "module": h.module,
-                        "rule": h.rule,
-                        "description": h.description,
-                    })
-                })
+                .map(|h| crate::api::bans::ban_log_json(&state, &locale, h))
                 .collect::<Vec<_>>();
             let data = json!({
                 "page": page,

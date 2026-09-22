@@ -171,10 +171,13 @@ impl MonitorHost {
     }
 
     /// 一轮定时任务（由 ban wave 循环每个 tick 调用，内部按各模块的间隔判断是否到期）。
+    ///
+    /// `dry_run` 为 true 时只计算限速变更并记日志，不向下载器下发（`--dry-run` 演练模式）。
     pub async fn run_scheduled(
         &self,
         entries: &[DownloaderEntry],
         now_ms: i64,
+        dry_run: bool,
     ) -> Vec<SpeedLimitChange> {
         let mut changes = Vec::new();
 
@@ -199,6 +202,13 @@ impl MonitorHost {
                     );
                     // 对齐 `downloader.setSpeedLimiter(...)`：把滑动窗口算出的新限速真正下发。
                     // 找不到匹配下载器或下发失败都只记日志，不影响其它下载器。
+                    if dry_run {
+                        info!(
+                            "[dry-run] 跳过向下载器 {} 下发限速（上传 {} / 下载 {} bytes/s）",
+                            change.downloader_id, change.limiter.upload, change.limiter.download
+                        );
+                        continue;
+                    }
                     if let Some(entry) =
                         entries.iter().find(|e| e.downloader.id() == change.downloader_id)
                     {
@@ -455,7 +465,7 @@ module:
 
         // `onEnable` 的 `resetTable()`：临时表随本次运行会话存在，重启即清空
         host.on_peers_retrieved("qb", &torrent(), &[peer("1.2.3.4")], 0);
-        host.run_scheduled(&[], 0).await;
+        host.run_scheduled(&[], 0, false).await;
         assert_eq!(sink.tracked_swarm().len(), 1);
         let restarted = MonitorHost::new(&profile(), sink.clone());
         assert!(restarted.swarm_tracking().is_some());
@@ -486,7 +496,7 @@ module:
         assert_eq!(host.session_analyse().unwrap().cache_len(), 2);
         assert!(sink.peer_records().is_empty(), "回调本身不落库");
 
-        host.run_scheduled(&[], 0).await;
+        host.run_scheduled(&[], 0, false).await;
         assert_eq!(host.peer_recording().unwrap().cache_len(), 2, "flush 不清空缓存");
         assert_eq!(sink.peer_records().len(), 2, "peer-recording.flush 写库");
         assert_eq!(sink.tracked_swarm().len(), 2, "swarm-tracking.flushAll 写库");
@@ -508,7 +518,7 @@ module:
         host.on_peers_retrieved("qb", &torrent(), &[peer("1.2.3.4"), peer("5.6.7.8")], now);
         assert_eq!(db.tracked_swarm_count().unwrap(), 0, "回调本身不落库");
 
-        host.run_scheduled(&[], now).await;
+        host.run_scheduled(&[], now, false).await;
         assert_eq!(db.tracked_swarm_count().unwrap(), 2, "swarm-tracking.flushAll 写库");
         assert_eq!(host.swarm_tracking().unwrap().count(), 2, "count = trackedSwarmDao.count()");
         // `peer_records` / `peer_connection_metrics` 没有读取接口，用清理接口反查写入条数
@@ -533,10 +543,10 @@ module:
         let torrent = torrent();
         host.on_peers_retrieved("qb", &torrent, &[peer("1.2.3.4")], 0);
 
-        host.run_scheduled(&[], 0).await;
+        host.run_scheduled(&[], 0, false).await;
         assert_eq!(sink.tracked_swarm().len(), 1);
         // 第二次调用（间隔远未到）不应重复刷写：缓存行数不变且无新增行
-        host.run_scheduled(&[], 1_000).await;
+        host.run_scheduled(&[], 1_000, false).await;
         assert_eq!(sink.tracked_swarm().len(), 1);
     }
 
@@ -627,7 +637,7 @@ module:
         let host = MonitorHost::new(&traffic_profile(1000), sink.clone())
             .with_alert_manager(alert_manager_with(fetcher.clone()));
 
-        host.run_scheduled(&[], now).await;
+        host.run_scheduled(&[], now, false).await;
 
         // 告警落库（alert 表可见）
         let alerts = sink.alerts();
@@ -647,7 +657,7 @@ module:
         assert!(body.contains("1000 B"), "正文应渲染阈值参数：{body}");
 
         // 推送管理器内的去重：同一 identifier 的未读告警不重复发布
-        host.run_scheduled(&[], now + 60_000 * 30).await;
+        host.run_scheduled(&[], now + 60_000 * 30, false).await;
         assert_eq!(fetcher.requests().len(), 1, "一天只发一次");
     }
 
@@ -663,7 +673,7 @@ module:
         let host = MonitorHost::new(&traffic_profile(-1), sink.clone())
             .with_alert_manager(alert_manager_with(fetcher.clone()));
 
-        host.run_scheduled(&[], now).await;
+        host.run_scheduled(&[], now, false).await;
         host.shutdown(&[], now + 120_000).await;
 
         assert!(sink.alerts().is_empty(), "禁用时不应发布告警");

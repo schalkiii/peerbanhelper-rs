@@ -517,7 +517,9 @@ impl DbMonitorSink {
                 row.ip,
                 row.port as i64,
                 row.info_hash,
-                row.torrent_is_private.map(i64::from),
+                // 上游 SQLite 迁移脚本把该列建为 NOT NULL；`None`（未知）按 `false` 落库，
+                // 与 `TorrentWrapper.privateTorrent` 的 boolean 语义一致。
+                row.torrent_is_private.map(i64::from).unwrap_or(0),
                 row.torrent_size,
                 row.downloader,
                 row.downloader_progress,
@@ -1769,7 +1771,8 @@ mod tests {
         assert_eq!(loaded.peer_id, "-qB4600-bbbbbbbb");
         assert_eq!(loaded.last_flags, "U");
         assert_eq!(loaded.uploaded, 700);
-        assert_eq!(loaded.torrent_is_private, None, "可空列往返");
+        // 上游 SQLite 迁移脚本把该列建为 NOT NULL：`None`（未知）按 `false` 落库
+        assert_eq!(loaded.torrent_is_private, Some(false), "未知值按 false 落库");
 
         // 另一 peer / 另一 info hash -> 新行
         sink.upsert_tracked_swarm(&swarm_row("5.6.7.8", 1000, 1000));

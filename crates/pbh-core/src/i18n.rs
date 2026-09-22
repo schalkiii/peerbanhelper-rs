@@ -12,10 +12,68 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// 渲染参数：字面文本，或另一个待渲染的可翻译文本（对齐上游参数可为 `TranslationComponent`）。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 上游 `TranslationComponent.params` 是 `Object[]`，元素可以是字符串 / 数字 / 布尔 / 嵌套组件；
+/// Gson 把标量写成裸值、把组件写成 `{"key":…,"params":[…]}`。本类型的 serde 实现
+/// 与之逐项对齐（标量统一收成 [`Param::Text`]），同时兼容本移植早期写下的
+/// externally-tagged 形式（`{"Text":…}` / `{"Component":…}`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Param {
     Text(String),
     Component(TranslationComponent),
+}
+
+impl Serialize for Param {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Param::Text(text) => serializer.serialize_str(text),
+            Param::Component(component) => component.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Param {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            /// 裸字符串（上游标量参数）
+            Text(String),
+            /// 裸数字（上游数字参数，收成文本）
+            Number(f64),
+            /// 裸布尔
+            Bool(bool),
+            /// 嵌套组件（上游 `Object[]` 里也可以是 `TranslationComponent`）
+            Component(TranslationComponent),
+            /// 本移植早期格式：`{"Text": "…"}`
+            TaggedText { #[serde(rename = "Text")] text: String },
+            /// 本移植早期格式：`{"Component": {…}}`
+            TaggedComponent { #[serde(rename = "Component")] component: TranslationComponent },
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Text(text) => Param::Text(text),
+            Raw::Number(number) => Param::Text(format_scalar_number(number)),
+            Raw::Bool(flag) => Param::Text(flag.to_string()),
+            Raw::Component(component) => Param::Component(component),
+            Raw::TaggedText { text } => Param::Text(text),
+            Raw::TaggedComponent { component } => Param::Component(component),
+        })
+    }
+}
+
+/// 数字参数的文本化：整数值不带小数点（Gson 会把 `1.0` 写成 `1.0`，这里取更自然的写法）。
+fn format_scalar_number(number: f64) -> String {
+    if number.fract() == 0.0 && number.abs() < 1e15 {
+        format!("{}", number as i64)
+    } else {
+        format!("{number}")
+    }
 }
 
 impl From<String> for Param {
@@ -43,9 +101,12 @@ impl From<TranslationComponent> for Param {
 }
 
 /// 可翻译文本：`key` + 位置参数（对齐上游 `TranslationComponent`）。
+///
+/// JSON 形状与上游一致：`{"key":"…","params":[…]}`（`params` 缺省/为 null 时按空数组处理）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranslationComponent {
     pub key: String,
+    #[serde(default)]
     pub params: Vec<Param>,
 }
 
