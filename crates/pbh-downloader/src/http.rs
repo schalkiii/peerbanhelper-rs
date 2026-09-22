@@ -24,10 +24,19 @@ pub struct HttpRequest {
 
 impl HttpRequest {
     pub fn get(url: impl Into<String>) -> Self {
-        Self { method: "GET".into(), url: url.into(), ..Default::default() }
+        Self {
+            method: "GET".into(),
+            url: url.into(),
+            ..Default::default()
+        }
     }
     pub fn post_form(url: impl Into<String>, form: Vec<(String, String)>) -> Self {
-        Self { method: "POST".into(), url: url.into(), form: Some(form), ..Default::default() }
+        Self {
+            method: "POST".into(),
+            url: url.into(),
+            form: Some(form),
+            ..Default::default()
+        }
     }
     pub fn post_json(url: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
@@ -61,10 +70,18 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     pub fn ok(body: impl Into<String>) -> Self {
-        Self { status: 200, headers: Vec::new(), body: body.into() }
+        Self {
+            status: 200,
+            headers: Vec::new(),
+            body: body.into(),
+        }
     }
     pub fn new(status: u16, body: impl Into<String>) -> Self {
-        Self { status, headers: Vec::new(), body: body.into() }
+        Self {
+            status,
+            headers: Vec::new(),
+            body: body.into(),
+        }
     }
     pub fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_string(), value.to_string()));
@@ -90,7 +107,11 @@ pub struct ReqwestFetcher {
 }
 
 impl ReqwestFetcher {
-    pub fn new(verify_tls: bool, connect_timeout_secs: u64, timeout_secs: u64) -> anyhow::Result<Self> {
+    pub fn new(
+        verify_tls: bool,
+        connect_timeout_secs: u64,
+        timeout_secs: u64,
+    ) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .cookie_store(true)
             .danger_accept_invalid_certs(!verify_tls)
@@ -98,17 +119,19 @@ impl ReqwestFetcher {
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .user_agent("PeerBanHelper-RS")
             .build()?;
-        Ok(Self { client, last_cookies: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            client,
+            last_cookies: Mutex::new(HashMap::new()),
+        })
     }
 }
 
 impl HttpFetcher for ReqwestFetcher {
     fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
         Box::pin(async move {
-            let mut builder = self.client.request(
-                req.method.parse().unwrap_or(reqwest::Method::GET),
-                &req.url,
-            );
+            let mut builder = self
+                .client
+                .request(req.method.parse().unwrap_or(reqwest::Method::GET), &req.url);
             if let Some((u, p)) = req.basic {
                 builder = builder.basic_auth(u, Some(p));
             }
@@ -132,7 +155,11 @@ impl HttpFetcher for ReqwestFetcher {
                 .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
                 .collect();
             let body = resp.text().await.unwrap_or_default();
-            Ok(HttpResponse { status, headers, body })
+            Ok(HttpResponse {
+                status,
+                headers,
+                body,
+            })
         })
     }
 }

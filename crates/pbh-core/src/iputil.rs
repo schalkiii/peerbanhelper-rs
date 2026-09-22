@@ -47,7 +47,10 @@ impl IpSet {
             Ok(a) => a,
             Err(_) => split_host_port(ip).and_then(|h| IpAddr::from_str(&h).ok())?,
         };
-        self.nets.iter().find(|n| n.contains(&addr)).map(|n| n.to_string())
+        self.nets
+            .iter()
+            .find(|n| n.contains(&addr))
+            .map(|n| n.to_string())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -175,13 +178,22 @@ mod tests {
         let set = IpSet::from_cidrs(["1.2.3.4"]);
         assert!(set.contains("1.2.3.4"));
         assert!(!set.contains("1.2.3.5"));
-        assert_eq!(prefix_block("1.2.3.4", 32, 56).as_deref(), Some("1.2.3.4/32"));
-        assert_eq!(prefix_block("2001:db8::1234", 32, 56).as_deref(), Some("2001:db8::/56"));
+        assert_eq!(
+            prefix_block("1.2.3.4", 32, 56).as_deref(),
+            Some("1.2.3.4/32")
+        );
+        assert_eq!(
+            prefix_block("2001:db8::1234", 32, 56).as_deref(),
+            Some("2001:db8::/56")
+        );
     }
 
     #[test]
     fn host_port_split() {
         assert_eq!(split_host_port("1.2.3.4:51413").as_deref(), Some("1.2.3.4"));
-        assert_eq!(split_host_port("[2001:db8::1]:51413").as_deref(), Some("2001:db8::1"));
+        assert_eq!(
+            split_host_port("[2001:db8::1]:51413").as_deref(),
+            Some("2001:db8::1")
+        );
     }
 }

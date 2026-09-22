@@ -52,8 +52,13 @@ fn run_script(script: &str) -> PeerAction {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("s.av"), script).unwrap();
     let m = ExpressionEngine::new(0, Some(dir.to_str().unwrap()));
-    m.check("qb", &sample_torrent(), &sample_peer(), &CheckContext::default())
-        .action
+    m.check(
+        "qb",
+        &sample_torrent(),
+        &sample_peer(),
+        &CheckContext::default(),
+    )
+    .action
 }
 
 #[test]
@@ -62,8 +67,13 @@ fn empty_or_invalid_script_is_noop() {
     fs::create_dir_all(&dir).unwrap();
     let m = ExpressionEngine::new(0, Some(dir.to_str().unwrap()));
     assert_eq!(
-        m.check("qb", &sample_torrent(), &sample_peer(), &CheckContext::default())
-            .action,
+        m.check(
+            "qb",
+            &sample_torrent(),
+            &sample_peer(),
+            &CheckContext::default()
+        )
+        .action,
         PeerAction::NoAction
     );
 
@@ -73,8 +83,13 @@ fn empty_or_invalid_script_is_noop() {
     fs::write(dir2.join("x.av"), "let x = ;").unwrap();
     let m2 = ExpressionEngine::new(0, Some(dir2.to_str().unwrap()));
     assert_eq!(
-        m2.check("qb", &sample_torrent(), &sample_peer(), &CheckContext::default())
-            .action,
+        m2.check(
+            "qb",
+            &sample_torrent(),
+            &sample_peer(),
+            &CheckContext::default()
+        )
+        .action,
         PeerAction::NoAction
     );
 }
@@ -102,7 +117,12 @@ fn string_return_semantics() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("s.av"), "\"@my-custom-reason\"").unwrap();
     let m = ExpressionEngine::new(0, Some(dir.to_str().unwrap()));
-    let r = m.check("qb", &sample_torrent(), &sample_peer(), &CheckContext::default());
+    let r = m.check(
+        "qb",
+        &sample_torrent(),
+        &sample_peer(),
+        &CheckContext::default(),
+    );
     assert_eq!(r.action, PeerAction::Skip);
     assert_eq!(r.reason_key.as_ref().unwrap().key, "my-custom-reason");
 }
@@ -115,8 +135,13 @@ fn skip_takes_priority_over_ban() {
     fs::write(dir.join("skip.av"), "2").unwrap();
     let m = ExpressionEngine::new(0, Some(dir.to_str().unwrap()));
     assert_eq!(
-        m.check("qb", &sample_torrent(), &sample_peer(), &CheckContext::default())
-            .action,
+        m.check(
+            "qb",
+            &sample_torrent(),
+            &sample_peer(),
+            &CheckContext::default()
+        )
+        .action,
         PeerAction::Skip
     );
 }

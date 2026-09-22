@@ -181,7 +181,11 @@ fn local_naive(ms: i64) -> chrono::NaiveDateTime {
         .timestamp_millis_opt(ms)
         .single()
         .map(|dt| dt.naive_local())
-        .unwrap_or_else(|| chrono::DateTime::from_timestamp_millis(0).unwrap().naive_utc())
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp_millis(0)
+                .unwrap()
+                .naive_utc()
+        })
 }
 
 /// 对齐 `ZoneId.systemDefault().getRules().getOffset(Instant.ofEpochMilli(ms))`。
@@ -240,7 +244,11 @@ pub fn format_date_only(time_ms: i64) -> String {
 
 /// 对齐 `MsgUtil.humanReadableByteCountBin`（1024 进制、`%.1f %ciB`）。
 pub fn human_readable_byte_count_bin(bytes: i64) -> String {
-    let abs_b = if bytes == i64::MIN { i64::MAX } else { bytes.abs() };
+    let abs_b = if bytes == i64::MIN {
+        i64::MAX
+    } else {
+        bytes.abs()
+    };
     if abs_b < 1024 {
         return format!("{bytes} B");
     }
@@ -396,7 +404,12 @@ pub struct MetricsTrackRow {
 
 impl MetricsTrackRow {
     pub fn new(key: MetricsTrackKey) -> Self {
-        Self { key, peer_id: None, client_name: None, last_flags: None }
+        Self {
+            key,
+            peer_id: None,
+            client_name: None,
+            last_flags: None,
+        }
     }
 }
 
@@ -705,27 +718,45 @@ impl InMemoryMonitorSink {
 
     /// 当前告警列表（按发布顺序，对齐 alerts 表内容）。
     pub fn alerts(&self) -> Vec<AlertRecord> {
-        self.alerts.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.alerts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn traffic_journal(&self) -> Vec<TrafficJournalRow> {
-        self.traffic.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.traffic
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn metrics_tracks(&self) -> Vec<MetricsTrackRow> {
-        self.tracks.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.tracks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn connection_metrics(&self) -> Vec<ConnectionMetricsRow> {
-        self.metrics.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn peer_records(&self) -> Vec<PeerRecordRow> {
-        self.peer_records.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.peer_records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn tracked_swarm(&self) -> Vec<TrackedSwarmRow> {
-        self.tracked_swarm.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.tracked_swarm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -818,11 +849,13 @@ impl MonitorSink for InMemoryMonitorSink {
                 }
                 grouped
                     .into_iter()
-                    .map(|(timestamp_ms, (ul, ul_start, dl, dl_start))| TrafficDataComputed {
-                        timestamp_ms,
-                        data_overall_uploaded: ul - ul_start,
-                        data_overall_downloaded: dl - dl_start,
-                    })
+                    .map(
+                        |(timestamp_ms, (ul, ul_start, dl, dl_start))| TrafficDataComputed {
+                            timestamp_ms,
+                            data_overall_uploaded: ul - ul_start,
+                            data_overall_downloaded: dl - dl_start,
+                        },
+                    )
                     .collect()
             }
             Some(id) => rows
@@ -1015,11 +1048,17 @@ impl MonitorSink for InMemoryMonitorSink {
     }
 
     fn reset_tracked_swarm(&self) {
-        self.tracked_swarm.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.tracked_swarm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     fn count_tracked_swarm(&self) -> usize {
-        self.tracked_swarm.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.tracked_swarm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }
 
@@ -1511,7 +1550,11 @@ pub struct SessionAnalyseServiceModule {
 
 impl SessionAnalyseServiceModule {
     pub fn new(sink: Arc<dyn MonitorSink>, settings: SessionAnalyseSettings) -> Self {
-        Self { settings, sink, track_cache: Mutex::new(HashMap::new()) }
+        Self {
+            settings,
+            sink,
+            track_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 对齐 `PeerConnectionMetricsTrackService.syncPeers`：握手中的 peer 直接跳过。
@@ -1581,7 +1624,8 @@ impl SessionAnalyseServiceModule {
         let in_the_day = self.sink.list_metrics_tracks_at(start_of_today);
         let aggregated_in_the_day = aggregate_connection_metrics(&in_the_day);
         summary.aggregated_rows_in_day = aggregated_in_the_day.len();
-        self.sink.save_connection_metrics(&aggregated_in_the_day, false);
+        self.sink
+            .save_connection_metrics(&aggregated_in_the_day, false);
         summary.saved_in_day = aggregated_in_the_day;
         summary.deleted += self.sink.delete_metrics_tracks(&in_the_day);
 
@@ -1602,7 +1646,10 @@ impl SessionAnalyseServiceModule {
 
     /// 缓存条目数（对齐上游 cache 大小，供日志/测试）。
     pub fn cache_len(&self) -> usize {
-        self.track_cache.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.track_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }
 
@@ -1683,7 +1730,12 @@ pub struct PeerRecordCachingEntire {
 }
 
 impl PeerRecordCachingEntire {
-    pub fn new(timestamp_ms: i64, downloader: &str, torrent: &TorrentData, peer: &PeerData) -> Self {
+    pub fn new(
+        timestamp_ms: i64,
+        downloader: &str,
+        torrent: &TorrentData,
+        peer: &PeerData,
+    ) -> Self {
         Self {
             timestamp_ms,
             downloader: downloader.to_string(),
@@ -1765,7 +1817,11 @@ pub struct PeerRecordingServiceModule {
 
 impl PeerRecordingServiceModule {
     pub fn new(sink: Arc<dyn MonitorSink>, settings: PeerRecordingSettings) -> Self {
-        Self { settings, sink, cache: Mutex::new(HashMap::new()) }
+        Self {
+            settings,
+            sink,
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 对齐 `onPeersRetrieved` 的过滤 + 缓存写入。
@@ -1912,7 +1968,11 @@ pub struct SwarmTrackingModule {
 
 impl SwarmTrackingModule {
     pub fn new(sink: Arc<dyn MonitorSink>, settings: SwarmTrackingSettings) -> Self {
-        Self { settings, sink, cache: Mutex::new(HashMap::new()) }
+        Self {
+            settings,
+            sink,
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 对齐 `onEnable()`：`trackedSwarmDao.resetTable()`（清空临时表 + 本地缓存）。
@@ -1976,11 +2036,7 @@ impl SwarmTrackingModule {
             entity.uploaded_offset = peer.uploaded;
             entity.client_name = peer.client_name.clone().unwrap_or_default();
             entity.peer_id = peer.peer_id.clone().unwrap_or_default();
-            entity.last_flags = peer
-                .flags
-                .as_deref()
-                .map(lt_std_string)
-                .unwrap_or_default();
+            entity.last_flags = peer.flags.as_deref().map(lt_std_string).unwrap_or_default();
             entity.last_time_seen_ms = now_ms;
             entity.download_speed_max = entity.download_speed_max.max(peer.dl_speed);
             entity.upload_speed_max = entity.upload_speed_max.max(peer.up_speed);
@@ -2182,7 +2238,10 @@ mod tests {
         assert_eq!(lt_std_string("K ?"), "K ?");
         assert_eq!(lt_std_string_opt(None), None);
         assert_eq!(lt_std_string_opt(Some("")), Some(String::new()));
-        assert_eq!(compressed_ip("2001:0db8:0000:0000:0000:0000:0000:0001"), "2001:db8::1");
+        assert_eq!(
+            compressed_ip("2001:0db8:0000:0000:0000:0000:0000:0001"),
+            "2001:db8::1"
+        );
         assert_eq!(compressed_ip("::ffff:1.2.3.4"), "1.2.3.4");
         assert_eq!(compressed_ip("not-an-ip"), "not-an-ip");
     }
@@ -2200,8 +2259,14 @@ mod tests {
         assert_eq!(start_of_today_ms(start_of_today), start_of_today);
         assert_eq!(start_of_hour_ms(start_of_hour), start_of_hour);
         // 本地时间语义：当天 0 点整 / 当前小时的第 0 分 0 秒
-        assert_eq!(local_naive(start_of_today).format("%H:%M:%S").to_string(), "00:00:00");
-        assert_eq!(local_naive(start_of_hour).format("%M:%S").to_string(), "00:00");
+        assert_eq!(
+            local_naive(start_of_today).format("%H:%M:%S").to_string(),
+            "00:00:00"
+        );
+        assert_eq!(
+            local_naive(start_of_hour).format("%M:%S").to_string(),
+            "00:00"
+        );
         // 当日 23:59:59.999 晚于当前时刻
         assert!(end_of_today_ms(now) > now);
         assert!(end_of_today_ms(now) - start_of_today < 90_000_000);
@@ -2222,12 +2287,18 @@ mod tests {
         let session =
             SessionAnalyseServiceModule::new(s.clone(), SessionAnalyseSettings::default());
         assert_eq!(session.name(), "Session Analyse Service");
-        assert_eq!(session.config_name(), "peer-analyse-service.session-analyse");
+        assert_eq!(
+            session.config_name(),
+            "peer-analyse-service.session-analyse"
+        );
 
         let recording =
             PeerRecordingServiceModule::new(s.clone(), PeerRecordingSettings::default());
         assert_eq!(recording.name(), "Peer Recording Service");
-        assert_eq!(recording.config_name(), "peer-analyse-service.peer-recording");
+        assert_eq!(
+            recording.config_name(),
+            "peer-analyse-service.peer-recording"
+        );
 
         let swarm = SwarmTrackingModule::new(s, SwarmTrackingSettings::default());
         assert_eq!(swarm.name(), "Swarm Tracking Module");
@@ -2250,20 +2321,34 @@ mod tests {
                 s.clone(),
                 PeerRecordingSettings::default(),
             )),
-            Box::new(SwarmTrackingModule::new(s, SwarmTrackingSettings::default())),
+            Box::new(SwarmTrackingModule::new(
+                s,
+                SwarmTrackingSettings::default(),
+            )),
         ];
-        let ctx = CheckContext { now_ms: 1_700_000_000_000, features: Vec::new() };
+        let ctx = CheckContext {
+            now_ms: 1_700_000_000_000,
+            features: Vec::new(),
+        };
         for module in &modules {
             for candidate in [
                 peer("1.2.3.4", 51413, "d u"),
                 handshaking_peer("10.0.0.1", 6881),
             ] {
                 let result = module.check("qb", &torrent(), &candidate, &ctx);
-                assert_eq!(result.action, PeerAction::NoAction, "{}", module.config_name());
+                assert_eq!(
+                    result.action,
+                    PeerAction::NoAction,
+                    "{}",
+                    module.config_name()
+                );
                 assert_eq!(result.ban_duration_ms, 0);
                 assert_eq!(result.module, module.config_name());
                 assert_eq!(result.data["status"], "pass");
-                assert_eq!(result.reason_key, Some(TranslationComponent::new("Check passed")));
+                assert_eq!(
+                    result.reason_key,
+                    Some(TranslationComponent::new("Check passed"))
+                );
             }
         }
     }
@@ -2312,8 +2397,15 @@ mod tests {
         assert_eq!(journal[0].data_overall_uploaded_at_start, 222);
 
         // 同一小时内的第二次 tick 只做 max 更新，at_start 保持不变
-        let stats =
-            vec![DownloaderTrafficStats::new("qb", "qBittorrent", true, 111, 999, None, true)];
+        let stats = vec![DownloaderTrafficStats::new(
+            "qb",
+            "qBittorrent",
+            true,
+            111,
+            999,
+            None,
+            true,
+        )];
         module.on_tick(&stats, now + 60_000);
         let journal = s.traffic_journal();
         assert_eq!(journal.len(), 1);
@@ -2339,7 +2431,10 @@ mod tests {
         );
         assert_eq!(alert.total_uploaded, 2000);
         assert_eq!(alert.threshold, 1000);
-        assert_eq!(alert.alert.title.key, "MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_TITLE");
+        assert_eq!(
+            alert.alert.title.key,
+            "MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_TITLE"
+        );
         assert_eq!(alert.alert.title.params, vec![format_date_only(now).into()]);
         assert_eq!(
             alert.alert.description.key,
@@ -2459,7 +2554,10 @@ mod tests {
                 true,
                 0,
                 0,
-                Some(SpeedLimiter { upload: 5000, download: 777 }),
+                Some(SpeedLimiter {
+                    upload: 5000,
+                    download: 777,
+                }),
                 true,
             ),
             // 不支持限速（getSpeedLimiter() == null）-> 跳过
@@ -2471,7 +2569,10 @@ mod tests {
                 true,
                 0,
                 0,
-                Some(SpeedLimiter { upload: 5000, download: 777 }),
+                Some(SpeedLimiter {
+                    upload: 5000,
+                    download: 777,
+                }),
                 false,
             ),
             // 未登录成功 -> 跳过
@@ -2481,7 +2582,10 @@ mod tests {
                 false,
                 0,
                 0,
-                Some(SpeedLimiter { upload: 5000, download: 777 }),
+                Some(SpeedLimiter {
+                    upload: 5000,
+                    download: 777,
+                }),
                 true,
             ),
         ];
@@ -2510,13 +2614,18 @@ mod tests {
             true,
             0,
             0,
-            Some(SpeedLimiter { upload: 5000, download: 777 }),
+            Some(SpeedLimiter {
+                upload: 5000,
+                download: 777,
+            }),
             true,
         )];
         let (changes, alert) = disabled.on_tick(&stats, now);
         assert!(changes.is_empty());
         assert!(alert.is_none());
-        assert!(disabled.update_traffic_capping_service(&stats, now).is_empty());
+        assert!(disabled
+            .update_traffic_capping_service(&stats, now)
+            .is_empty());
     }
 
     // ---------------- session-analyse ----------------
@@ -2573,15 +2682,27 @@ mod tests {
         // 分组缓冲顺序 = 输入顺序（与上游 findOrCreateBuffer 一致）
         assert_eq!(agg.len(), 3);
         assert_eq!(
-            (agg[0].timeframe_at_ms, agg[0].downloader.as_str(), agg[0].total_connections),
+            (
+                agg[0].timeframe_at_ms,
+                agg[0].downloader.as_str(),
+                agg[0].total_connections
+            ),
             (day1, "qb", 2)
         );
         assert_eq!(
-            (agg[1].timeframe_at_ms, agg[1].downloader.as_str(), agg[1].total_connections),
+            (
+                agg[1].timeframe_at_ms,
+                agg[1].downloader.as_str(),
+                agg[1].total_connections
+            ),
             (day1, "tr", 1)
         );
         assert_eq!(
-            (agg[2].timeframe_at_ms, agg[2].downloader.as_str(), agg[2].total_connections),
+            (
+                agg[2].timeframe_at_ms,
+                agg[2].downloader.as_str(),
+                agg[2].total_connections
+            ),
             (day2, "qb", 1)
         );
         assert!(aggregate_connection_metrics(&[]).is_empty());
@@ -2613,7 +2734,10 @@ mod tests {
         module.sync_peers(
             "qb",
             &torrent(),
-            &[peer("1.2.3.6", 51413, "d"), handshaking_peer("1.2.3.7", 51413)],
+            &[
+                peer("1.2.3.6", 51413, "d"),
+                handshaking_peer("1.2.3.7", 51413),
+            ],
             now,
         );
         assert_eq!(module.cache_len(), 1);
@@ -2629,10 +2753,16 @@ mod tests {
 
         let metrics = s.connection_metrics();
         assert_eq!(metrics.len(), 2);
-        let out_of_day = metrics.iter().find(|m| m.timeframe_at_ms == yesterday).unwrap();
+        let out_of_day = metrics
+            .iter()
+            .find(|m| m.timeframe_at_ms == yesterday)
+            .unwrap();
         assert_eq!(out_of_day.total_connections, 1, "overwrite=true 覆盖旧值 5");
         let in_day = metrics.iter().find(|m| m.timeframe_at_ms == today).unwrap();
-        assert_eq!(in_day.total_connections, 7, "overwrite=false 在旧值 5 上合并 2");
+        assert_eq!(
+            in_day.total_connections, 7,
+            "overwrite=false 在旧值 5 上合并 2"
+        );
     }
 
     #[test]
@@ -2640,8 +2770,7 @@ mod tests {
         let s = sink();
         let now = 1_700_000_000_000i64;
         let today = start_of_today_ms(now);
-        let module =
-            SessionAnalyseServiceModule::new(s.clone(), SessionAnalyseSettings::default());
+        let module = SessionAnalyseServiceModule::new(s.clone(), SessionAnalyseSettings::default());
         // 先有一条同键的 track 行（模拟上一次运行写入的数据）
         let key = MetricsTrackKey {
             timeframe_at_ms: today,
@@ -2686,10 +2815,16 @@ mod tests {
         let before = now - 1_000;
         let module = SessionAnalyseServiceModule::new(
             s.clone(),
-            SessionAnalyseSettings { data_retention_time_ms: 1_000, ..Default::default() },
+            SessionAnalyseSettings {
+                data_retention_time_ms: 1_000,
+                ..Default::default()
+            },
         );
         s.save_connection_metrics(
-            &[metrics_row(before, "qb", 7), metrics_row(before + 1, "qb", 8)],
+            &[
+                metrics_row(before, "qb", 7),
+                metrics_row(before + 1, "qb", 8),
+            ],
             true,
         );
         // 对齐 `le(timeframe_at, before)`：恰好等于边界的数据也会被删除
@@ -2908,7 +3043,12 @@ mod tests {
     // ---------------- swarm-tracking ----------------
 
     fn swarm_module(s: Arc<InMemoryMonitorSink>) -> SwarmTrackingModule {
-        SwarmTrackingModule::new(s, SwarmTrackingSettings { data_flush_interval_ms: 3_600_000 })
+        SwarmTrackingModule::new(
+            s,
+            SwarmTrackingSettings {
+                data_flush_interval_ms: 3_600_000,
+            },
+        )
     }
 
     #[test]
@@ -2988,7 +3128,10 @@ mod tests {
         module.sync_peers(
             "qb",
             &torrent(),
-            &[handshaking_peer("1.2.3.9", 51413), peer("1.2.3.8", 51413, "d")],
+            &[
+                handshaking_peer("1.2.3.9", 51413),
+                peer("1.2.3.8", 51413, "d"),
+            ],
             now,
         );
         assert_eq!(module.cache_len(), 1);
@@ -3027,7 +3170,11 @@ mod tests {
         let row = &rows[0];
         assert_eq!(row.downloaded, 700 + (1_500 - 800));
         assert_eq!(row.uploaded, 900 + (2_600 - 1_000));
-        assert_eq!(row.first_time_seen_ms, now - 500_000, "复用旧行的首次出现时间");
+        assert_eq!(
+            row.first_time_seen_ms,
+            now - 500_000,
+            "复用旧行的首次出现时间"
+        );
         assert_eq!(row.last_time_seen_ms, now);
     }
 

@@ -68,7 +68,11 @@ pub struct PtrBlacklist {
 
 impl PtrBlacklist {
     pub fn new(rules: RuleSet, ban_duration_ms: i64, cache: Arc<PtrCache>) -> Self {
-        Self { rules, ban_duration_ms, cache }
+        Self {
+            rules,
+            ban_duration_ms,
+            cache,
+        }
     }
 }
 
@@ -117,10 +121,7 @@ impl RuleModule for PtrBlacklist {
         )
         .with_keys(
             name.clone(),
-            TranslationComponent::with_params(
-                "MODULE_PTR_MATCH_PTR_RULE",
-                vec![name.into()],
-            ),
+            TranslationComponent::with_params("MODULE_PTR_MATCH_PTR_RULE", vec![name.into()]),
         )
     }
 }

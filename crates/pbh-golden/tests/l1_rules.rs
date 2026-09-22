@@ -12,13 +12,19 @@ fn matcher(json: &str) -> Matcher {
 
 fn peer_id_rules() -> RuleSet {
     RuleSet::from_json_text(
-        &DEFAULT_BANNED_PEER_ID.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &DEFAULT_BANNED_PEER_ID
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
     )
     .unwrap()
 }
 fn client_rules() -> RuleSet {
     RuleSet::from_json_text(
-        &DEFAULT_BANNED_CLIENT_NAME.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &DEFAULT_BANNED_CLIENT_NAME
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
     )
     .unwrap()
 }
@@ -26,7 +32,19 @@ fn client_rules() -> RuleSet {
 #[test]
 fn default_peer_id_rules_catch_known_leechers() {
     let rs = peer_id_rules();
-    for id in ["-hp001-2.3", "-Xm0001-abc", "-dt001-", "-SD000-", "-qD000-", "-BN00-", "-DL00-", "-TS00-", "-FG00-", "-TT00-", "-NX00-"] {
+    for id in [
+        "-hp001-2.3",
+        "-Xm0001-abc",
+        "-dt001-",
+        "-SD000-",
+        "-qD000-",
+        "-BN00-",
+        "-DL00-",
+        "-TS00-",
+        "-FG00-",
+        "-TT00-",
+        "-NX00-",
+    ] {
         assert!(rs.r#match(Some(id)).hit, "should ban peer id {id}");
     }
     // CONTAINS 规则
@@ -97,15 +115,27 @@ fn regex_full_match_semantics() {
 
 #[test]
 fn starts_contains_are_case_insensitive_equals_ignorecase() {
-    assert_eq!(matcher(r#"{"method":"STARTS_WITH","content":"-HP"}"#).matches(Some("-hp00")), Verdict::True);
-    assert_eq!(matcher(r#"{"method":"CONTAINS","content":"CACAO"}"#).matches(Some("xxcacaoyy")), Verdict::True);
-    assert_eq!(matcher(r#"{"method":"EQUALS","content":"unknown"}"#).matches(Some("Unknown")), Verdict::True);
+    assert_eq!(
+        matcher(r#"{"method":"STARTS_WITH","content":"-HP"}"#).matches(Some("-hp00")),
+        Verdict::True
+    );
+    assert_eq!(
+        matcher(r#"{"method":"CONTAINS","content":"CACAO"}"#).matches(Some("xxcacaoyy")),
+        Verdict::True
+    );
+    assert_eq!(
+        matcher(r#"{"method":"EQUALS","content":"unknown"}"#).matches(Some("Unknown")),
+        Verdict::True
+    );
 }
 
 #[test]
 fn null_and_empty_content() {
     // null 归一为空串，不应命中 CONTAINS
-    assert_eq!(matcher(r#"{"method":"CONTAINS","content":"x"}"#).matches(None), Verdict::Default);
+    assert_eq!(
+        matcher(r#"{"method":"CONTAINS","content":"x"}"#).matches(None),
+        Verdict::Default
+    );
 }
 
 /// 上游 `profile.yml`（v9.5.1）的默认规则集：Rust 常量必须**逐字、逐序**一致。
@@ -202,9 +232,17 @@ fn match_rule_records_the_last_matching_true_rule() {
 #[test]
 fn length_matches_java_utf16_length() {
     let two = matcher(r#"{"method":"LENGTH","min":2,"max":2}"#);
-    assert_eq!(two.matches(Some("💩")), Verdict::True, "emoji 在 Java 中长度为 2");
+    assert_eq!(
+        two.matches(Some("💩")),
+        Verdict::True,
+        "emoji 在 Java 中长度为 2"
+    );
     let one = matcher(r#"{"method":"LENGTH","min":1,"max":1}"#);
-    assert_eq!(one.matches(Some("💩")), Verdict::Default, "emoji 不应被算作长度 1");
+    assert_eq!(
+        one.matches(Some("💩")),
+        Verdict::Default,
+        "emoji 不应被算作长度 1"
+    );
     // 中文原样按码元数：'蕲' 在 UTF-16 中为 1 个码元
     let one_cjk = matcher(r#"{"method":"LENGTH","min":1,"max":1}"#);
     assert_eq!(one_cjk.matches(Some("蕲")), Verdict::True);

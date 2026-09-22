@@ -89,7 +89,11 @@ pub async fn status(State(state): State<AppState>, Path(id): Path<String>) -> Re
     if let Some(status) = statuses.iter().find(|s| s.id == id) {
         (
             StatusCode::OK,
-            crate::std_resp(true, Some("OK"), serde_json::to_value(status).unwrap_or(Value::Null)),
+            crate::std_resp(
+                true,
+                Some("OK"),
+                serde_json::to_value(status).unwrap_or(Value::Null),
+            ),
         )
             .into_response()
     } else {

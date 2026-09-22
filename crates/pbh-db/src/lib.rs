@@ -253,14 +253,18 @@ fn table_is_empty(conn: &Connection, name: &str) -> anyhow::Result<bool> {
 impl Database {
     pub fn open(path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
 
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -365,8 +369,9 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(Vec<HistoryRow>, i64)> {
-        let sql =
-            format!("{HISTORY_SELECT_SQL} WHERE t.info_hash = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3");
+        let sql = format!(
+            "{HISTORY_SELECT_SQL} WHERE t.info_hash = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3"
+        );
         let conn = self.conn.lock().unwrap();
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM history h JOIN torrents t ON t.id = h.torrent_id
@@ -377,7 +382,8 @@ impl Database {
         let mut rows: Vec<HistoryRow> = Vec::new();
         {
             let mut stmt = conn.prepare(&sql)?;
-            let iter = stmt.query_map(rusqlite::params![info_hash, limit, offset], map_history_row)?;
+            let iter =
+                stmt.query_map(rusqlite::params![info_hash, limit, offset], map_history_row)?;
             for row in iter {
                 rows.push(row?);
             }
@@ -392,8 +398,9 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(Vec<HistoryRow>, i64)> {
-        let sql =
-            format!("{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3");
+        let sql = format!(
+            "{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3"
+        );
         let conn = self.conn.lock().unwrap();
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM history WHERE ip = ?1",
@@ -426,7 +433,9 @@ impl Database {
         let sql = format!("{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT 1");
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&sql)?;
-        Ok(stmt.query_row(rusqlite::params![ip], map_history_row).optional()?)
+        Ok(stmt
+            .query_row(rusqlite::params![ip], map_history_row)
+            .optional()?)
     }
 
     /// `HistoryService.getBannedIps`：按 IP 聚合的封禁次数排行（`/api/bans/ranks`）。
@@ -477,7 +486,10 @@ impl Database {
     pub fn cleanup_history(&self, keep_days: i64) -> anyhow::Result<usize> {
         let cutoff = now_ms() - keep_days * 86_400_000;
         let conn = self.conn.lock().unwrap();
-        Ok(conn.execute("DELETE FROM history WHERE ban_at < ?1", rusqlite::params![cutoff])?)
+        Ok(conn.execute(
+            "DELETE FROM history WHERE ban_at < ?1",
+            rusqlite::params![cutoff],
+        )?)
     }
 
     // ---------- 持久化封禁列表（`banlist`，对齐上游 `BanListService`） ----------
@@ -853,7 +865,9 @@ impl Database {
     pub fn tracked_swarm_size(&self) -> anyhow::Result<i64> {
         let conn = self.conn.lock().unwrap();
         Ok(conn
-            .query_row("SELECT COUNT(DISTINCT ip) FROM tracked_swarm", [], |r| r.get(0))
+            .query_row("SELECT COUNT(DISTINCT ip) FROM tracked_swarm", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0))
     }
 
@@ -865,7 +879,13 @@ impl Database {
              GROUP BY module_name, rule_name ORDER BY c DESC",
         )?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -926,12 +946,18 @@ impl Database {
         let rows = if has_downloader {
             let d = downloader.unwrap_or_default();
             stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
-                Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
-                Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -961,12 +987,18 @@ impl Database {
         let rows = if has_downloader {
             let d = downloader.unwrap_or_default();
             stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
-                Ok((r.get::<_, i64>(0)?, [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?]))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?],
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
-                Ok((r.get::<_, i64>(0)?, [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?]))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?],
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -987,7 +1019,10 @@ impl Database {
     ) -> anyhow::Result<(Vec<AccessHistoryRow>, i64)> {
         let conn = self.conn.lock().unwrap();
         let (cond, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(ip) = ip_prefix {
-            ("WHERE p.address LIKE ?1 || '%'".to_string(), vec![Box::new(ip.to_string())])
+            (
+                "WHERE p.address LIKE ?1 || '%'".to_string(),
+                vec![Box::new(ip.to_string())],
+            )
         } else if let Some(kw) = keyword {
             (
                 "WHERE t.info_hash = ?1 OR t.name LIKE ?1 || '%'".to_string(),
@@ -1005,8 +1040,9 @@ impl Database {
         }
         order_sql.push_str("p.last_time_seen DESC");
 
-        let count_sql =
-            format!("SELECT COUNT(*) FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}");
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}"
+        );
         let total: i64 = conn
             .query_row(
                 &count_sql,
@@ -1023,7 +1059,8 @@ impl Database {
              ORDER BY {order_sql} LIMIT ? OFFSET ?"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let mut query_params: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let mut query_params: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|b| b.as_ref()).collect();
         query_params.push(&limit);
         query_params.push(&offset);
         let rows = stmt
@@ -1197,8 +1234,16 @@ impl Database {
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(String, i64, f64)>> {
         const WHITELIST: &[&str] = &[
-            "downloader_id", "torrent_name", "torrent_hash", "ip", "port", "peer_id",
-            "client_name", "module", "rule", "reason",
+            "downloader_id",
+            "torrent_name",
+            "torrent_hash",
+            "ip",
+            "port",
+            "peer_id",
+            "client_name",
+            "module",
+            "rule",
+            "reason",
         ];
         if !WHITELIST.contains(&field) {
             return Ok(Vec::new());
@@ -1238,11 +1283,19 @@ impl Database {
         let filtered: Vec<(String, i64, f64)> = list
             .into_iter()
             .filter(|(_, v, _)| {
-                let pct = if total > 0 { *v as f64 / total as f64 } else { 0.0 };
+                let pct = if total > 0 {
+                    *v as f64 / total as f64
+                } else {
+                    0.0
+                };
                 pct >= percent_filter
             })
             .map(|(k, v, _)| {
-                let pct = if total > 0 { v as f64 / total as f64 } else { 0.0 };
+                let pct = if total > 0 {
+                    v as f64 / total as f64
+                } else {
+                    0.0
+                };
                 (k, v, pct)
             })
             .collect();
@@ -1299,7 +1352,9 @@ pub struct DbMetadataStore {
 
 impl std::fmt::Debug for DbMetadataStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("DbMetadataStore").finish_non_exhaustive()
+        formatter
+            .debug_struct("DbMetadataStore")
+            .finish_non_exhaustive()
     }
 }
 
@@ -1376,8 +1431,7 @@ mod tests {
             peer_progress: 0.1,
             downloader_progress: 0.2,
             torrent: torrent("hash-1"),
-            module_name:
-                "com.ghostchu.peerbanhelper.module.impl.rule.PeerIdBlacklist".to_string(),
+            module_name: "com.ghostchu.peerbanhelper.module.impl.rule.PeerIdBlacklist".to_string(),
             rule_name: r#"{"key":"MODULE_IPB_RULE","params":[]}"#.to_string(),
             description: r#"{"key":"MODULE_IPB_RULE_DESCRIPTION","params":[]}"#.to_string(),
             flags: Some("U".into()),
@@ -1392,7 +1446,8 @@ mod tests {
     fn history_roundtrip_and_queries() {
         let db = Database::open_in_memory().unwrap();
         for i in 0..3 {
-            db.insert_history(&history_record(&format!("1.2.3.{i}"))).unwrap();
+            db.insert_history(&history_record(&format!("1.2.3.{i}")))
+                .unwrap();
         }
         db.insert_history(&history_record("1.2.3.1")).unwrap();
 
@@ -1422,12 +1477,17 @@ mod tests {
         assert_eq!(filtered.len(), 1);
 
         // 排序：白名单列名（调用方用 `history_order_column` 把 DTO 字段名映射为列名）
-        assert_eq!(Database::history_order_column("peerIp").as_deref(), Some("ip"));
+        assert_eq!(
+            Database::history_order_column("peerIp").as_deref(),
+            Some("ip")
+        );
         let order = vec![("ip".to_string(), false)];
         let (rows, _) = db.page_history(&order, 10, 0).unwrap();
         assert_eq!(rows[0].ip, "1.2.3.2");
         // 非法字段被忽略，退回默认 `ban_at DESC`
-        let (rows, _) = db.page_history(&[("nope".to_string(), true)], 10, 0).unwrap();
+        let (rows, _) = db
+            .page_history(&[("nope".to_string(), true)], 10, 0)
+            .unwrap();
         assert_eq!(rows.len(), 4);
 
         // 清理：`ban_at` 早于 cutoff 的行被删除
@@ -1440,7 +1500,8 @@ mod tests {
     #[test]
     fn ban_list_save_replaces_all_rows() {
         let db = Database::open_in_memory().unwrap();
-        db.save_ban_list(&[("1.2.3.4".into(), r#"{"banAt":1}"#.into())]).unwrap();
+        db.save_ban_list(&[("1.2.3.4".into(), r#"{"banAt":1}"#.into())])
+            .unwrap();
         let rows = db.read_ban_list().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "1.2.3.4");
@@ -1497,14 +1558,19 @@ mod tests {
             assert_eq!(count, Some(43));
         }
 
-        db.insert_rule_sub_log("all-in-one", 42, "AUTO", 1000).unwrap();
-        db.insert_rule_sub_log("all-in-one", 43, "MANUAL", 2000).unwrap();
+        db.insert_rule_sub_log("all-in-one", 42, "AUTO", 1000)
+            .unwrap();
+        db.insert_rule_sub_log("all-in-one", 43, "MANUAL", 2000)
+            .unwrap();
         let logs = db.list_rule_sub_log(Some("all-in-one"), 10, 0).unwrap();
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].count, 43, "按 update_time 倒序");
         assert_eq!(logs[0].update_type, "MANUAL");
         assert_eq!(db.list_rule_sub_log(None, 10, 0).unwrap().len(), 2);
-        assert!(db.list_rule_sub_log(Some("other"), 10, 0).unwrap().is_empty());
+        assert!(db
+            .list_rule_sub_log(Some("other"), 10, 0)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1541,7 +1607,11 @@ mod tests {
             port: 0,
             ..default_pcb_row()
         };
-        assert_eq!(db.upsert_pcb_rows(std::slice::from_ref(&range_row)).unwrap(), 1);
+        assert_eq!(
+            db.upsert_pcb_rows(std::slice::from_ref(&range_row))
+                .unwrap(),
+            1
+        );
         let loaded = db.load_pcb_rows(PcbEntityKind::Range).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].key, "1.2.3.0/24");
@@ -1554,10 +1624,16 @@ mod tests {
         let store: Arc<dyn BtnMetadataStore> = Arc::new(DbMetadataStore::new(db.clone()));
         assert_eq!(store.get("btn.ability.rules.cache"), None);
         store.set("btn.ability.rules.cache", r#"{"version":"v1"}"#);
-        assert_eq!(store.get("btn.ability.rules.cache").as_deref(), Some(r#"{"version":"v1"}"#));
+        assert_eq!(
+            store.get("btn.ability.rules.cache").as_deref(),
+            Some(r#"{"version":"v1"}"#)
+        );
         // 覆盖写（上游 metadataDao 的 upsert）
         store.set("btn.ability.rules.cache", r#"{"version":"v2"}"#);
-        assert_eq!(store.get("btn.ability.rules.cache").as_deref(), Some(r#"{"version":"v2"}"#));
+        assert_eq!(
+            store.get("btn.ability.rules.cache").as_deref(),
+            Some(r#"{"version":"v2"}"#)
+        );
         // 与 `schema_version` 共用同一张表，互不干扰
         assert_eq!(db.get_meta("schema_version").unwrap().as_deref(), Some("1"));
         assert_eq!(
@@ -1595,16 +1671,25 @@ mod tests {
         migrate_legacy_tables(&conn).unwrap();
 
         let meta: String = conn
-            .query_row("SELECT v FROM metadata WHERE k='btn.ability.rules.cache'", [], |r| r.get(0))
+            .query_row(
+                "SELECT v FROM metadata WHERE k='btn.ability.rules.cache'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(meta, r#"{"v":1}"#);
 
         let (address, metadata): (String, String) = conn
-            .query_row("SELECT address, metadata FROM banlist", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT address, metadata FROM banlist", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(address, "1.2.3.4");
         assert!(metadata.contains("\"unbanAt\":300"), "{metadata}");
-        assert!(metadata.contains("\"context\":\"ip-address-blocker\""), "{metadata}");
+        assert!(
+            metadata.contains("\"context\":\"ip-address-blocker\""),
+            "{metadata}"
+        );
 
         let (ip, port, downloader, first, last, delay): (String, i64, String, i64, i64, i64) = conn
             .query_row(
@@ -1614,13 +1699,22 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .unwrap();
-        assert_eq!((ip.as_str(), port, downloader.as_str()), ("1.2.3.4", 6881, "qb"));
-        assert_eq!((first, last), (700, 700), "旧表无 first_time_seen，用 last_time_seen 兜底");
+        assert_eq!(
+            (ip.as_str(), port, downloader.as_str()),
+            ("1.2.3.4", 6881, "qb")
+        );
+        assert_eq!(
+            (first, last),
+            (700, 700),
+            "旧表无 first_time_seen，用 last_time_seen 兜底"
+        );
         assert_eq!(delay, 6);
 
         // 再次迁移不产生重复行（新表非空即跳过）
         migrate_legacy_tables(&conn).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM banlist", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM banlist", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 1);
     }
 

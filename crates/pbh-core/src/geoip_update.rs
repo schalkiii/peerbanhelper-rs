@@ -101,7 +101,9 @@
 //! 由调用方降级）、`ExternalSwitch` 之外的 OkHttp 连接池调优。
 
 use crate::config::IpDatabaseConfig;
-use crate::geoip::{default_locale, geoip_force_disabled, ASN_MMDB, CITY_MMDB, GEOIP_DIR, GEOCN_MMDB};
+use crate::geoip::{
+    default_locale, geoip_force_disabled, ASN_MMDB, CITY_MMDB, GEOCN_MMDB, GEOIP_DIR,
+};
 use crate::i18n::{Param, TranslationComponent, Translator};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -583,7 +585,10 @@ impl<'a> GeoIpUpdater<'a> {
                     return match std::fs::rename(&tmp, target) {
                         // 对齐 `Files.move(tmp, target, REPLACE_EXISTING)`：同目录 rename 为原子替换
                         Ok(()) => {
-                            info!("{}", t(LANG_IPDB_UPDATE_SUCCESS, vec![database_name.into()]));
+                            info!(
+                                "{}",
+                                t(LANG_IPDB_UPDATE_SUCCESS, vec![database_name.into()])
+                            );
                             DatabaseReport {
                                 database: database_name.to_string(),
                                 target: target.to_path_buf(),
@@ -705,7 +710,10 @@ impl<'a> GeoIpUpdater<'a> {
             if let Err(e) = outcome {
                 warn!(
                     "{}",
-                    t(LANG_IPDB_UNGZIP_FAILED, vec![mirror.database_name.clone().into()])
+                    t(
+                        LANG_IPDB_UNGZIP_FAILED,
+                        vec![mirror.database_name.clone().into()]
+                    )
                 );
                 return Err(e);
             }
@@ -963,7 +971,11 @@ mod tests {
 
     /// 文件 mtime（毫秒，对齐 `File.lastModified()`）
     fn mtime_millis(path: &Path) -> i64 {
-        system_time_millis(fs::metadata(path).and_then(|meta| meta.modified()).expect("mtime"))
+        system_time_millis(
+            fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .expect("mtime"),
+        )
     }
 
     /// 把 mtime 改成 `age_ms` 毫秒之前（用于触发 45 天间隔逻辑）
@@ -1064,7 +1076,10 @@ mod tests {
     /// 整数按最短大端字节数编码（0 用 size 0），与真实文件一致
     fn mmdb_uint(type_num: u8, value: u64) -> Vec<u8> {
         let bytes = value.to_be_bytes();
-        let start = bytes.iter().position(|byte| *byte != 0).unwrap_or(bytes.len());
+        let start = bytes
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(bytes.len());
         let payload = &bytes[start..];
         let mut out = mmdb_ctrl(type_num, payload.len());
         out.extend_from_slice(payload);
@@ -1185,7 +1200,10 @@ mod tests {
         }
         // 请求顺序 = 上游构造函数顺序，且 URL 是 `.mmdb.xz`
         assert_eq!(
-            mock.calls().iter().map(|req| req.url.clone()).collect::<Vec<_>>(),
+            mock.calls()
+                .iter()
+                .map(|req| req.url.clone())
+                .collect::<Vec<_>>(),
             vec![
                 mirror_url("GeoLite2-City"),
                 mirror_url("GeoLite2-ASN"),
@@ -1241,7 +1259,10 @@ mod tests {
         assert_eq!(entries[1].update, DatabaseUpdate::Updated);
         assert_eq!(entries[2].update, DatabaseUpdate::Updated);
         assert_eq!(
-            mock.calls().iter().map(|req| req.url.clone()).collect::<Vec<_>>(),
+            mock.calls()
+                .iter()
+                .map(|req| req.url.clone())
+                .collect::<Vec<_>>(),
             vec![mirror_url("GeoLite2-ASN"), mirror_url("GeoCN")]
         );
         assert_eq!(fs::read(&city).unwrap(), b"stale-city");
@@ -1257,7 +1278,10 @@ mod tests {
 
         let mock = MockHttpClient::default()
             .serve(&mirror_url("GeoLite2-City"), Script::Status(500))
-            .serve(&mirror_url("GeoLite2-ASN"), Script::Transport("network unreachable".into()))
+            .serve(
+                &mirror_url("GeoLite2-ASN"),
+                Script::Transport("network unreachable".into()),
+            )
             .serve(&mirror_url("GeoCN"), Script::Status(404));
 
         let report = updater(&dir, auto_update_config(), &mock).update_if_needed();
@@ -1296,7 +1320,10 @@ mod tests {
         let fixtures = fixtures();
         let backup = "https://backup.test/ipdb/";
         let mock = MockHttpClient::default()
-            .serve(&format!("{TEST_MIRROR}GeoLite2-City{XZ_SUFFIX}"), Script::Status(503))
+            .serve(
+                &format!("{TEST_MIRROR}GeoLite2-City{XZ_SUFFIX}"),
+                Script::Status(503),
+            )
             .serve(
                 &format!("{backup}GeoLite2-City{XZ_SUFFIX}"),
                 Script::Body(fixtures[0].2.clone()),
@@ -1309,7 +1336,10 @@ mod tests {
                 &format!("{backup}GeoLite2-ASN{XZ_SUFFIX}"),
                 Script::Body(fixtures[1].2.clone()),
             )
-            .serve(&format!("{TEST_MIRROR}GeoCN{XZ_SUFFIX}"), Script::Status(500))
+            .serve(
+                &format!("{TEST_MIRROR}GeoCN{XZ_SUFFIX}"),
+                Script::Status(500),
+            )
             .serve(
                 &format!("{backup}GeoCN{XZ_SUFFIX}"),
                 Script::Body(fixtures[2].2.clone()),
@@ -1328,7 +1358,10 @@ mod tests {
         );
         // 每个库先试主源、失败后换备用源
         assert_eq!(mock.call_count(), 6);
-        assert_eq!(&fs::read(dir.geoip_dir().join(CITY_MMDB)).unwrap(), &fixtures[0].1);
+        assert_eq!(
+            &fs::read(dir.geoip_dir().join(CITY_MMDB)).unwrap(),
+            &fixtures[0].1
+        );
         assert_eq!(dir.file_names().len(), 3);
     }
 
@@ -1341,14 +1374,24 @@ mod tests {
         set_age(&city, MMDB_UPDATE_INTERVAL_MS * 2);
 
         let mock = MockHttpClient::default()
-            .serve(&mirror_url("GeoLite2-City"), Script::Body(b"not an xz stream".to_vec()))
-            .serve(&mirror_url("GeoLite2-ASN"), Script::Body(vec![0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]))
+            .serve(
+                &mirror_url("GeoLite2-City"),
+                Script::Body(b"not an xz stream".to_vec()),
+            )
+            .serve(
+                &mirror_url("GeoLite2-ASN"),
+                Script::Body(vec![0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]),
+            )
             .serve(&mirror_url("GeoCN"), Script::Body(Vec::new()));
 
         let report = updater(&dir, auto_update_config(), &mock).update_if_needed();
 
         assert_eq!(report.failures().len(), 3);
-        assert_eq!(fs::read(&city).unwrap(), b"existing-city", "损坏体不得替换数据库");
+        assert_eq!(
+            fs::read(&city).unwrap(),
+            b"existing-city",
+            "损坏体不得替换数据库"
+        );
         assert_eq!(
             dir.file_names(),
             HashSet::from([CITY_MMDB.to_string()]),
@@ -1360,12 +1403,21 @@ mod tests {
     fn xz_of_non_mmdb_is_rejected_by_validation() {
         let dir = TestDir::new("invalid-mmdb");
         let mut xz_of_garbage = Vec::new();
-        lzma_rs::xz_compress(&mut BufReader::new(&b"definitely not a mmdb"[..]), &mut xz_of_garbage)
-            .unwrap();
+        lzma_rs::xz_compress(
+            &mut BufReader::new(&b"definitely not a mmdb"[..]),
+            &mut xz_of_garbage,
+        )
+        .unwrap();
 
         let mock = MockHttpClient::default()
-            .serve(&mirror_url("GeoLite2-City"), Script::Body(xz_of_garbage.clone()))
-            .serve(&mirror_url("GeoLite2-ASN"), Script::Body(xz_of_garbage.clone()))
+            .serve(
+                &mirror_url("GeoLite2-City"),
+                Script::Body(xz_of_garbage.clone()),
+            )
+            .serve(
+                &mirror_url("GeoLite2-ASN"),
+                Script::Body(xz_of_garbage.clone()),
+            )
             .serve(&mirror_url("GeoCN"), Script::Body(xz_of_garbage));
 
         let report = updater(&dir, auto_update_config(), &mock).update_if_needed();
@@ -1414,7 +1466,10 @@ mod tests {
         let report = updater.update_if_needed();
 
         assert_eq!(report.updated().len(), 3);
-        assert_eq!(&fs::read(dir.geoip_dir().join(CITY_MMDB)).unwrap(), &fixtures[0].1);
+        assert_eq!(
+            &fs::read(dir.geoip_dir().join(CITY_MMDB)).unwrap(),
+            &fixtures[0].1
+        );
         assert!(GeoIpDb::load(dir.ipdb_dir()).is_ok());
     }
 
@@ -1430,19 +1485,33 @@ mod tests {
         set_age(&city, MMDB_UPDATE_INTERVAL_MS * 2);
 
         let mock = MockHttpClient::default()
-            .serve(&mirror_url("GeoLite2-City"), Script::Body(fixtures[0].2.clone()))
+            .serve(
+                &mirror_url("GeoLite2-City"),
+                Script::Body(fixtures[0].2.clone()),
+            )
             .serve(&mirror_url("GeoCN"), Script::Body(fixtures[2].2.clone()));
 
         let report = updater(&dir, auto_update_config(), &mock).update_if_needed();
 
         let entries = report.entries().into_iter().cloned().collect::<Vec<_>>();
-        assert_eq!(entries[0].update, DatabaseUpdate::Updated, "45 天前的 City 应刷新");
+        assert_eq!(
+            entries[0].update,
+            DatabaseUpdate::Updated,
+            "45 天前的 City 应刷新"
+        );
         assert_eq!(entries[1].update, DatabaseUpdate::UpToDate, "新 ASN 不刷新");
-        assert_eq!(entries[2].update, DatabaseUpdate::Updated, "缺失的 GeoCN 应补齐");
+        assert_eq!(
+            entries[2].update,
+            DatabaseUpdate::Updated,
+            "缺失的 GeoCN 应补齐"
+        );
         assert_eq!(&fs::read(&city).unwrap(), &fixtures[0].1);
         assert_eq!(fs::read(&asn).unwrap(), b"fresh-asn");
         assert_eq!(
-            mock.calls().iter().map(|req| req.url.clone()).collect::<Vec<_>>(),
+            mock.calls()
+                .iter()
+                .map(|req| req.url.clone())
+                .collect::<Vec<_>>(),
             vec![mirror_url("GeoLite2-City"), mirror_url("GeoCN")]
         );
     }
@@ -1460,9 +1529,17 @@ mod tests {
                 Script::Body(fixtures[0].2.clone()),
             )
             .serve_with_basic(&mirror_url("GeoLite2-ASN"), false, Script::Status(401))
-            .serve_with_basic(&mirror_url("GeoLite2-ASN"), true, Script::Body(fixtures[1].2.clone()))
+            .serve_with_basic(
+                &mirror_url("GeoLite2-ASN"),
+                true,
+                Script::Body(fixtures[1].2.clone()),
+            )
             .serve_with_basic(&mirror_url("GeoCN"), false, Script::Status(401))
-            .serve_with_basic(&mirror_url("GeoCN"), true, Script::Body(fixtures[2].2.clone()));
+            .serve_with_basic(
+                &mirror_url("GeoCN"),
+                true,
+                Script::Body(fixtures[2].2.clone()),
+            );
 
         let config = IpDatabaseConfig {
             auto_update: true,
@@ -1503,12 +1580,8 @@ mod tests {
 
         // auto-update 关闭 ⇒ 线程里同样严格 no-op
         let mock = Arc::new(serve_all(&fixtures));
-        let handle = spawn_update(
-            dir.ipdb_dir(),
-            IpDatabaseConfig::default(),
-            mock.clone(),
-        )
-        .expect("spawn update thread");
+        let handle = spawn_update(dir.ipdb_dir(), IpDatabaseConfig::default(), mock.clone())
+            .expect("spawn update thread");
         assert_eq!(
             handle.join().expect("join update thread"),
             UpdateReport::Skipped(SkipReason::AutoUpdateDisabled)
@@ -1521,7 +1594,10 @@ mod tests {
             dir.ipdb_dir(),
             auto_update_config(),
             mock.clone(),
-            Some(vec![IpdbDownloadSource::with_xzip(TEST_MIRROR, String::new())]),
+            Some(vec![IpdbDownloadSource::with_xzip(
+                TEST_MIRROR,
+                String::new(),
+            )]),
         )
         .expect("spawn update thread");
         let report = handle.join().expect("join update thread");

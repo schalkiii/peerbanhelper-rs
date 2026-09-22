@@ -13,9 +13,7 @@
 pub mod dto;
 
 use crate::http::{BoxFuture, HttpFetcher, HttpRequest, ReqwestFetcher};
-use crate::{
-    BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult,
-};
+use crate::{BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult};
 use dto::*;
 use pbh_core::defaults::qb as qbcfg;
 use pbh_core::i18n::{Param, TranslationComponent, Translator};
@@ -37,8 +35,12 @@ const SESSION_SET_SPEED_LIMIT_UP_ENABLED: &str = "speed-limit-up-enabled";
 
 /// `RqSessionGet` 请求的 `fields`（逐字对齐 cordelia `types.Fields` 的常量值：
 /// `downloadLimit` / `downloadLimited` / `uploadLimit` / `uploadLimited`）。
-const SESSION_GET_SPEED_FIELDS: [&str; 4] =
-    ["downloadLimit", "downloadLimited", "uploadLimit", "uploadLimited"];
+const SESSION_GET_SPEED_FIELDS: [&str; 4] = [
+    "downloadLimit",
+    "downloadLimited",
+    "uploadLimit",
+    "uploadLimited",
+];
 
 /// Transmission 的 `speed-limit-*` 单位是 **KB/s**（response 乘 1024 -> bytes/s）。
 const SPEED_LIMIT_UNIT: i64 = 1024;
@@ -142,7 +144,10 @@ impl TransmissionDownloader {
 
     /// 已协商到的版本（去掉尾部非数字部分前的 5 个字符）。
     pub fn version(&self) -> String {
-        self.last_version.lock().map(|v| v.clone()).unwrap_or_default()
+        self.last_version
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     async fn post_json(&self, body: String) -> anyhow::Result<crate::http::HttpResponse> {
@@ -152,7 +157,11 @@ impl TransmissionDownloader {
                 req.basic = Some((user.clone(), password.clone()));
             }
         }
-        let session = self.session_id.lock().map(|s| s.clone()).unwrap_or_default();
+        let session = self
+            .session_id
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
         if !session.is_empty() {
             req = req.with_header(SESSION_HEADER, &session);
         }
@@ -199,7 +208,9 @@ impl TransmissionDownloader {
     }
 
     async fn update_blocklist(&self) -> anyhow::Result<bool> {
-        let (result, _) = self.rpc::<BlocklistUpdate>("blocklist-update", serde_json::json!({})).await?;
+        let (result, _) = self
+            .rpc::<BlocklistUpdate>("blocklist-update", serde_json::json!({}))
+            .await?;
         if result != "success" {
             // 对齐上游：把 blocklist URL 指向一个明显的“失败”地址，便于用户在 WebUI 发现
             let _ = self
@@ -247,8 +258,11 @@ impl TransmissionDownloader {
             .peers
             .iter()
             .map(|p| {
-                let (ip, port) =
-                    pbh_core::remap::translate_peer_ip(&p.address, p.port, &self.remap.ip_remapping);
+                let (ip, port) = pbh_core::remap::translate_peer_ip(
+                    &p.address,
+                    p.port,
+                    &self.remap.ip_remapping,
+                );
                 PeerData {
                     client_name: p.client_name.clone(),
                     peer_id: Some(decode_peer_id(p.peer_id.as_deref())),
@@ -285,7 +299,9 @@ impl Downloader for TransmissionDownloader {
         vec![
             DownloaderFeature::UnbanIp.name().to_string(),
             DownloaderFeature::TrafficStats.name().to_string(),
-            DownloaderFeature::LiveUpdateBtProtocolPort.name().to_string(),
+            DownloaderFeature::LiveUpdateBtProtocolPort
+                .name()
+                .to_string(),
         ]
     }
 
@@ -298,7 +314,10 @@ impl Downloader for TransmissionDownloader {
                     version: self.version(),
                 });
             }
-            let (result, session) = match self.rpc::<SessionGet>("session-get", serde_json::json!({})).await {
+            let (result, session) = match self
+                .rpc::<SessionGet>("session-get", serde_json::json!({}))
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     return Ok(LoginResult {
@@ -322,9 +341,18 @@ impl Downloader for TransmissionDownloader {
             // 要求 >= 4.1.0
             let parts: Vec<u32> = version
                 .split('.')
-                .filter_map(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+                .filter_map(|s| {
+                    s.chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse()
+                        .ok()
+                })
                 .collect();
-            let (major, minor) = (parts.first().copied().unwrap_or(0), parts.get(1).copied().unwrap_or(0));
+            let (major, minor) = (
+                parts.first().copied().unwrap_or(0),
+                parts.get(1).copied().unwrap_or(0),
+            );
             if major < 4 || (major == 4 && minor < 1) {
                 return Ok(LoginResult {
                     success: false,
@@ -355,7 +383,11 @@ impl Downloader for TransmissionDownloader {
             if let Ok(mut guard) = self.healthy.lock() {
                 *guard = true;
             }
-            Ok(LoginResult { success: true, message: "OK".into(), version })
+            Ok(LoginResult {
+                success: true,
+                message: "OK".into(),
+                version,
+            })
         })
     }
 
@@ -370,7 +402,10 @@ impl Downloader for TransmissionDownloader {
             for backend in &args.torrents {
                 cache.insert(backend.hash_string.clone(), self.peers_of(backend));
                 // 活跃过滤：下载/上传速率 > 0 或有连接
-                if !(backend.rate_download > 0 || backend.rate_upload > 0 || backend.peers_connected > 0) {
+                if !(backend.rate_download > 0
+                    || backend.rate_upload > 0
+                    || backend.peers_connected > 0)
+                {
                     continue;
                 }
                 if self.config.ignore_private && backend.is_private {
@@ -419,7 +454,9 @@ impl Downloader for TransmissionDownloader {
 
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
         Box::pin(async move {
-            let (_, stats) = self.rpc::<SessionStats>("session-stats", serde_json::json!({})).await?;
+            let (_, stats) = self
+                .rpc::<SessionStats>("session-stats", serde_json::json!({}))
+                .await?;
             Ok(DownloaderStatistics {
                 all_time_upload: stats.cumulative_stats.uploaded_bytes,
                 all_time_download: stats.cumulative_stats.downloaded_bytes,
@@ -446,7 +483,10 @@ impl Downloader for TransmissionDownloader {
                     "{}",
                     tl(
                         MSG_FAILED_RETRIEVE_SPEED_LIMITER,
-                        vec![Param::Text(self.config.name.clone()), Param::Text(result.clone())]
+                        vec![
+                            Param::Text(self.config.name.clone()),
+                            Param::Text(result.clone())
+                        ]
                     )
                 );
                 anyhow::bail!("session-get 返回 {result}");
@@ -561,7 +601,10 @@ mod tests {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
                 session_get: Mutex::new((session_get_body(true, true), 200)),
-                session_set: Mutex::new((json!({ "result": "success", "arguments": {} }).to_string(), 200)),
+                session_set: Mutex::new((
+                    json!({ "result": "success", "arguments": {} }).to_string(),
+                    200,
+                )),
             })
         }
 
@@ -584,7 +627,11 @@ mod tests {
     impl HttpFetcher for TrMock {
         fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
             Box::pin(async move {
-                assert!(req.url.ends_with("/transmission/rpc"), "unexpected url {}", req.url);
+                assert!(
+                    req.url.ends_with("/transmission/rpc"),
+                    "unexpected url {}",
+                    req.url
+                );
                 let body: Value =
                     serde_json::from_str(req.body.as_deref().unwrap_or_default()).unwrap();
                 let method = body["method"].as_str().unwrap_or_default().to_string();
@@ -607,8 +654,7 @@ mod tests {
             ..TRConfig::default()
         };
         Arc::new(
-            TransmissionDownloader::with_fetcher(config, RemapConfig::default(), mock)
-                .unwrap(),
+            TransmissionDownloader::with_fetcher(config, RemapConfig::default(), mock).unwrap(),
         )
     }
 
@@ -690,10 +736,15 @@ mod tests {
             json!({ "result": "invalid session id", "arguments": {} }).to_string(),
             200,
         );
-        *mock.session_set.lock().unwrap() =
-            (json!({ "result": "no such field", "arguments": {} }).to_string(), 200);
+        *mock.session_set.lock().unwrap() = (
+            json!({ "result": "no such field", "arguments": {} }).to_string(),
+            200,
+        );
         let dl = mock_downloader(mock);
-        assert!(dl.get_speed_limiter().await.is_err(), "session-get 失败 -> Err");
+        assert!(
+            dl.get_speed_limiter().await.is_err(),
+            "session-get 失败 -> Err"
+        );
         // 上游 setSpeedLimiter 只记日志，不抛错
         assert!(dl.set_speed_limiter(1_048_576, 2_097_152).await.is_ok());
 

@@ -80,7 +80,11 @@ impl LoginGate {
         true
     }
 
-    pub async fn login(&self, dl: &Arc<dyn Downloader>, now_ms: i64) -> anyhow::Result<LoginResult> {
+    pub async fn login(
+        &self,
+        dl: &Arc<dyn Downloader>,
+        now_ms: i64,
+    ) -> anyhow::Result<LoginResult> {
         if self.is_cooling(now_ms) {
             let cooling_until = self.next_login_try_ms.load(Ordering::Relaxed);
             return Ok(LoginResult {
@@ -241,7 +245,11 @@ impl WaveEngine {
             .iter()
             .flat_map(|(_, bans)| bans.iter().map(|b| b.entry.clone()))
             .collect();
-        let force_full = self.ban_list().lock().map(|b| b.need_reapply()).unwrap_or(false);
+        let force_full = self
+            .ban_list()
+            .lock()
+            .map(|b| b.need_reapply())
+            .unwrap_or(false);
         for (idx, _) in &pending {
             self.apply_bans(&entries[*idx], &global_added, removed.len(), force_full)
                 .await;
@@ -261,14 +269,20 @@ impl WaveEngine {
             m.downloader_count = report.online_downloaders;
             m.torrent_count = report.torrents;
             m.peer_count = report.peers;
-            m.banned_total = self.ban_list().lock().map(|b| b.len()).unwrap_or(report.banned);
+            m.banned_total = self
+                .ban_list()
+                .lock()
+                .map(|b| b.len())
+                .unwrap_or(report.banned);
         }
         report
     }
 
     /// 把本轮变更过的 PCB 实体写回数据库。
     fn persist_pcb_state(&self) {
-        let Some(pcb) = self.pipeline.module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
+        let Some(pcb) = self
+            .pipeline
+            .module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
         else {
             return;
         };
@@ -283,7 +297,8 @@ impl WaveEngine {
 
     /// 取回 PCB 模块（供启动时恢复历史与定期清理）。
     pub fn pcb_module(&self) -> Option<&ProgressCheatBlocker> {
-        self.pipeline.module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
+        self.pipeline
+            .module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
     }
 
     /// 解封到期条目（内存封禁表为准；持久化由 [`WaveEngine::persist_ban_list`] 定时全量保存）。
@@ -312,7 +327,11 @@ impl WaveEngine {
     /// 记录新封禁：落库 + 写入内存封禁表。
     fn record_bans(&self, entry: &DownloaderEntry, bans: &[BanRecord], now_ms: i64) {
         for b in bans {
-            let unban_at_ms = if b.duration > 0 { now_ms + b.duration } else { 0 };
+            let unban_at_ms = if b.duration > 0 {
+                now_ms + b.duration
+            } else {
+                0
+            };
             // 上游 `BanMetadata`（`banlist.metadata` 列的载体，同时供 Web 展示与遗留上报）
             let rule_component = b
                 .rule_key
@@ -429,7 +448,10 @@ impl WaveEngine {
                 Err(_) => false,
             };
             if duplicate {
-                warn!("对等体 {} 已在封禁表中，下一轮将全量重放封禁列表", b.entry.ip);
+                warn!(
+                    "对等体 {} 已在封禁表中，下一轮将全量重放封禁列表",
+                    b.entry.ip
+                );
             }
         }
     }
@@ -440,11 +462,16 @@ impl WaveEngine {
         if !self.persist_banlist {
             return 0;
         }
-        let records = self.ban_list().lock().map(|list| list.records_sorted()).unwrap_or_default();
+        let records = self
+            .ban_list()
+            .lock()
+            .map(|list| list.records_sorted())
+            .unwrap_or_default();
         let entries: Vec<(String, String)> = records
             .iter()
             .map(|record| {
-                let metadata = serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string());
+                let metadata =
+                    serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string());
                 (record.ip.clone(), metadata)
             })
             .collect();
@@ -529,7 +556,10 @@ impl WaveEngine {
             });
         }
 
-        let torrents = dl.fetch_torrents().await.map_err(|e| format!("{} torrents: {e}", dl.id()))?;
+        let torrents = dl
+            .fetch_torrents()
+            .await
+            .map_err(|e| format!("{} torrents: {e}", dl.id()))?;
         let sem = Arc::new(Semaphore::new(self.max_concurrent.max(1)));
         let features = dl.feature_flags();
         let mut joins = Vec::new();
@@ -553,7 +583,10 @@ impl WaveEngine {
                 // 监控模块的 `onPeersRetrieved`（与判定无关，只做统计/记录）
                 monitor.on_peers_retrieved(dl.id(), &torrent, &peers, now_ms);
                 let ctx = CheckContext { now_ms, features };
-                let mut out = TorrentOutput { peer_count: peers.len(), ..Default::default() };
+                let mut out = TorrentOutput {
+                    peer_count: peers.len(),
+                    ..Default::default()
+                };
                 for peer in peers {
                     match pipeline.evaluate(dl.id(), &torrent, &peer, &ctx) {
                         Decision::None => {}
@@ -670,10 +703,7 @@ async fn publish_bad_nat_setup_alert(
     let title = TranslationComponent::new("DOWNLOADER_DOCKER_INCORRECT_NETWORK_DETECTED_TITLE");
     let content = TranslationComponent::with_params(
         "DOWNLOADER_DOCKER_INCORRECT_NETWORK_DETECTED_DESCRIPTION",
-        vec![
-            Param::Text(downloader_id.to_string()),
-            Param::Text(address),
-        ],
+        vec![Param::Text(downloader_id.to_string()), Param::Text(address)],
     );
     alert_manager
         .publish_alert(true, AlertLevel::Error, &identifier, &title, &content)
@@ -691,7 +721,10 @@ fn peer_has_possible_bad_nat_config(peer: &PeerData) -> bool {
         // 上游 `peer.getFlags() == null` ⇒ 整个条件为真
         None => true,
         Some(flags) => {
-            flags.is_from_incoming() || !flags.outgoing_connection() || flags.from_dht || flags.from_pex
+            flags.is_from_incoming()
+                || !flags.outgoing_connection()
+                || flags.from_dht
+                || flags.from_pex
         }
     };
     if !from_bad_source || peer.is_handshaking() {
@@ -702,7 +735,10 @@ fn peer_has_possible_bad_nat_config(peer: &PeerData) -> bool {
     };
     // 对齐 `if (addr.isIPv4Convertible()) addr = addr.toIPv4();`
     let addr = match addr {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     };
     let addr_str = addr.to_string();
@@ -827,7 +863,10 @@ mod tests {
         assert!(gate.record_failure(now), "达到上限应进入冷却");
         assert!(gate.is_cooling(now));
         assert!(gate.is_cooling(now + LoginGate::COOLDOWN_MS - 1));
-        assert!(!gate.is_cooling(now + LoginGate::COOLDOWN_MS), "冷却到期后应恢复");
+        assert!(
+            !gate.is_cooling(now + LoginGate::COOLDOWN_MS),
+            "冷却到期后应恢复"
+        );
     }
 
     fn engine(db: Arc<Database>) -> WaveEngine {
@@ -862,7 +901,11 @@ mod tests {
 
     fn ban(ip: &str, ban_for_disconnect: bool) -> BanRecord {
         BanRecord {
-            entry: BanEntry { ip: ip.to_string(), port: 6881, raw_ip: format!("{ip}:6881") },
+            entry: BanEntry {
+                ip: ip.to_string(),
+                port: 6881,
+                raw_ip: format!("{ip}:6881"),
+            },
             module: "peer-analyse-service".to_string(),
             rule: "测试规则".to_string(),
             reason: "测试原因".to_string(),
@@ -896,9 +939,16 @@ mod tests {
     fn record_bans_writes_history_and_skips_disconnect() {
         let db = Arc::new(Database::open_in_memory().expect("内存库"));
         let engine = engine(db.clone());
-        let entry = DownloaderEntry { downloader: Arc::new(StubDownloader), increment_ban: true };
+        let entry = DownloaderEntry {
+            downloader: Arc::new(StubDownloader),
+            increment_ban: true,
+        };
 
-        engine.record_bans(&entry, &[ban("1.1.1.1", false), ban("1.1.1.2", true)], 1_700_000_000_000);
+        engine.record_bans(
+            &entry,
+            &[ban("1.1.1.1", false), ban("1.1.1.2", true)],
+            1_700_000_000_000,
+        );
 
         // ban_logs 记录全部封禁；history 只记录非 disconnect
         let source = DbBtnSubmitSource::new(

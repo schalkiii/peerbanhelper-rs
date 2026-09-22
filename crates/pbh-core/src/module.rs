@@ -58,32 +58,71 @@ pub const UNKNOWN_MODULE_CLASS: &str = "com.ghostchu.peerbanhelper.module.Unknow
 /// 注意：`peer-name-black-rule-list` 在 v9.5.1 整文件被注释（模块已停用），故不在此表。
 pub fn java_module_class(config_name: &str) -> &'static str {
     match config_name {
-        "ip-address-blocker" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IPBlackList"),
-        "peer-id-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PeerIdBlacklist"),
+        "ip-address-blocker" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "IPBlackList"
+        ),
+        "peer-id-blacklist" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "PeerIdBlacklist"
+        ),
         "client-name-blacklist" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ClientNameBlacklist")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "ClientNameBlacklist"
+            )
         }
         "expression-engine" | "expression-rule" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ExpressionRule")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "ExpressionRule"
+            )
         }
         "progress-cheat-blocker" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "ProgressCheatBlocker")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "ProgressCheatBlocker"
+            )
         }
         "multi-dialing-blocker" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "MultiDialingBlocker")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "MultiDialingBlocker"
+            )
         }
-        "auto-range-ban" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "AutoRangeBan"),
-        "btn" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "BtnNetworkOnline"),
+        "auto-range-ban" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "AutoRangeBan"
+        ),
+        "btn" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "BtnNetworkOnline"
+        ),
         "ip-address-blocker-rules" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IPBlackRuleList")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "IPBlackRuleList"
+            )
         }
-        "anti-vampire" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "AntiVampire"),
-        "ptr-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PTRBlacklist"),
+        "anti-vampire" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "AntiVampire"
+        ),
+        "ptr-blacklist" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "PTRBlacklist"
+        ),
         "idle-connection-dos-protection" => {
-            concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "IdleConnectionDosProtection")
+            concat!(
+                "com.ghostchu.peerbanhelper.module.impl.rule.",
+                "IdleConnectionDosProtection"
+            )
         }
         // 上游已删除的旧模块名（WebUI manifest 兼容保留）
-        "peer-blacklist" => concat!("com.ghostchu.peerbanhelper.module.impl.rule.", "PeerBlacklist"),
+        "peer-blacklist" => concat!(
+            "com.ghostchu.peerbanhelper.module.impl.rule.",
+            "PeerBlacklist"
+        ),
         _ => UNKNOWN_MODULE_CLASS,
     }
 }
@@ -136,7 +175,13 @@ impl CheckResult {
         result
     }
 
-    pub fn ban(module: &str, duration_ms: i64, rule: &str, reason: &str, data: serde_json::Value) -> Self {
+    pub fn ban(
+        module: &str,
+        duration_ms: i64,
+        rule: &str,
+        reason: &str,
+        data: serde_json::Value,
+    ) -> Self {
         CheckResult {
             module: module.to_string(),
             action: PeerAction::Ban,

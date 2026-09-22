@@ -27,7 +27,12 @@ impl AutoRangeBan {
         ban_duration_ms: i64,
         ban_list: Arc<StdMutex<BanList>>,
     ) -> Self {
-        Self { ipv4_prefix, ipv6_prefix, ban_duration_ms, ban_list }
+        Self {
+            ipv4_prefix,
+            ipv6_prefix,
+            ban_duration_ms,
+            ban_list,
+        }
     }
 }
 

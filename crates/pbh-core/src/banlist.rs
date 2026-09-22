@@ -265,7 +265,12 @@ impl BanList {
         module: &str,
         ban_for_disconnect: bool,
     ) -> bool {
-        self.add_record(BannedRecord::minimal(ip, unban_at_ms, module, ban_for_disconnect))
+        self.add_record(BannedRecord::minimal(
+            ip,
+            unban_at_ms,
+            module,
+            ban_for_disconnect,
+        ))
     }
 
     /// 写入一条完整记录（ban wave 落库路径：携带 peer/torrent/规则等完整 `BanMetadata`）。
@@ -312,7 +317,10 @@ impl BanList {
             .filter(|e| e.unban_at_ms > 0 && now_ms > e.unban_at_ms)
             .map(|e| e.ip.clone())
             .collect();
-        expired.iter().filter_map(|ip| self.entries.remove(ip)).collect()
+        expired
+            .iter()
+            .filter_map(|ip| self.entries.remove(ip))
+            .collect()
     }
 
     pub fn remove(&mut self, ip: &str) -> Option<BannedRecord> {

@@ -15,7 +15,9 @@ async fn login_version_and_health() {
     assert_eq!(login.version, "5.0.2");
     // 首次健康应关闭同 IP 多连接
     let prefs = f.set_prefs_payloads();
-    assert!(prefs.iter().any(|p| p.contains("enable_multi_connections_from_same_ip")));
+    assert!(prefs
+        .iter()
+        .any(|p| p.contains("enable_multi_connections_from_same_ip")));
 }
 
 #[tokio::test]
@@ -62,8 +64,16 @@ async fn ban_and_replace_payloads() {
     let f = MockFetcher::new(fixtures_dir());
     let qb = mock_qb(f.clone());
     let entries = vec![
-        BanEntry { ip: "1.1.1.1".into(), port: 1, raw_ip: "1.1.1.1:1".into() },
-        BanEntry { ip: "2.2.2.2".into(), port: 2, raw_ip: "2.2.2.2:2".into() },
+        BanEntry {
+            ip: "1.1.1.1".into(),
+            port: 1,
+            raw_ip: "1.1.1.1:1".into(),
+        },
+        BanEntry {
+            ip: "2.2.2.2".into(),
+            port: 2,
+            raw_ip: "2.2.2.2:2".into(),
+        },
     ];
     qb.ban_peers(&entries).await.unwrap();
     let payloads = f.ban_payloads();
@@ -78,7 +88,10 @@ async fn ban_and_replace_payloads() {
     let v: serde_json::Value = serde_json::from_str(last).unwrap();
     // IPv4 封禁地址会附带 IPv4-mapped IPv6 变体（对齐上游 generateRemappedPairIfPossible），
     // 全量列表按字符串排序后 IPv4 在前、映射形式在后
-    assert_eq!(v["banned_IPs"], "1.1.1.1\n2.2.2.2\n::ffff:1.1.1.1\n::ffff:2.2.2.2");
+    assert_eq!(
+        v["banned_IPs"],
+        "1.1.1.1\n2.2.2.2\n::ffff:1.1.1.1\n::ffff:2.2.2.2"
+    );
 }
 
 #[tokio::test]
@@ -110,7 +123,8 @@ async fn login_reuses_a_valid_session() {
 #[tokio::test]
 async fn statistics_errors_when_downloader_not_ready() {
     let f = MockFetcher::new(fixtures_dir());
-    f.maindata_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+    f.maindata_ready
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let qb = mock_qb(f);
     assert!(qb.statistics().await.is_err(), "alltime 统计全 0 应报错");
 }
@@ -120,7 +134,8 @@ async fn statistics_errors_when_downloader_not_ready() {
 #[tokio::test]
 async fn basic_auth_retries_once_after_401() {
     let f = MockFetcher::new(fixtures_dir());
-    f.basic_required.store(true, std::sync::atomic::Ordering::SeqCst);
+    f.basic_required
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let cfg = QBConfig {
         basic_auth: Some(("user".into(), "pass".into())),
         ..QBConfig::default()
@@ -158,7 +173,10 @@ async fn feature_flags_follow_qb_version() {
     qb.login().await.unwrap();
     assert!(qb.feature_flags().iter().any(|f| f == "UNBAN_IP"));
     assert!(qb.feature_flags().iter().any(|f| f == "TRAFFIC_STATS"));
-    assert!(qb.feature_flags().iter().any(|f| f == "LIVE_UPDATE_BT_PROTOCOL_PORT"));
+    assert!(qb
+        .feature_flags()
+        .iter()
+        .any(|f| f == "LIVE_UPDATE_BT_PROTOCOL_PORT"));
     assert!(
         !qb.feature_flags().iter().any(|f| f == "RANGE_BAN_IP"),
         "5.0.2 不支持范围封禁"
@@ -196,17 +214,24 @@ async fn full_banlist_payload_is_remapped_by_capability() {
     f.set_version("v5.3.0");
     let qb = mock_qb(f.clone());
     qb.login().await.unwrap();
-    qb.replace_banned_ips(std::slice::from_ref(&ipv6)).await.unwrap();
+    qb.replace_banned_ips(std::slice::from_ref(&ipv6))
+        .await
+        .unwrap();
     let payload = f.set_prefs_payloads().pop().unwrap();
     let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
     let banned = v["banned_IPs"].as_str().unwrap().to_string();
-    assert!(banned.contains("2001:db8:1::/52"), "应生成 /52 网段: {banned}");
+    assert!(
+        banned.contains("2001:db8:1::/52"),
+        "应生成 /52 网段: {banned}"
+    );
     assert!(banned.contains(&ipv6), "同时保留精确地址: {banned}");
 
     let f2 = MockFetcher::new(fixtures_dir());
     let qb2 = mock_qb(f2.clone());
     qb2.login().await.unwrap();
-    qb2.replace_banned_ips(std::slice::from_ref(&ipv6)).await.unwrap();
+    qb2.replace_banned_ips(std::slice::from_ref(&ipv6))
+        .await
+        .unwrap();
     let payload = f2.set_prefs_payloads().pop().unwrap();
     let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(v["banned_IPs"], ipv6, "不支持范围封禁时只下发单个地址");
@@ -235,5 +260,8 @@ async fn peers_are_address_translated() {
         "Teredo 默认不翻译"
     );
     // 原始 ip:port 键保留，供增量封禁使用
-    assert_eq!(by_ip.get("1.2.3.4").unwrap().raw_ip, "64:ff9b::102:304:7001");
+    assert_eq!(
+        by_ip.get("1.2.3.4").unwrap().raw_ip,
+        "64:ff9b::102:304:7001"
+    );
 }

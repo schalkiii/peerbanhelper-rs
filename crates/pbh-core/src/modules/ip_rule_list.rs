@@ -85,7 +85,11 @@ fn parse_rule_line(line: &str, pre_read_comment: &str) -> Option<RuleListEntry> 
         if level >= 128 {
             return None;
         }
-        let comment = if fields.len() > 3 { fields[3].to_string() } else { pre_read_comment.to_string() };
+        let comment = if fields.len() > 3 {
+            fields[3].to_string()
+        } else {
+            pre_read_comment.to_string()
+        };
         let net = cover_with_prefix_block(start, end)?;
         return Some(RuleListEntry { net, comment });
     }
@@ -109,7 +113,10 @@ fn parse_rule_line(line: &str, pre_read_comment: &str) -> Option<RuleListEntry> 
         }
         None => {
             let net = parse_rule_net(line)?;
-            Some(RuleListEntry { net, comment: pre_read_comment.to_string() })
+            Some(RuleListEntry {
+                net,
+                comment: pre_read_comment.to_string(),
+            })
         }
     }
 }
@@ -177,7 +184,11 @@ fn cover_with_prefix_block(start: IpAddr, end: IpAddr) -> Option<IpNet> {
                 return None;
             }
             let prefix = (a_bits ^ b_bits).leading_zeros() as u8;
-            let mask = if prefix == 0 { 0u32 } else { !0u32 << (32 - prefix) };
+            let mask = if prefix == 0 {
+                0u32
+            } else {
+                !0u32 << (32 - prefix)
+            };
             let aligned = Ipv4Addr::from(a_bits & mask);
             IpNet::new(IpAddr::V4(aligned), prefix).ok()
         }
@@ -187,7 +198,11 @@ fn cover_with_prefix_block(start: IpAddr, end: IpAddr) -> Option<IpNet> {
                 return None;
             }
             let prefix = (a_bits ^ b_bits).leading_zeros() as u8;
-            let mask = if prefix == 0 { 0u128 } else { !0u128 << (128 - prefix) };
+            let mask = if prefix == 0 {
+                0u128
+            } else {
+                !0u128 << (128 - prefix)
+            };
             let aligned = Ipv6Addr::from(a_bits & mask);
             IpNet::new(IpAddr::V6(aligned), prefix).ok()
         }
@@ -332,7 +347,10 @@ pub struct IpRuleListModule {
 
 impl IpRuleListModule {
     pub fn new(ban_duration_ms: i64) -> Self {
-        Self { ban_duration_ms, subscriptions: RwLock::new(Vec::new()) }
+        Self {
+            ban_duration_ms,
+            subscriptions: RwLock::new(Vec::new()),
+        }
     }
 
     /// 新增或更新一条订阅；返回 `true` 表示新增，`false` 表示更新了已有订阅
@@ -382,7 +400,11 @@ impl IpRuleListModule {
     pub fn entry_counts(&self) -> Vec<(String, usize)> {
         self.subscriptions
             .read()
-            .map(|l| l.iter().map(|s| (s.rule_id.clone(), s.entry_count)).collect())
+            .map(|l| {
+                l.iter()
+                    .map(|s| (s.rule_id.clone(), s.entry_count))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -491,7 +513,10 @@ mod tests {
 
     #[test]
     fn lenient_ipv4_accepts_leading_zeros() {
-        assert_eq!(parse_lenient_ipv4("016.000.000.000"), Some(Ipv4Addr::new(16, 0, 0, 0)));
+        assert_eq!(
+            parse_lenient_ipv4("016.000.000.000"),
+            Some(Ipv4Addr::new(16, 0, 0, 0))
+        );
         assert_eq!(parse_lenient_ipv4("1.2.3"), None);
         assert_eq!(parse_lenient_ipv4("1.2.3.256"), None);
     }

@@ -91,7 +91,10 @@ fn equals_ignore_case(a: &str, b: &str) -> bool {
         match (ai.next(), bi.next()) {
             (None, None) => return true,
             (Some(x), Some(y)) => {
-                if x != y && simple_upper(x) != simple_upper(y) && simple_lower(x) != simple_lower(y) {
+                if x != y
+                    && simple_upper(x) != simple_upper(y)
+                    && simple_lower(x) != simple_lower(y)
+                {
                     return false;
                 }
             }
@@ -208,14 +211,24 @@ impl Matcher {
                     }
                     other => anyhow::bail!("unknown matcher method: {other}"),
                 };
-                Ok(Matcher { condition, kind, hit, miss })
+                Ok(Matcher {
+                    condition,
+                    kind,
+                    hit,
+                    miss,
+                })
             }
             Value::Array(_) => anyhow::bail!("rule must be object/primitive, got array"),
         }
     }
 
     fn virtual_(virt: Virtual) -> Matcher {
-        Matcher { condition: None, kind: Kind::Virtual(virt), hit: Verdict::True, miss: Verdict::False }
+        Matcher {
+            condition: None,
+            kind: Kind::Virtual(virt),
+            hit: Verdict::True,
+            miss: Verdict::False,
+        }
     }
 
     /// match0：不含 `if` 前置条件的纯匹配

@@ -160,15 +160,17 @@ async fn main() -> anyhow::Result<()> {
         if cfg.ip_database.auto_update {
             let updater_dir = ipdb_dir.clone();
             let updater_config = cfg.ip_database.clone();
-            match tokio::task::spawn_blocking(move || -> anyhow::Result<
-                pbh_core::geoip_update::UpdateReport,
-            > {
-                let http = pbh_core::geoip_update::ReqwestBlockingHttpClient::new()?;
-                Ok(
-                    pbh_core::geoip_update::GeoIpUpdater::new(updater_dir, updater_config, &http)
-                        .update_if_needed(),
-                )
-            })
+            match tokio::task::spawn_blocking(
+                move || -> anyhow::Result<pbh_core::geoip_update::UpdateReport> {
+                    let http = pbh_core::geoip_update::ReqwestBlockingHttpClient::new()?;
+                    Ok(pbh_core::geoip_update::GeoIpUpdater::new(
+                        updater_dir,
+                        updater_config,
+                        &http,
+                    )
+                    .update_if_needed())
+                },
+            )
             .await
             {
                 Ok(Ok(report)) => {
@@ -288,7 +290,8 @@ async fn main() -> anyhow::Result<()> {
     // `alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` /
     // `tracked_swarm`；`peer_records.peer_geoip` 由 sink 内的 IP 库查询填充（对齐上游在 DAO 内查询）。
     // 单元测试仍可用 pbh-core 的内存实现 `InMemoryMonitorSink`。
-    let monitor_sink: Arc<dyn MonitorSink> = Arc::new(DbMonitorSink::with_geo(db.clone(), geo.clone()));
+    let monitor_sink: Arc<dyn MonitorSink> =
+        Arc::new(DbMonitorSink::with_geo(db.clone(), geo.clone()));
     // `tracked_swarm` 是「本次运行会话」的临时表：启动时清空一次
     //（对齐上游 `SwarmTrackingModule.onEnable` 的 `TrackedSwarmService.resetTable()`）。
     monitor_sink.reset_tracked_swarm();
@@ -440,11 +443,17 @@ async fn main() -> anyhow::Result<()> {
             };
             loop {
                 let cfg = rulesub_shared.read().unwrap().clone();
-                let interval =
-                    Duration::from_millis(cfg.check_interval_ms.max(60_000) as u64);
+                let interval = Duration::from_millis(cfg.check_interval_ms.max(60_000) as u64);
                 // 启动立即拉取一次（首次不等待 interval，对齐上游 initialDelay=0）
-                for line in
-                    rulesub::refresh_all(&pipeline, &cfg, &data_dir, &http, Some(&db), rulesub::UPDATE_TYPE_AUTO).await
+                for line in rulesub::refresh_all(
+                    &pipeline,
+                    &cfg,
+                    &data_dir,
+                    &http,
+                    Some(&db),
+                    rulesub::UPDATE_TYPE_AUTO,
+                )
+                .await
                 {
                     info!("{line}");
                 }
@@ -609,43 +618,45 @@ where
     let pipeline = pipeline.clone();
     let config_url = config.config_url.clone();
     let config = config.clone();
-    let thread = std::thread::Builder::new().name("btn-transport".to_string()).spawn(move || {
-        let http = match http_factory() {
-            Ok(http) => http,
-            Err(e) => {
-                warn!("BTN HTTP 客户端初始化失败，BTN 同步线程退出: {e}");
-                return;
-            }
-        };
-        // 允许列表更新后需要解封（上游 `DownloaderServer.getBanList()`）
-        let network = Arc::new(
-            BtnNetwork::new(config, http, metadata)
-                .with_ban_list(pipeline.ban_list.clone())
-                .with_submit_source(submit_source),
-        );
-        network_slot.set(network.clone());
-        info!("BTN 传输层已启动：config-url={config_url}, tick={BTN_SYNC_TICK:?}");
-        loop {
-            // 对齐上游 `scheduleWithFixedDelay(this::updateRule, 0, interval, MS)`：先跑再等
-            let Some(module) = pipeline.module_as::<BtnNetworkOnline>("btn") else {
-                warn!("btn 模块已不在流水线中，BTN 同步线程退出");
-                return;
-            };
-            // 上游各 ability 的 `try/catch`：任何失败都记日志并继续下一轮
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                network.check_if_need_retry_config(module);
-                network.sync_due(module, now_millis())
-            })) {
-                Ok(report) => {
-                    for sync in report {
-                        debug!("BTN ability 已同步: {} updated={}", sync.key, sync.updated);
-                    }
+    let thread = std::thread::Builder::new()
+        .name("btn-transport".to_string())
+        .spawn(move || {
+            let http = match http_factory() {
+                Ok(http) => http,
+                Err(e) => {
+                    warn!("BTN HTTP 客户端初始化失败，BTN 同步线程退出: {e}");
+                    return;
                 }
-                Err(_) => warn!("BTN 同步出现异常，已忽略并继续下一轮"),
+            };
+            // 允许列表更新后需要解封（上游 `DownloaderServer.getBanList()`）
+            let network = Arc::new(
+                BtnNetwork::new(config, http, metadata)
+                    .with_ban_list(pipeline.ban_list.clone())
+                    .with_submit_source(submit_source),
+            );
+            network_slot.set(network.clone());
+            info!("BTN 传输层已启动：config-url={config_url}, tick={BTN_SYNC_TICK:?}");
+            loop {
+                // 对齐上游 `scheduleWithFixedDelay(this::updateRule, 0, interval, MS)`：先跑再等
+                let Some(module) = pipeline.module_as::<BtnNetworkOnline>("btn") else {
+                    warn!("btn 模块已不在流水线中，BTN 同步线程退出");
+                    return;
+                };
+                // 上游各 ability 的 `try/catch`：任何失败都记日志并继续下一轮
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    network.check_if_need_retry_config(module);
+                    network.sync_due(module, now_millis())
+                })) {
+                    Ok(report) => {
+                        for sync in report {
+                            debug!("BTN ability 已同步: {} updated={}", sync.key, sync.updated);
+                        }
+                    }
+                    Err(_) => warn!("BTN 同步出现异常，已忽略并继续下一轮"),
+                }
+                std::thread::sleep(BTN_SYNC_TICK);
             }
-            std::thread::sleep(BTN_SYNC_TICK);
-        }
-    });
+        });
     match thread {
         Ok(handle) => Some(handle),
         Err(e) => {
@@ -729,9 +740,19 @@ mod tests {
 
         for config in [
             BtnNetworkConfig::default(),
-            BtnNetworkConfig { enabled: true, ..Default::default() },
-            BtnNetworkConfig { config_url: "https://btn.test/config".to_string(), ..Default::default() },
-            BtnNetworkConfig { enabled: true, config_url: "   ".to_string(), ..Default::default() },
+            BtnNetworkConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            BtnNetworkConfig {
+                config_url: "https://btn.test/config".to_string(),
+                ..Default::default()
+            },
+            BtnNetworkConfig {
+                enabled: true,
+                config_url: "   ".to_string(),
+                ..Default::default()
+            },
         ] {
             let http = http.clone();
             assert!(
@@ -749,7 +770,9 @@ mod tests {
         }
         assert_eq!(calls.load(Ordering::Relaxed), 0, "未启用时一个请求都不能发");
 
-        let btn = pipeline.module_as::<BtnNetworkOnline>("btn").expect("btn 模块");
+        let btn = pipeline
+            .module_as::<BtnNetworkOnline>("btn")
+            .expect("btn 模块");
         assert!(!btn.is_manager_initialized());
         let result = btn.check("qbittorrent", &torrent(), &peer(), &CheckContext::default());
         assert_eq!(result.action, PeerAction::NoAction);

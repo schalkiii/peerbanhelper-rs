@@ -53,15 +53,27 @@ impl RuleSet {
     /// 对齐 Java `RuleParser.matchRule`：每次命中 TRUE 都**覆盖**已记录结果，
     /// 因此最终上报的规则是「最后一条命中 TRUE 的规则」，而非第一条。
     pub fn r#match(&self, content: Option<&str>) -> RuleMatchResult {
-        let mut result = RuleMatchResult { hit: false, index: -1, verdict: Verdict::Default };
+        let mut result = RuleMatchResult {
+            hit: false,
+            index: -1,
+            verdict: Verdict::Default,
+        };
         for (i, rule) in self.rules.iter().enumerate() {
             match rule.matches(content) {
                 Verdict::Default => {}
                 Verdict::True => {
-                    result = RuleMatchResult { hit: true, index: i as isize, verdict: Verdict::True };
+                    result = RuleMatchResult {
+                        hit: true,
+                        index: i as isize,
+                        verdict: Verdict::True,
+                    };
                 }
                 Verdict::False => {
-                    return RuleMatchResult { hit: false, index: i as isize, verdict: Verdict::False };
+                    return RuleMatchResult {
+                        hit: false,
+                        index: i as isize,
+                        verdict: Verdict::False,
+                    };
                 }
             }
         }
@@ -125,12 +137,40 @@ mod tests {
 
     #[test]
     fn virtual_rules() {
-        assert_eq!(Matcher::parse(&Value::Null).unwrap().matches(Some("x")), Verdict::True);
-        assert_eq!(Matcher::parse(&Value::Bool(false)).unwrap().matches(Some("x")), Verdict::False);
-        assert_eq!(Matcher::parse(&serde_json::json!(1)).unwrap().matches(Some("x")), Verdict::True);
-        assert_eq!(Matcher::parse(&serde_json::json!(0)).unwrap().matches(Some("x")), Verdict::False);
-        assert_eq!(Matcher::parse(&Value::String("true".into())).unwrap().matches(Some("x")), Verdict::True);
-        assert_eq!(Matcher::parse(&Value::String("false".into())).unwrap().matches(Some("x")), Verdict::False);
+        assert_eq!(
+            Matcher::parse(&Value::Null).unwrap().matches(Some("x")),
+            Verdict::True
+        );
+        assert_eq!(
+            Matcher::parse(&Value::Bool(false))
+                .unwrap()
+                .matches(Some("x")),
+            Verdict::False
+        );
+        assert_eq!(
+            Matcher::parse(&serde_json::json!(1))
+                .unwrap()
+                .matches(Some("x")),
+            Verdict::True
+        );
+        assert_eq!(
+            Matcher::parse(&serde_json::json!(0))
+                .unwrap()
+                .matches(Some("x")),
+            Verdict::False
+        );
+        assert_eq!(
+            Matcher::parse(&Value::String("true".into()))
+                .unwrap()
+                .matches(Some("x")),
+            Verdict::True
+        );
+        assert_eq!(
+            Matcher::parse(&Value::String("false".into()))
+                .unwrap()
+                .matches(Some("x")),
+            Verdict::False
+        );
     }
 
     #[test]

@@ -110,7 +110,11 @@ impl QBittorrentDownloader {
     /// 且外部开关 `pbh.downloader.qBittorrent.enableRangeBanIp`（默认 true）打开。
     /// 本实现不提供外部开关机制，视为始终为 true。
     pub fn supports_range_ban(&self) -> bool {
-        let v = self.last_version.lock().map(|v| v.clone()).unwrap_or_default();
+        let v = self
+            .last_version
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
         if v.trim().is_empty() {
             return false;
         }
@@ -147,11 +151,23 @@ impl QBittorrentDownloader {
     }
 
     async fn get(&self, path_and_query: &str) -> anyhow::Result<HttpResponse> {
-        self.send(HttpRequest::get(format!("{}{}", self.api_base, path_and_query))).await
+        self.send(HttpRequest::get(format!(
+            "{}{}",
+            self.api_base, path_and_query
+        )))
+        .await
     }
 
-    async fn post_form(&self, path: &str, form: Vec<(String, String)>) -> anyhow::Result<HttpResponse> {
-        self.send(HttpRequest::post_form(format!("{}{}", self.api_base, path), form)).await
+    async fn post_form(
+        &self,
+        path: &str,
+        form: Vec<(String, String)>,
+    ) -> anyhow::Result<HttpResponse> {
+        self.send(HttpRequest::post_form(
+            format!("{}{}", self.api_base, path),
+            form,
+        ))
+        .await
     }
 
     fn set_preferences(&self, json: serde_json::Value) -> Vec<(String, String)> {
@@ -198,12 +214,17 @@ impl QBittorrentDownloader {
 
         let first_healthy = !self.healthy.swap(true, Ordering::SeqCst);
         if first_healthy && self.config.disable_same_ip_multi_connection {
-            let form =
-                self.set_preferences(serde_json::json!({ "enable_multi_connections_from_same_ip": false }));
+            let form = self.set_preferences(
+                serde_json::json!({ "enable_multi_connections_from_same_ip": false }),
+            );
             self.post_form("/app/setPreferences", form).await?;
         }
 
-        Ok(LoginResult { success: true, message: "OK".into(), version })
+        Ok(LoginResult {
+            success: true,
+            message: "OK".into(),
+            version,
+        })
     }
 
     async fn fetch_properties(&self, hash: &str) -> anyhow::Result<TorrentProperties> {
@@ -218,7 +239,10 @@ impl QBittorrentDownloader {
         let props: TorrentProperties = serde_json::from_str(&resp.body).unwrap_or_default();
         self.props_cache.lock().unwrap().insert(
             hash.to_string(),
-            PropsCacheEntry { props: props.clone(), at: Instant::now() },
+            PropsCacheEntry {
+                props: props.clone(),
+                at: Instant::now(),
+            },
         );
         Ok(props)
     }
@@ -241,7 +265,9 @@ impl Downloader for QBittorrentDownloader {
         let mut flags = vec![
             DownloaderFeature::UnbanIp.name().to_string(),
             DownloaderFeature::TrafficStats.name().to_string(),
-            DownloaderFeature::LiveUpdateBtProtocolPort.name().to_string(),
+            DownloaderFeature::LiveUpdateBtProtocolPort
+                .name()
+                .to_string(),
         ];
         if self.supports_range_ban() {
             flags.push(DownloaderFeature::RangeBanIp.name().to_string());
@@ -257,7 +283,12 @@ impl Downloader for QBittorrentDownloader {
                 return self.finish_login().await;
             }
             // API Key 无效时不再尝试表单登录（上游直接返回凭据错误）
-            if self.config.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            if self
+                .config
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty())
+            {
                 return Ok(LoginResult {
                     success: false,
                     message: "API Key authentication failed".into(),
@@ -303,7 +334,9 @@ impl Downloader for QBittorrentDownloader {
             let mut offset = 0u32;
             loop {
                 let resp = self
-                    .get(&format!("/torrents/info?filter=active&limit={page}&offset={offset}"))
+                    .get(&format!(
+                        "/torrents/info?filter=active&limit={page}&offset={offset}"
+                    ))
                     .await?;
                 let batch: Vec<QBittorrentTorrent> =
                     serde_json::from_str(&resp.body).unwrap_or_default();
@@ -368,10 +401,12 @@ impl Downloader for QBittorrentDownloader {
     ) -> BoxFuture<'a, anyhow::Result<Vec<PeerData>>> {
         Box::pin(async move {
             let resp = self
-                .get(&format!("/sync/torrentPeers?hash={}", urlencoding(&torrent.hash)))
+                .get(&format!(
+                    "/sync/torrentPeers?hash={}",
+                    urlencoding(&torrent.hash)
+                ))
                 .await?;
-            let parsed: TorrentPeersResponse =
-                serde_json::from_str(&resp.body).unwrap_or_default();
+            let parsed: TorrentPeersResponse = serde_json::from_str(&resp.body).unwrap_or_default();
             let mut out = Vec::new();
             for (raw_ip, p) in parsed.peers {
                 if let Some(conn) = &p.connection {
@@ -440,8 +475,7 @@ impl Downloader for QBittorrentDownloader {
                 }
             }
             joined.sort();
-            let form =
-                self.set_preferences(serde_json::json!({ "banned_IPs": joined.join("\n") }));
+            let form = self.set_preferences(serde_json::json!({ "banned_IPs": joined.join("\n") }));
             self.post_form("/app/setPreferences", form).await?;
             Ok(())
         })
@@ -549,7 +583,10 @@ impl Downloader for QBittorrentDownloader {
                     )
                 );
                 // 上游此处文案是 `"Save qBittorrent shadow banlist error: statusCode="`（原文照抄）
-                anyhow::bail!("Save qBittorrent shadow banlist error: statusCode={}", resp.status);
+                anyhow::bail!(
+                    "Save qBittorrent shadow banlist error: statusCode={}",
+                    resp.status
+                );
             }
             Ok(())
         })
@@ -590,7 +627,10 @@ fn urlencoding(s: &str) -> String {
                 c.to_string()
             } else {
                 let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf).bytes().map(|b| format!("%{b:02X}")).collect()
+                c.encode_utf8(&mut buf)
+                    .bytes()
+                    .map(|b| format!("%{b:02X}"))
+                    .collect()
             }
         })
         .collect()
@@ -784,7 +824,10 @@ mod tests {
         *mock.preferences.lock().unwrap() = (500, String::new());
         let dl = mock_downloader(mock.clone());
         let err = dl.get_speed_limiter().await.unwrap_err();
-        assert!(err.to_string().contains("Request failed with code: 500"), "{err}");
+        assert!(
+            err.to_string().contains("Request failed with code: 500"),
+            "{err}"
+        );
 
         // `up_limit` / `dl_limit` 缺失等价上游装箱 `Long` 的 NPE（被包成异常）
         *mock.preferences.lock().unwrap() = (200, "{}".to_string());
@@ -794,9 +837,13 @@ mod tests {
         let mock = QbMock::new();
         *mock.set_preferences_status.lock().unwrap() = 500;
         let dl = mock_downloader(mock);
-        let err = dl.set_speed_limiter(1_048_576, 1_048_576).await.unwrap_err();
+        let err = dl
+            .set_speed_limiter(1_048_576, 1_048_576)
+            .await
+            .unwrap_err();
         assert!(
-            err.to_string().contains("Save qBittorrent shadow banlist error: statusCode=500"),
+            err.to_string()
+                .contains("Save qBittorrent shadow banlist error: statusCode=500"),
             "{err}"
         );
     }

@@ -25,12 +25,19 @@ pub async fn history(State(state): State<AppState>) -> Response {
 /// 对齐上游 `handleLive`：连接建立后立即把 `ringDeque` 中的存量日志推送一遍，
 /// 之后 `logger.pushStream()` 的新条目按 `WebUILogEntryDTO` JSON 逐条下发。
 pub async fn live(State(state): State<AppState>) -> Response {
-    let initial = futures_util::stream::iter(state.log_ring.snapshot().into_iter().map(|e| {
-        Ok::<String, Infallible>(format!("data: {}\n\n", e.to_web()))
-    }));
+    let initial = futures_util::stream::iter(
+        state
+            .log_ring
+            .snapshot()
+            .into_iter()
+            .map(|e| Ok::<String, Infallible>(format!("data: {}\n\n", e.to_web()))),
+    );
     let rx = state.log_ring.subscribe();
     let live = BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(entry) => Some(Ok::<String, Infallible>(format!("data: {}\n\n", entry.to_web()))),
+        Ok(entry) => Some(Ok::<String, Infallible>(format!(
+            "data: {}\n\n",
+            entry.to_web()
+        ))),
         Err(_) => None, // 落后于缓冲被跳过，与上游 PushStream 丢日志语义一致
     });
     let body = Body::from_stream(initial.chain(live));

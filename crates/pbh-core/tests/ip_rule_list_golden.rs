@@ -45,7 +45,10 @@ fn torrent() -> TorrentData {
 }
 
 fn ctx() -> CheckContext {
-    CheckContext { now_ms: 0, features: vec!["UNBAN_IP".into()] }
+    CheckContext {
+        now_ms: 0,
+        features: vec!["UNBAN_IP".into()],
+    }
 }
 
 fn module(entries: Vec<RuleListEntry>) -> IpRuleListModule {
@@ -77,7 +80,10 @@ fn parses_plain_cidr_with_accumulated_and_inline_comments() {
     let first = &entries[0];
     assert_eq!(first.net.to_string(), "1.2.3.0/24");
     // 上游对注释行做 `substring(1)` / `substring(2)`，只去掉标记本身，保留原文（含前导空格）
-    assert_eq!(first.comment, " 这是头部注释\n 双斜线注释", "多行注释用换行连接");
+    assert_eq!(
+        first.comment, " 这是头部注释\n 双斜线注释",
+        "多行注释用换行连接"
+    );
 
     let second = &entries[1];
     assert_eq!(second.net.to_string(), "4.4.4.4/32");
@@ -97,7 +103,11 @@ fn parses_dat_emule_format_and_skips_high_levels() {
 ";
     let (entries, count) = pbh_core::modules::ip_rule_list::parse_rule_list(data);
     assert_eq!(count, 2, "level >= 128 的行不计入");
-    assert_eq!(entries[0].net.to_string(), "16.0.0.0/8", "区间取最小覆盖前缀块");
+    assert_eq!(
+        entries[0].net.to_string(),
+        "16.0.0.0/8",
+        "区间取最小覆盖前缀块"
+    );
     assert_eq!(entries[0].comment, "Yet another organization");
     assert_eq!(entries[1].net.to_string(), "32.0.0.0/8");
 }
@@ -138,8 +148,14 @@ fn dat_range_is_prefixed_down_to_network_boundary() {
 
     // 命中校验：边界内的地址应被封禁
     let m = module(entries2);
-    assert_eq!(m.check("d", &torrent(), &peer("1.2.3.7"), &ctx()).action, PeerAction::Ban);
-    assert_eq!(m.check("d", &torrent(), &peer("1.2.3.20"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &torrent(), &peer("1.2.3.7"), &ctx()).action,
+        PeerAction::Ban
+    );
+    assert_eq!(
+        m.check("d", &torrent(), &peer("1.2.3.20"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }
 
 #[test]
@@ -177,9 +193,8 @@ fn comment_containing_double_slash_after_hash_is_kept() {
 
 #[test]
 fn module_bans_ips_present_in_the_subscription() {
-    let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list(
-        "# 恶意网段\n10.10.0.0/16 # 数据中心\n",
-    );
+    let (entries, _) =
+        pbh_core::modules::ip_rule_list::parse_rule_list("# 恶意网段\n10.10.0.0/16 # 数据中心\n");
     let m = module(entries);
     let t = torrent();
     let tr = Translator::embedded();
@@ -187,7 +202,10 @@ fn module_bans_ips_present_in_the_subscription() {
     let r = m.check("d", &t, &peer("10.10.5.5"), &ctx());
     assert_eq!(r.action, PeerAction::Ban);
     assert_eq!(r.ban_duration_ms, 259_200_000);
-    assert_eq!(tr.render(r.rule_key.as_ref().unwrap(), "zh_cn"), "all-in-one");
+    assert_eq!(
+        tr.render(r.rule_key.as_ref().unwrap(), "zh_cn"),
+        "all-in-one"
+    );
     assert_eq!(
         tr.render(r.reason_key.as_ref().unwrap(), "zh_cn"),
         "匹配 IP黑名单订阅 规则: all-in-one, IP 地址: 10.10.5.5, 备注:  数据中心"
@@ -195,7 +213,10 @@ fn module_bans_ips_present_in_the_subscription() {
     assert_eq!(r.data["ruleName"], "all-in-one");
 
     // 未命中 -> pass
-    assert_eq!(m.check("d", &t, &peer("11.11.11.11"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("11.11.11.11"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }
 
 /// 无备注的规则：上游注释成分是**空字符串**（非 null），因此渲染为空，
@@ -211,7 +232,13 @@ fn module_renders_empty_comment_when_rule_has_no_comment() {
         "匹配 IP黑名单订阅 规则: all-in-one, IP 地址: 10.10.1.1, 备注: "
     );
     // 上游文案键本身仍可用
-    assert_eq!(tr.render(&pbh_core::i18n::TranslationComponent::new("MODULE_IBL_COMMENT_UNKNOWN"), "zh_cn"), "未提供");
+    assert_eq!(
+        tr.render(
+            &pbh_core::i18n::TranslationComponent::new("MODULE_IBL_COMMENT_UNKNOWN"),
+            "zh_cn"
+        ),
+        "未提供"
+    );
 }
 
 #[test]
@@ -230,14 +257,19 @@ fn module_skips_handshaking_peers_and_prefers_longest_prefix_comment() {
     // 重叠网段取最长前缀（最精确）的注释
     let r = m.check("d", &torrent(), &peer("10.10.1.1"), &ctx());
     let tr = Translator::embedded();
-    assert!(tr.render(r.reason_key.as_ref().unwrap(), "zh_cn").contains("精确网段"));
+    assert!(tr
+        .render(r.reason_key.as_ref().unwrap(), "zh_cn")
+        .contains("精确网段"));
 }
 
 #[test]
 fn module_updates_and_removes_subscriptions() {
     let m = IpRuleListModule::new(1000);
     let t = torrent();
-    assert_eq!(m.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::NoAction
+    );
 
     let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list("1.2.3.0/24\n");
     assert!(m.set_subscription(RuleSubscription {
@@ -245,7 +277,10 @@ fn module_updates_and_removes_subscriptions() {
         name: "sub-a".into(),
         entries,
     }));
-    assert_eq!(m.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::Ban);
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::Ban
+    );
     assert_eq!(m.subscription_count(), 1);
 
     // 同名订阅更新（不是新增）
@@ -256,12 +291,21 @@ fn module_updates_and_removes_subscriptions() {
         entries: entries2,
     }));
     assert_eq!(m.subscription_count(), 1);
-    assert_eq!(m.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::NoAction);
-    assert_eq!(m.check("d", &t, &peer("5.6.7.8"), &ctx()).action, PeerAction::Ban);
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::NoAction
+    );
+    assert_eq!(
+        m.check("d", &t, &peer("5.6.7.8"), &ctx()).action,
+        PeerAction::Ban
+    );
 
     m.remove_subscription("sub-a");
     assert_eq!(m.subscription_count(), 0);
-    assert_eq!(m.check("d", &t, &peer("5.6.7.8"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("5.6.7.8"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }
 
 /// 订阅更新决策（sha256 比对 + 缓存回退）。
@@ -280,21 +324,40 @@ fn update_plan_follows_upstream_hash_and_cache_rules() {
         RuleUpdatePlan::ParseRemote { write_cache: false }
     );
     // 远程与缓存一致且已加载 -> 无动作
-    assert_eq!(plan_rule_update(true, false, true, true), RuleUpdatePlan::NoAction);
+    assert_eq!(
+        plan_rule_update(true, false, true, true),
+        RuleUpdatePlan::NoAction
+    );
     // 远程失败但存在缓存且未加载 -> 用缓存
-    assert_eq!(plan_rule_update(false, false, true, false), RuleUpdatePlan::ParseCache);
+    assert_eq!(
+        plan_rule_update(false, false, true, false),
+        RuleUpdatePlan::ParseCache
+    );
     // 远程失败且无缓存 / 已加载 -> 无动作
-    assert_eq!(plan_rule_update(false, false, false, false), RuleUpdatePlan::NoAction);
-    assert_eq!(plan_rule_update(false, false, true, true), RuleUpdatePlan::NoAction);
+    assert_eq!(
+        plan_rule_update(false, false, false, false),
+        RuleUpdatePlan::NoAction
+    );
+    assert_eq!(
+        plan_rule_update(false, false, true, true),
+        RuleUpdatePlan::NoAction
+    );
 }
 
 #[test]
 fn ipv6_entries_are_supported() {
-    let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list("2001:db8::/32 # v6 网段\n");
+    let (entries, _) =
+        pbh_core::modules::ip_rule_list::parse_rule_list("2001:db8::/32 # v6 网段\n");
     let m = module(entries);
     let t = torrent();
-    assert_eq!(m.check("d", &t, &peer("2001:db8:1::1"), &ctx()).action, PeerAction::Ban);
-    assert_eq!(m.check("d", &t, &peer("2001:db9::1"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("2001:db8:1::1"), &ctx()).action,
+        PeerAction::Ban
+    );
+    assert_eq!(
+        m.check("d", &t, &peer("2001:db9::1"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }
 
 // ---------- RuleIndex 前缀长度边界回归 ----------
@@ -314,43 +377,55 @@ fn comment_of(m: &IpRuleListModule, ip: &str) -> String {
 /// `/32`：无主机位（旧实现此处 panic），必须只匹配该主机地址本身。
 #[test]
 fn host_prefix_32_builds_and_matches_without_shift_overflow() {
-    let (entries, _) =
-        pbh_core::modules::ip_rule_list::parse_rule_list("1.2.3.4/32 # 单机\n");
+    let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list("1.2.3.4/32 # 单机\n");
     assert_eq!(entries[0].net.to_string(), "1.2.3.4/32");
     let m = module(entries);
     let t = torrent();
 
-    assert_eq!(m.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::Ban);
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::Ban
+    );
     assert!(comment_of(&m, "1.2.3.4").contains("单机"));
     // 相邻地址不属于 /32 网段
-    assert_eq!(m.check("d", &t, &peer("1.2.3.5"), &ctx()).action, PeerAction::NoAction);
-    assert_eq!(m.check("d", &t, &peer("1.2.3.3"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.5"), &ctx()).action,
+        PeerAction::NoAction
+    );
+    assert_eq!(
+        m.check("d", &t, &peer("1.2.3.3"), &ctx()).action,
+        PeerAction::NoAction
+    );
 
     // DAT 单地址区间同样退化为 `/32`
     let (single, _) = pbh_core::modules::ip_rule_list::parse_rule_list("1.2.3.4,1.2.3.4,100,x\n");
     assert_eq!(single[0].net.to_string(), "1.2.3.4/32");
     let m2 = module(single);
-    assert_eq!(m2.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::Ban);
+    assert_eq!(
+        m2.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::Ban
+    );
 }
 
 /// `/128`：同为「移位量 == 位宽」的极值（旧实现 panic）。
 #[test]
 fn host_prefix_128_builds_and_matches_without_shift_overflow() {
-    let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list(
-        "2001:db8::dead:beef # 单机v6\n",
-    );
+    let (entries, _) =
+        pbh_core::modules::ip_rule_list::parse_rule_list("2001:db8::dead:beef # 单机v6\n");
     assert_eq!(entries[0].net.to_string(), "2001:db8::dead:beef/128");
     let m = module(entries);
     let t = torrent();
 
     assert_eq!(
-        m.check("d", &t, &peer("2001:db8::dead:beef"), &ctx()).action,
+        m.check("d", &t, &peer("2001:db8::dead:beef"), &ctx())
+            .action,
         PeerAction::Ban
     );
     assert!(comment_of(&m, "2001:db8::dead:beef").contains("单机v6"));
     // 同一 /64 内的相邻地址不属于 /128 网段
     assert_eq!(
-        m.check("d", &t, &peer("2001:db8::dead:bee0"), &ctx()).action,
+        m.check("d", &t, &peer("2001:db8::dead:bee0"), &ctx())
+            .action,
         PeerAction::NoAction
     );
 }
@@ -358,9 +433,8 @@ fn host_prefix_128_builds_and_matches_without_shift_overflow() {
 /// `/0`：掩码为主机位全 1（`start | !0`），覆盖该地址族的全部地址。
 #[test]
 fn zero_prefix_covers_the_whole_address_family() {
-    let (entries, _) = pbh_core::modules::ip_rule_list::parse_rule_list(
-        "0.0.0.0/0 # 全 v4\n::/0 # 全 v6\n",
-    );
+    let (entries, _) =
+        pbh_core::modules::ip_rule_list::parse_rule_list("0.0.0.0/0 # 全 v4\n::/0 # 全 v6\n");
     assert_eq!(entries[0].net.to_string(), "0.0.0.0/0");
     assert_eq!(entries[1].net.to_string(), "::/0");
     let m = module(entries);
@@ -368,10 +442,22 @@ fn zero_prefix_covers_the_whole_address_family() {
 
     // 两个端点都必须命中（`end` 计算错误时首/末地址最容易漏）
     for ip in ["0.0.0.0", "1.2.3.4", "255.255.255.255"] {
-        assert_eq!(m.check("d", &t, &peer(ip), &ctx()).action, PeerAction::Ban, "{ip}");
+        assert_eq!(
+            m.check("d", &t, &peer(ip), &ctx()).action,
+            PeerAction::Ban,
+            "{ip}"
+        );
     }
-    for ip in ["::", "2001:db8::1", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"] {
-        assert_eq!(m.check("d", &t, &peer(ip), &ctx()).action, PeerAction::Ban, "{ip}");
+    for ip in [
+        "::",
+        "2001:db8::1",
+        "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    ] {
+        assert_eq!(
+            m.check("d", &t, &peer(ip), &ctx()).action,
+            PeerAction::Ban,
+            "{ip}"
+        );
     }
     // `/0` 的备注仍可取回
     assert!(comment_of(&m, "8.8.8.8").contains("全 v4"));
@@ -380,8 +466,14 @@ fn zero_prefix_covers_the_whole_address_family() {
     // IPv4 `/0` 不影响 IPv6（各自独立分桶）
     let (v4_only, _) = pbh_core::modules::ip_rule_list::parse_rule_list("0.0.0.0/0 # 仅 v4\n");
     let m4 = module(v4_only);
-    assert_eq!(m4.check("d", &t, &peer("1.2.3.4"), &ctx()).action, PeerAction::Ban);
-    assert_eq!(m4.check("d", &t, &peer("2001:db8::1"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m4.check("d", &t, &peer("1.2.3.4"), &ctx()).action,
+        PeerAction::Ban
+    );
+    assert_eq!(
+        m4.check("d", &t, &peer("2001:db8::1"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }
 
 /// 极值前缀与普通网段共存时，仍按**最长前缀**取备注（`/32` 胜过 `/24` 胜过 `/8`）。
@@ -400,6 +492,12 @@ fn longest_prefix_wins_with_extreme_prefix_lengths() {
 
     // 网段末地址不得越界命中（`/8` 的最后一位属于该网段，下一段不属于）
     let t = torrent();
-    assert_eq!(m.check("d", &t, &peer("10.255.255.255"), &ctx()).action, PeerAction::Ban);
-    assert_eq!(m.check("d", &t, &peer("11.0.0.0"), &ctx()).action, PeerAction::NoAction);
+    assert_eq!(
+        m.check("d", &t, &peer("10.255.255.255"), &ctx()).action,
+        PeerAction::Ban
+    );
+    assert_eq!(
+        m.check("d", &t, &peer("11.0.0.0"), &ctx()).action,
+        PeerAction::NoAction
+    );
 }

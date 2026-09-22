@@ -282,9 +282,9 @@ mod lenient {
     fn to_f64(value: &Value) -> Result<f64, String> {
         match value {
             Value::Null => Ok(0.0),
-            Value::Number(number) => {
-                number.as_f64().ok_or_else(|| format!("Expected a double but was {number}"))
-            }
+            Value::Number(number) => number
+                .as_f64()
+                .ok_or_else(|| format!("Expected a double but was {number}")),
             Value::String(raw) => raw
                 .trim()
                 .parse::<f64>()

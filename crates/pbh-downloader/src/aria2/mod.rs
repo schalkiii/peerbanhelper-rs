@@ -203,7 +203,10 @@ impl Aria2Downloader {
 
     /// 已协商到的 Aria2Next 版本（未登录时为空串）。
     pub fn version(&self) -> String {
-        self.last_version.lock().map(|v| v.clone()).unwrap_or_default()
+        self.last_version
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// 对齐 `buildRpcRequest(method, customParams)`：token 前缀 + 随机 UUID id。
@@ -241,7 +244,10 @@ impl Aria2Downloader {
             .execute(self.build_rpc_request(method, custom_params))
             .await?;
         if !is_success(resp.status) {
-            anyhow::bail!("{}", self.rpc_failed_message(resp.status, "N/A", &resp.body));
+            anyhow::bail!(
+                "{}",
+                self.rpc_failed_message(resp.status, "N/A", &resp.body)
+            );
         }
         debug!("Aria2Next RPC Response: {}", resp.body);
         let parsed: JsonRpcResponse<T> = serde_json::from_str(&resp.body)?;
@@ -278,12 +284,18 @@ impl Aria2Downloader {
 
     /// `keys` 参数（`List.of(List.of(...))` → params 里的**一个数组元素**）。
     fn tell_keys_param() -> Value {
-        Value::Array(TELL_KEYS.iter().map(|k| Value::String(k.to_string())).collect())
+        Value::Array(
+            TELL_KEYS
+                .iter()
+                .map(|k| Value::String(k.to_string()))
+                .collect(),
+        )
     }
 
     /// 对齐 `sendRpcRequest(buildRpcRequest(method, List.of(List.of(keys))), …)`。
     async fn tell(&self, method: &str) -> anyhow::Result<Vec<A2Task>> {
-        self.send_rpc_request(method, vec![Self::tell_keys_param()]).await
+        self.send_rpc_request(method, vec![Self::tell_keys_param()])
+            .await
     }
 
     /// 对齐 `A2Task.getName()`。
@@ -334,9 +346,9 @@ impl Aria2Downloader {
             // `getClientName()`：null → ""
             client_name: Some(peer.peer_client_name.clone().unwrap_or_default()),
             // `getPeerId()`：null → ""，否则 `URLDecoder.decode(..., ISO_8859_1)`
-            peer_id: Some(
-                url_decode_iso_8859_1(peer.peer_id.as_deref().unwrap_or_default()),
-            ),
+            peer_id: Some(url_decode_iso_8859_1(
+                peer.peer_id.as_deref().unwrap_or_default(),
+            )),
             dl_speed: peer.download_speed,
             downloaded: peer.downloaded,
             up_speed: peer.upload_speed,
@@ -388,8 +400,10 @@ impl Aria2Downloader {
         for method in [M_TELL_ACTIVE, M_TELL_WAITING, M_TELL_STOPPED] {
             match self.tell(method).await {
                 Ok(batch) => {
-                    let batch: Vec<A2Task> =
-                        batch.into_iter().filter(|t| t.bittorrent.is_some()).collect();
+                    let batch: Vec<A2Task> = batch
+                        .into_iter()
+                        .filter(|t| t.bittorrent.is_some())
+                        .collect();
                     self.cache_gids(&batch);
                     tasks.extend(batch);
                 }
@@ -419,7 +433,9 @@ impl Downloader for Aria2Downloader {
     fn feature_flags(&self) -> Vec<String> {
         vec![
             DownloaderFeature::UnbanIp.name().to_string(),
-            DownloaderFeature::LiveUpdateBtProtocolPort.name().to_string(),
+            DownloaderFeature::LiveUpdateBtProtocolPort
+                .name()
+                .to_string(),
             DownloaderFeature::RangeBanIp.name().to_string(),
         ]
     }
@@ -507,8 +523,10 @@ impl Downloader for Aria2Downloader {
                 }
             };
             // `.stream().filter(t -> t.getBittorrent() != null)`
-            let tasks: Vec<A2Task> =
-                tasks.into_iter().filter(|t| t.bittorrent.is_some()).collect();
+            let tasks: Vec<A2Task> = tasks
+                .into_iter()
+                .filter(|t| t.bittorrent.is_some())
+                .collect();
             self.cache_gids(&tasks);
             Ok(tasks.iter().map(|t| self.torrent_from(t)).collect())
         })
@@ -1140,7 +1158,11 @@ mod tests {
         let dl = downloader(mock.clone());
         let login = dl.login().await.unwrap();
         assert!(!login.success);
-        assert!(login.message.contains("statusCode=200"), "{}", login.message);
+        assert!(
+            login.message.contains("statusCode=200"),
+            "{}",
+            login.message
+        );
 
         // 版本号不是合法 semver → 对齐 `new Semver(version, LOOSE)` 抛异常
         let mock = Aria2Mock::new();
@@ -1152,7 +1174,11 @@ mod tests {
         let login = dl.login().await.unwrap();
         assert!(!login.success);
         assert!(login.message.contains("网络错误"), "{}", login.message);
-        assert!(login.message.contains("SemverException"), "{}", login.message);
+        assert!(
+            login.message.contains("SemverException"),
+            "{}",
+            login.message
+        );
 
         // 401 / 403 → 凭据错误
         for status in [401u16, 403] {
@@ -1170,7 +1196,11 @@ mod tests {
         let dl = downloader(mock);
         let login = dl.login().await.unwrap();
         assert!(!login.success);
-        assert!(login.message.contains("statusCode=500"), "{}", login.message);
+        assert!(
+            login.message.contains("statusCode=500"),
+            "{}",
+            login.message
+        );
 
         // 传输层失败 → NETWORK_ERROR（DOWNLOADER_LOGIN_IO_EXCEPTION）
         let mock = Aria2Mock::new();
@@ -1189,7 +1219,8 @@ mod tests {
             paused: true,
             ..Aria2Config::default()
         };
-        let dl = Aria2Downloader::with_fetcher(config, mock.clone() as Arc<dyn HttpFetcher>).unwrap();
+        let dl =
+            Aria2Downloader::with_fetcher(config, mock.clone() as Arc<dyn HttpFetcher>).unwrap();
         let login = dl.login().await.unwrap();
         assert!(!login.success);
         assert!(login.message.contains("暂停"), "{}", login.message);
@@ -1231,12 +1262,30 @@ mod tests {
         assert_eq!(
             params[1],
             serde_json::json!([
-                "gid", "status", "totalLength", "completedLength",
-                "uploadLength", "bitfield", "downloadSpeed",
-                "uploadSpeed", "infoHash", "numSeeders",
-                "seeder", "pieceLength", "numPieces", "connections",
-                "errorCode", "errorMessage", "followedBy", "following", "belongsTo",
-                "dir", "bittorrent", "verifiedLength", "verifyIntegrityPending", "files"
+                "gid",
+                "status",
+                "totalLength",
+                "completedLength",
+                "uploadLength",
+                "bitfield",
+                "downloadSpeed",
+                "uploadSpeed",
+                "infoHash",
+                "numSeeders",
+                "seeder",
+                "pieceLength",
+                "numPieces",
+                "connections",
+                "errorCode",
+                "errorMessage",
+                "followedBy",
+                "following",
+                "belongsTo",
+                "dir",
+                "bittorrent",
+                "verifiedLength",
+                "verifyIntegrityPending",
+                "files"
             ])
         );
     }
@@ -1308,7 +1357,10 @@ mod tests {
         assert_eq!(dl_, 2_097_152);
         // 对齐 `setSpeedLimiter(...)`：aria2.changeGlobalOption 返回 "OK"
         dl.set_speed_limiter(0, 0).await.unwrap();
-        assert_eq!(mock.methods(), vec![M_GET_GLOBAL_OPTION, M_CHANGE_GLOBAL_OPTION]);
+        assert_eq!(
+            mock.methods(),
+            vec![M_GET_GLOBAL_OPTION, M_CHANGE_GLOBAL_OPTION]
+        );
     }
 
     #[tokio::test]
@@ -1323,7 +1375,10 @@ mod tests {
         // `aria2.getPeers` 的唯一参数是 gid（来自 `A2Task.getId()`）
         let request = mock.request(M_GET_PEERS);
         assert_common_headers(&request);
-        assert_eq!(request.params(), serde_json::json!(["token:secret", "gid-1"]));
+        assert_eq!(
+            request.params(),
+            serde_json::json!(["token:secret", "gid-1"])
+        );
 
         let by_raw: HashMap<&str, &PeerData> =
             peers.iter().map(|p| (p.raw_ip.as_str(), p)).collect();
@@ -1406,7 +1461,14 @@ mod tests {
             request.params(),
             serde_json::json!([
                 "token:secret",
-                ["1.2.3.4", "::ffff:1.2.3.4", "2001:db8::1", "2001:db8::/52", "1.2.3.4", "::ffff:1.2.3.4"]
+                [
+                    "1.2.3.4",
+                    "::ffff:1.2.3.4",
+                    "2001:db8::1",
+                    "2001:db8::/52",
+                    "1.2.3.4",
+                    "::ffff:1.2.3.4"
+                ]
             ])
         );
     }
@@ -1416,7 +1478,9 @@ mod tests {
         let mock = Aria2Mock::new();
         *mock.blocklist.lock().unwrap() = (500, "boom".to_string());
         let dl = downloader(mock.clone());
-        dl.replace_banned_ips(&["1.2.3.4".to_string()]).await.unwrap();
+        dl.replace_banned_ips(&["1.2.3.4".to_string()])
+            .await
+            .unwrap();
         assert_eq!(mock.methods(), vec![M_SET_BT_PEER_BLOCKLIST]);
     }
 
@@ -1466,7 +1530,10 @@ mod tests {
 
     #[test]
     fn peer_id_decoding_follows_url_decoder() {
-        assert_eq!(url_decode_iso_8859_1("%2DTR1000%2Dabcdefghij"), "-TR1000-abcdefghij");
+        assert_eq!(
+            url_decode_iso_8859_1("%2DTR1000%2Dabcdefghij"),
+            "-TR1000-abcdefghij"
+        );
         // `+` → 空格；非转义字符原样保留；非法转义按字面保留
         assert_eq!(url_decode_iso_8859_1("a+b"), "a b");
         assert_eq!(url_decode_iso_8859_1("plain"), "plain");
@@ -1481,9 +1548,15 @@ mod tests {
     fn peer_flag_string_follows_peerflag_tostring() {
         // 全部布尔为 false：!peerChoking && !amInterested → "K"；!amChoking && !peerInterested → "?"；
         // incoming=false → localConnection=true → 不输出 "I"
-        assert_eq!(peer_flag_string(false, false, false, false, true, false), "K ?");
+        assert_eq!(
+            peer_flag_string(false, false, false, false, true, false),
+            "K ?"
+        );
         // 入站连接 → "I"
-        assert_eq!(peer_flag_string(false, false, false, false, false, false), "K ? I");
+        assert_eq!(
+            peer_flag_string(false, false, false, false, false, false),
+            "K ? I"
+        );
         assert_eq!(
             peer_flag_string(false, true, true, false, true, false),
             "d ?"
@@ -1532,6 +1605,10 @@ mod tests {
         assert_eq!(&a[23..24], "-");
         // 对齐 `UUID.randomUUID()`：版本位 4、变体位 10
         assert_eq!(&a[14..15], "4");
-        assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"), "{}", &a[19..20]);
+        assert!(
+            matches!(&a[19..20], "8" | "9" | "a" | "b"),
+            "{}",
+            &a[19..20]
+        );
     }
 }

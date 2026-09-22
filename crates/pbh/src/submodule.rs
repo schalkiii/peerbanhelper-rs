@@ -54,8 +54,7 @@ impl RuleSubBackend {
             .config_path
             .parent()
             .ok_or_else(|| "config 路径缺少父目录".to_string())?;
-        let (mut cfg, path) =
-            AppConfig::load_or_create(parent).map_err(|e| e.to_string())?;
+        let (mut cfg, path) = AppConfig::load_or_create(parent).map_err(|e| e.to_string())?;
         cfg.profile.module.ip_rule_list = Some(rules.clone());
         cfg.save_to(&path).map_err(|e| e.to_string())?;
         Ok(())
@@ -169,11 +168,11 @@ impl SubModule for RuleSubBackend {
             }
             self.save(&rules)?;
         }
-        if let Some(module) =
-            self.pipeline
-                .module_as::<pbh_core::modules::ip_rule_list::IpRuleListModule>(
-                    crate::rulesub::MODULE_NAME,
-                )
+        if let Some(module) = self
+            .pipeline
+            .module_as::<pbh_core::modules::ip_rule_list::IpRuleListModule>(
+                crate::rulesub::MODULE_NAME,
+            )
         {
             module.remove_subscription(id);
         }
@@ -224,7 +223,10 @@ impl SubModule for RuleSubBackend {
 /// 从 Web 请求体解析单条订阅配置（与上游 `RuleSubscribe` 实体同形）。
 fn parse_subscription(rule: &Value) -> Result<IpRuleSubscriptionConfig, String> {
     Ok(IpRuleSubscriptionConfig {
-        enabled: rule.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+        enabled: rule
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
         name: rule
             .get("name")
             .and_then(|v| v.as_str())

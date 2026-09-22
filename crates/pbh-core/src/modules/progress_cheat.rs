@@ -254,7 +254,10 @@ impl Default for ProgressCheatBlocker {
 
 impl ProgressCheatBlocker {
     pub fn new(config: PcbConfig) -> Self {
-        Self { config, store: Mutex::new(PcbStore::new()) }
+        Self {
+            config,
+            store: Mutex::new(PcbStore::new()),
+        }
     }
 
     /// 从数据库恢复状态（`enable-persist` 关闭时忽略）。
@@ -272,7 +275,10 @@ impl ProgressCheatBlocker {
         if !self.config.persist_enabled {
             return Vec::new();
         }
-        self.store.lock().map(|mut s| s.dirty_rows()).unwrap_or_default()
+        self.store
+            .lock()
+            .map(|mut s| s.dirty_rows())
+            .unwrap_or_default()
     }
 
     /// 清理超过 `persist-duration` 未出现的记录（对齐 `cleanDatabase`）。
@@ -285,8 +291,12 @@ impl ProgressCheatBlocker {
             Err(_) => return 0,
         };
         let before = store.entity_count();
-        store.range.retain(|_, e| e.last_time_seen_ms >= older_than_ms);
-        store.addr.retain(|_, e| e.last_time_seen_ms >= older_than_ms);
+        store
+            .range
+            .retain(|_, e| e.last_time_seen_ms >= older_than_ms);
+        store
+            .addr
+            .retain(|_, e| e.last_time_seen_ms >= older_than_ms);
         before - store.entity_count()
     }
 
@@ -342,7 +352,11 @@ impl RuleModule for ProgressCheatBlocker {
 
         let prefix_string = prefix_block(&peer.ip, c.ipv4_prefix_length, c.ipv6_prefix_length)
             .unwrap_or_else(|| peer.ip.clone());
-        let range_key = (downloader_id.to_string(), torrent.id().to_string(), prefix_string);
+        let range_key = (
+            downloader_id.to_string(),
+            torrent.id().to_string(),
+            prefix_string,
+        );
         let addr_key = (
             downloader_id.to_string(),
             torrent.id().to_string(),
@@ -364,19 +378,12 @@ impl RuleModule for ProgressCheatBlocker {
         };
         addr.tracking_uploaded_increase_total += computed_incremental;
         range.tracking_uploaded_increase_total += computed_incremental;
-        let computed_uploaded = peer
-            .uploaded
-            .max(addr.tracking_uploaded_increase_total.max(range.tracking_uploaded_increase_total));
-
-        let result = self.evaluate(
-            torrent,
-            peer,
-            ctx,
-            range,
-            addr,
-            computed_uploaded,
-            now,
+        let computed_uploaded = peer.uploaded.max(
+            addr.tracking_uploaded_increase_total
+                .max(range.tracking_uploaded_increase_total),
         );
+
+        let result = self.evaluate(torrent, peer, ctx, range, addr, computed_uploaded, now);
 
         // finally：无论结果如何都更新上报快照
         {
@@ -416,8 +423,11 @@ impl ProgressCheatBlocker {
         let c = &self.config;
         let torrent_size = torrent.total_size;
         let completed_size = torrent.completed_size();
-        let computed_completed_size =
-            completed_size.max(range.last_torrent_completed_size.max(addr.last_torrent_completed_size));
+        let computed_completed_size = completed_size.max(
+            range
+                .last_torrent_completed_size
+                .max(addr.last_torrent_completed_size),
+        );
 
         if torrent_size <= 0 {
             return CheckResult::pass(&module);
@@ -432,7 +442,9 @@ impl ProgressCheatBlocker {
             && ctx.has_feature("UNBAN_IP")
         {
             let never_tested = !addr.fast_pcb_test_executed || !range.fast_pcb_test_executed;
-            if never_tested && computed_uploaded as f64 >= c.fast_pcb_test_percentage * torrent_size as f64 {
+            if never_tested
+                && computed_uploaded as f64 >= c.fast_pcb_test_percentage * torrent_size as f64
+            {
                 addr.fast_pcb_test_executed = true;
                 range.fast_pcb_test_executed = true;
                 return CheckResult {
@@ -458,8 +470,8 @@ impl ProgressCheatBlocker {
         // 过量下载检查
         if computed_uploaded != -1 && c.block_excessive_clients {
             if computed_uploaded > torrent_size {
-                let threshold =
-                    (torrent_size.max(c.torrent_minimum_size) as f64 * c.excessive_threshold) as i64;
+                let threshold = (torrent_size.max(c.torrent_minimum_size) as f64
+                    * c.excessive_threshold) as i64;
                 if computed_uploaded > threshold {
                     self.reset_window(range, addr);
                     return CheckResult::ban(
@@ -482,9 +494,8 @@ impl ProgressCheatBlocker {
                     );
                 }
             } else if completed_size > 0 && computed_uploaded > completed_size {
-                let threshold =
-                    (computed_completed_size.max(c.torrent_minimum_size) as f64 * c.excessive_threshold)
-                        as i64;
+                let threshold = (computed_completed_size.max(c.torrent_minimum_size) as f64
+                    * c.excessive_threshold) as i64;
                 if computed_uploaded > threshold {
                     self.reset_window(range, addr);
                     return CheckResult::ban(

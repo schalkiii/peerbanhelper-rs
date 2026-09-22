@@ -18,7 +18,10 @@ async fn run_wave(
     usize,
 ) {
     let pipeline = default_pipeline();
-    let ctx = CheckContext { now_ms: 0, features: qb.feature_flags() };
+    let ctx = CheckContext {
+        now_ms: 0,
+        features: qb.feature_flags(),
+    };
     let torrents = qb.fetch_torrents().await.unwrap();
     let mut banned = HashSet::new();
     let mut modules = std::collections::HashMap::new();
@@ -50,14 +53,28 @@ async fn end_to_end_expected_bans() {
 
     // 期望封禁：吸血 peerId、吸血 client、进度作弊（6.6.6.6 上传量已达 10% 阈值，
     // 触发 PCB 快速测试 BAN_FOR_DISCONNECT，与上游默认 `fast-pcb-test-percentage: 0.1` 一致）
-    let expected: HashSet<String> =
-        ["9.9.9.9:1000", "7.7.7.7:2000", "6.6.6.6:7000"].iter().map(|s| s.to_string()).collect();
+    let expected: HashSet<String> = ["9.9.9.9:1000", "7.7.7.7:2000", "6.6.6.6:7000"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(banned, expected, "ban set must match Java baseline");
 
-    assert_eq!(modules.get("9.9.9.9").map(String::as_str), Some("peer-id-blacklist"));
-    assert_eq!(modules.get("7.7.7.7").map(String::as_str), Some("client-name-blacklist"));
-    assert_eq!(modules.get("6.6.6.6").map(String::as_str), Some("progress-cheat-blocker"));
-    assert_eq!(rules.get("6.6.6.6").map(String::as_str), Some("fastPcbTest"));
+    assert_eq!(
+        modules.get("9.9.9.9").map(String::as_str),
+        Some("peer-id-blacklist")
+    );
+    assert_eq!(
+        modules.get("7.7.7.7").map(String::as_str),
+        Some("client-name-blacklist")
+    );
+    assert_eq!(
+        modules.get("6.6.6.6").map(String::as_str),
+        Some("progress-cheat-blocker")
+    );
+    assert_eq!(
+        rules.get("6.6.6.6").map(String::as_str),
+        Some("fastPcbTest")
+    );
     assert_eq!(rules.get("9.9.9.9").map(String::as_str), Some("rule"));
 
     // 局域网 peer 命中 bypass，被跳过
@@ -71,7 +88,11 @@ async fn end_to_end_expected_bans() {
         .iter()
         .map(|raw| {
             let (ip, port) = raw.rsplit_once(':').unwrap();
-            BanEntry { ip: ip.to_string(), port: port.parse().unwrap(), raw_ip: raw.clone() }
+            BanEntry {
+                ip: ip.to_string(),
+                port: port.parse().unwrap(),
+                raw_ip: raw.clone(),
+            }
         })
         .collect();
     qb.ban_peers(&entries).await.unwrap();

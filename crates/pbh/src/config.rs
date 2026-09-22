@@ -171,9 +171,17 @@ pub enum PushProviderConfig {
         url: String,
         #[serde(default = "default_webhook_method")]
         method: String,
-        #[serde(default = "default_webhook_content_type", rename = "content-type", alias = "content_type")]
+        #[serde(
+            default = "default_webhook_content_type",
+            rename = "content-type",
+            alias = "content_type"
+        )]
         content_type: String,
-        #[serde(default = "default_webhook_body_template", rename = "body-template", alias = "body_template")]
+        #[serde(
+            default = "default_webhook_body_template",
+            rename = "body-template",
+            alias = "body_template"
+        )]
         body_template: String,
         /// 自定义请求头；值为 `null` 的表项按上游 `applyCustomHeaders` 的 `headerValue != null`
         /// 判断被忽略（空串仍会发送）
@@ -199,9 +207,10 @@ impl PushProviderConfig {
             serde_yaml::Value::String("type".into()),
             serde_yaml::Value::String(kind.trim().to_lowercase()),
         );
-        Ok(serde_yaml::from_value(serde_yaml::Value::Mapping(normalized))?)
+        Ok(serde_yaml::from_value(serde_yaml::Value::Mapping(
+            normalized,
+        ))?)
     }
-
 }
 
 /// 对齐上游 `WebhookPushProvider.DEFAULT_BODY_TEMPLATE`（Java 文本块，含结尾换行）。
@@ -285,7 +294,9 @@ impl<'de> Deserialize<'de> for LanguageConfig {
             Locale { locale: String },
         }
         Ok(match Raw::deserialize(deserializer)? {
-            Raw::Name(name) => LanguageConfig { locale: resolve_locale_name(&name) },
+            Raw::Name(name) => LanguageConfig {
+                locale: resolve_locale_name(&name),
+            },
             Raw::Locale { locale } => LanguageConfig { locale },
         })
     }
@@ -313,7 +324,9 @@ fn default_locale() -> String {
 }
 
 fn default_language() -> LanguageConfig {
-    LanguageConfig { locale: default_locale() }
+    LanguageConfig {
+        locale: default_locale(),
+    }
 }
 
 impl AppConfig {
@@ -489,7 +502,10 @@ fn default_database() -> DatabaseConfig {
     DatabaseConfig { kind: p_sqlite() }
 }
 fn default_persist() -> PersistConfig {
-    PersistConfig { ban_logs_keep_days: p_keep_days(), banlist: true }
+    PersistConfig {
+        ban_logs_keep_days: p_keep_days(),
+        banlist: true,
+    }
 }
 fn default_profile() -> ProfileConfig {
     ProfileConfig::default()
@@ -619,8 +635,7 @@ mod tests {
     /// 键名写错时 serde 会**静默忽略**，因此这里逐段断言（而不是只断言「能解析」）。
     #[test]
     fn shipped_default_config_parses_with_all_integrated_sections() {
-        let cfg: AppConfig =
-            serde_yaml::from_str(DEFAULT_CONFIG_YAML).expect("出厂配置必须可解析");
+        let cfg: AppConfig = serde_yaml::from_str(DEFAULT_CONFIG_YAML).expect("出厂配置必须可解析");
 
         // ip-database（GeoIP/GeoCN）
         assert!(cfg.ip_database.auto_update);
@@ -629,11 +644,19 @@ mod tests {
         assert_eq!(cfg.ip_database.database_geocn, "GeoCN");
 
         // module.ip-address-blocker 的 GeoIP 维度
-        let ipb = cfg.profile.module.ip_address_blocker.as_ref().expect("ip-address-blocker");
+        let ipb = cfg
+            .profile
+            .module
+            .ip_address_blocker
+            .as_ref()
+            .expect("ip-address-blocker");
         assert_eq!(ipb.asns, vec![0]);
         assert_eq!(ipb.regions, vec!["0".to_string()]);
         assert_eq!(ipb.cities, vec!["示例海南".to_string()]);
-        assert!(ipb.net_type.to_tokens().is_empty(), "随包 net-type 开关全为 false");
+        assert!(
+            ipb.net_type.to_tokens().is_empty(),
+            "随包 net-type 开关全为 false"
+        );
 
         // btn（传输层）：出厂默认必须关闭 ⇒ 不构造客户端、不起线程、零网络请求
         assert!(!cfg.btn.is_active(), "出厂配置必须关闭 BTN 联网");
@@ -643,15 +666,19 @@ mod tests {
         assert_eq!(btn.ban_duration_ms, 259_200_000);
         let pipeline = cfg.profile.build_pipeline_with_geo(None);
         let names = pbh_core::config::module_config_names(&pipeline);
-        let btn_index = names.iter().position(|n| *n == "btn").expect("btn 必须进流水线");
+        let btn_index = names
+            .iter()
+            .position(|n| *n == "btn")
+            .expect("btn 必须进流水线");
         assert_eq!(names[btn_index - 1], "auto-range-ban");
         assert_eq!(names[btn_index + 1], "ip-address-blocker-rules");
 
         // 监控模块：配置存在、可构造、但不进流水线
         assert!(cfg.profile.module.active_monitoring.is_some());
         assert!(cfg.profile.module.peer_analyse_service.is_some());
-        let monitor_modules =
-            cfg.profile.build_monitor_modules(Arc::new(InMemoryMonitorSink::new()));
+        let monitor_modules = cfg
+            .profile
+            .build_monitor_modules(Arc::new(InMemoryMonitorSink::new()));
         let monitor_names: Vec<&str> = monitor_modules.iter().map(|m| m.config_name()).collect();
         assert_eq!(
             monitor_names,
@@ -662,7 +689,10 @@ mod tests {
                 "peer-analyse-service.peer-recording"
             ]
         );
-        assert!(!names.contains(&"active-monitoring"), "监控模块不参与 peer 判定");
+        assert!(
+            !names.contains(&"active-monitoring"),
+            "监控模块不参与 peer 判定"
+        );
 
         // ip-remapping.auto-stun：默认关闭 ⇒ 不挂载映射表（严格 no-op）
         let remap = cfg.remap_config();
@@ -722,8 +752,15 @@ push-notification:
 
         let (cfg, path) = AppConfig::load_or_create(&dir).unwrap();
         assert_eq!(path, dir.join("config").join("config.yml"));
-        assert_eq!(cfg.language.locale, "zh_cn", "language: default → 服务端默认 locale");
-        assert_eq!(cfg.server.public_host(), "127.0.0.1", "server.prefix 推导对外 host");
+        assert_eq!(
+            cfg.language.locale, "zh_cn",
+            "language: default → 服务端默认 locale"
+        );
+        assert_eq!(
+            cfg.server.public_host(),
+            "127.0.0.1",
+            "server.prefix 推导对外 host"
+        );
         assert_eq!(cfg.persist.ban_logs_keep_days, 30, "kebab-case 键名");
         assert_eq!(cfg.downloaders.len(), 1);
         assert_eq!(
@@ -734,21 +771,33 @@ push-notification:
         assert_eq!(cfg.downloaders[0].name, "qBittorrent_a");
         assert!(!cfg.downloaders[0].ignore_private);
         assert!(
-            cfg.push.contains_key(serde_yaml::Value::String("example".into())),
+            cfg.push
+                .contains_key(serde_yaml::Value::String("example".into())),
             "push-notification 段并入 push"
         );
         assert!(
-            cfg.push.contains_key(serde_yaml::Value::String("email-example".into())),
+            cfg.push
+                .contains_key(serde_yaml::Value::String("email-example".into())),
             "SMTP 字符串端口（'587'）也要能解析"
         );
-        assert_eq!(cfg.profile.check_interval, 120_000, "profile.yml 覆盖 config.yml");
-        let engine = cfg.profile.module.expression_engine.as_ref().expect("expression-engine");
-        assert_eq!(engine.ban_duration_ms, 0, "ban-duration: default → 0（回退全局）");
+        assert_eq!(
+            cfg.profile.check_interval, 120_000,
+            "profile.yml 覆盖 config.yml"
+        );
+        let engine = cfg
+            .profile
+            .module
+            .expression_engine
+            .as_ref()
+            .expect("expression-engine");
+        assert_eq!(
+            engine.ban_duration_ms, 0,
+            "ban-duration: default → 0（回退全局）"
+        );
 
         // 保存时同步维护同目录的 profile.yml（保证 Java 端仍可读取）
         cfg.save_to(&path).unwrap();
-        let profile_text =
-            std::fs::read_to_string(dir.join("config").join("profile.yml")).unwrap();
+        let profile_text = std::fs::read_to_string(dir.join("config").join("profile.yml")).unwrap();
         assert!(profile_text.contains("check-interval"), "{profile_text}");
         let _ = std::fs::remove_dir_all(&dir);
     }

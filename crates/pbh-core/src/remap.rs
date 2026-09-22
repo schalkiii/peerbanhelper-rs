@@ -44,7 +44,10 @@ pub struct BanlistRemapping {
 
 impl Default for BanlistRemapping {
     fn default() -> Self {
-        Self { ipv4: default_ipv4_remap(), ipv6: default_ipv6_remap() }
+        Self {
+            ipv4: default_ipv4_remap(),
+            ipv6: default_ipv6_remap(),
+        }
     }
 }
 
@@ -59,10 +62,16 @@ pub struct RemapRange {
 }
 
 fn default_ipv4_remap() -> RemapRange {
-    RemapRange { enabled: false, remap_range: 30 }
+    RemapRange {
+        enabled: false,
+        remap_range: 30,
+    }
 }
 fn default_ipv6_remap() -> RemapRange {
-    RemapRange { enabled: true, remap_range: 52 }
+    RemapRange {
+        enabled: true,
+        remap_range: 52,
+    }
 }
 
 /// `ip-remapping:` 段（`teredo` 默认 false，`nat64` 默认开启）。
@@ -104,7 +113,10 @@ pub struct Nat64Config {
 
 impl Default for Nat64Config {
     fn default() -> Self {
-        Self { enabled: true, prefix: default_nat64_prefix() }
+        Self {
+            enabled: true,
+            prefix: default_nat64_prefix(),
+        }
     }
 }
 
@@ -158,11 +170,15 @@ fn teredo_client_ip(v6: &Ipv6Addr) -> Ipv4Addr {
 }
 
 fn prefix_of_v4(addr: Ipv4Addr, len: u8) -> Option<String> {
-    Ipv4Net::new(addr, len.min(32)).ok().map(|n| n.trunc().to_string())
+    Ipv4Net::new(addr, len.min(32))
+        .ok()
+        .map(|n| n.trunc().to_string())
 }
 
 fn prefix_of_v6(addr: Ipv6Addr, len: u8) -> Option<String> {
-    Ipv6Net::new(addr, len.min(128)).ok().map(|n| n.trunc().to_string())
+    Ipv6Net::new(addr, len.min(128))
+        .ok()
+        .map(|n| n.trunc().to_string())
 }
 
 /// 生成某个地址的「等价写法」集合，对齐上游 `generateRemappedPairIfPossible`
@@ -261,7 +277,10 @@ pub fn translate_peer_ip(ip: &str, port: u16, cfg: &IpRemapConfig) -> (String, u
         return (ip.trim().to_string(), port);
     };
     // 1. 内置 NAT（AutoSTUN）：未启用 / 未命中映射 ⇒ 原样直通，不阻塞、不报错
-    let (addr, port) = match cfg.auto_stun_registry.as_deref().and_then(|t| t.translate(addr, port))
+    let (addr, port) = match cfg
+        .auto_stun_registry
+        .as_deref()
+        .and_then(|t| t.translate(addr, port))
     {
         Some((translated, translated_port)) => (translated, translated_port),
         None => (addr, port),
@@ -301,7 +320,10 @@ mod tests {
     #[test]
     fn unparsable_address_is_passed_through() {
         let cfg = RemapConfig::default();
-        assert_eq!(remap_ban_list_address("not-an-ip", true, &cfg), vec!["not-an-ip"]);
+        assert_eq!(
+            remap_ban_list_address("not-an-ip", true, &cfg),
+            vec!["not-an-ip"]
+        );
         assert_eq!(
             translate_peer_ip("not-an-ip", 1, &cfg.ip_remapping),
             ("not-an-ip".to_string(), 1)
@@ -314,7 +336,10 @@ mod tests {
     fn translate_peer_ip_is_unchanged_while_auto_stun_is_disabled() {
         let cfg = IpRemapConfig::default();
         assert!(!cfg.auto_stun.enabled, "auto-stun.enabled 默认 false");
-        assert!(cfg.auto_stun_registry.is_none(), "默认不挂载 AutoSTUN 注册表");
+        assert!(
+            cfg.auto_stun_registry.is_none(),
+            "默认不挂载 AutoSTUN 注册表"
+        );
         for (ip, port, expected) in [
             ("192.168.1.5", 6881u16, ("192.168.1.5".to_string(), 6881u16)),
             ("8.8.8.8", 1, ("8.8.8.8".to_string(), 1)),
@@ -333,12 +358,19 @@ mod tests {
         let registry = AutoStunConfig::default().build();
         assert!(registry.insert_mapping("192.168.0.0/16", "203.0.113.9"));
         let cfg = IpRemapConfig::default().with_auto_stun(registry);
-        assert_eq!(translate_peer_ip("192.168.1.5", 6881, &cfg), ("192.168.1.5".to_string(), 6881));
+        assert_eq!(
+            translate_peer_ip("192.168.1.5", 6881, &cfg),
+            ("192.168.1.5".to_string(), 6881)
+        );
     }
 
     #[test]
     fn auto_stun_rewrites_private_ip_to_discovered_public_ip() {
-        let registry = AutoStunConfig { enabled: true, ..AutoStunConfig::default() }.build();
+        let registry = AutoStunConfig {
+            enabled: true,
+            ..AutoStunConfig::default()
+        }
+        .build();
         assert!(registry.insert_mapping("192.168.0.0/16", "203.0.113.9"));
         let cfg = IpRemapConfig::default().with_auto_stun(registry);
 
@@ -353,7 +385,10 @@ mod tests {
             ("10.1.2.3".to_string(), 6881)
         );
         // 公网地址：直通
-        assert_eq!(translate_peer_ip("8.8.8.8", 6881, &cfg), ("8.8.8.8".to_string(), 6881));
+        assert_eq!(
+            translate_peer_ip("8.8.8.8", 6881, &cfg),
+            ("8.8.8.8".to_string(), 6881)
+        );
         // IPv6：STUN 发现路径只登记 IPv4 网段 ⇒ 直通
         assert_eq!(
             translate_peer_ip("2001:db8::1", 6881, &cfg),
@@ -365,7 +400,11 @@ mod tests {
     /// （对齐 `addressTranslate` 的就地改写顺序）。
     #[test]
     fn built_in_nat_rewrite_precedes_teredo_and_nat64() {
-        let registry = AutoStunConfig { enabled: true, ..AutoStunConfig::default() }.build();
+        let registry = AutoStunConfig {
+            enabled: true,
+            ..AutoStunConfig::default()
+        }
+        .build();
         assert!(registry.insert_mapping("64:ff9b::/96", "203.0.113.9"));
         assert!(registry.insert_mapping("2001:0:4136:e378::/64", "198.51.100.7"));
         let cfg = IpRemapConfig::default().with_auto_stun(registry);
@@ -386,9 +425,15 @@ mod tests {
     #[test]
     fn enabled_auto_stun_without_registry_is_passthrough() {
         let cfg = IpRemapConfig {
-            auto_stun: AutoStunConfig { enabled: true, ..AutoStunConfig::default() },
+            auto_stun: AutoStunConfig {
+                enabled: true,
+                ..AutoStunConfig::default()
+            },
             ..IpRemapConfig::default()
         };
-        assert_eq!(translate_peer_ip("192.168.1.5", 6881, &cfg), ("192.168.1.5".to_string(), 6881));
+        assert_eq!(
+            translate_peer_ip("192.168.1.5", 6881, &cfg),
+            ("192.168.1.5".to_string(), 6881)
+        );
     }
 }

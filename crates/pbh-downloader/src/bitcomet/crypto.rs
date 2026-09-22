@@ -50,7 +50,13 @@ pub fn credential(json: &str, cid: &str) -> String {
 }
 
 /// 与 [`credential`] 相同，但随机量由调用方给出（供已知向量测试固定输入）。
-pub fn credential_with(json: &str, cid: &str, t: &[u8; SALT_LEN], r: &[u8; SALT_LEN], iv: &[u8; IV_LEN]) -> String {
+pub fn credential_with(
+    json: &str,
+    cid: &str,
+    t: &[u8; SALT_LEN],
+    r: &[u8; SALT_LEN],
+    iv: &[u8; IV_LEN],
+) -> String {
     let aes_key = pbkdf2_sha1(cid.as_bytes(), t);
     let hmac_key = pbkdf2_sha1(cid.as_bytes(), r);
 
@@ -66,8 +72,8 @@ pub fn credential_with(json: &str, cid: &str, t: &[u8; SALT_LEN], r: &[u8; SALT_
     msg.extend_from_slice(iv);
     msg.extend_from_slice(&ciphertext);
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(&hmac_key)
-        .expect("HMAC 密钥长度任意，构造不会失败");
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(&hmac_key).expect("HMAC 密钥长度任意，构造不会失败");
     mac.update(&msg);
     msg.extend_from_slice(&mac.finalize().into_bytes());
 
@@ -97,7 +103,9 @@ mod tests {
     fn credential_matches_upstream_layout_for_fixed_randomness() {
         let t = [0u8, 1, 2, 3, 4, 5, 6, 7];
         let r = [8u8, 9, 10, 11, 12, 13, 14, 15];
-        let iv = [16u8, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
+        let iv = [
+            16u8, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+        ];
         let credential = credential_with(
             r#"{"username":"admin","password":"adminadmin"}"#,
             CLIENT_ID,

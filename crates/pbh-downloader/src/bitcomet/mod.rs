@@ -199,7 +199,10 @@ impl BitCometDownloader {
         Self::with_fetcher(config, fetcher)
     }
 
-    pub fn with_fetcher(config: BitCometConfig, http: Arc<dyn HttpFetcher>) -> anyhow::Result<Self> {
+    pub fn with_fetcher(
+        config: BitCometConfig,
+        http: Arc<dyn HttpFetcher>,
+    ) -> anyhow::Result<Self> {
         // 对齐 `Config.readFromYaml`：`if (endpoint.endsWith("/")) substring(0, length - 1)`，
         // 即只去掉**一个**结尾斜杠（浏览器复制地址的 workaround）。
         let endpoint = match config.endpoint.strip_suffix('/') {
@@ -218,12 +221,18 @@ impl BitCometDownloader {
 
     /// 当前设备令牌（未登录时为空串，等价 Java 的 `null` → `Bearer null`）。
     fn device_token(&self) -> String {
-        self.device_token.lock().map(|t| t.clone()).unwrap_or_default()
+        self.device_token
+            .lock()
+            .map(|t| t.clone())
+            .unwrap_or_default()
     }
 
     /// 当前协商到的服务端版本（未登录时为空串）。
     pub fn server_version(&self) -> String {
-        self.server_version.lock().map(|v| v.clone()).unwrap_or_default()
+        self.server_version
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// 对齐 `serverVersion.isGreaterThanOrEqualTo(...)`（未登录时上游会 NPE，此处按 false）。
@@ -252,7 +261,9 @@ impl BitCometDownloader {
     /// 未认证请求（仅 `USER_LOGIN` 使用；上游不给该请求加 `Authorization`）。
     async fn post_plain(&self, path: &str, body: String) -> anyhow::Result<HttpResponse> {
         let url = format!("{}{}", self.endpoint, path);
-        self.http.execute(Self::with_common_headers(HttpRequest::post_json(url, body))).await
+        self.http
+            .execute(Self::with_common_headers(HttpRequest::post_json(url, body)))
+            .await
     }
 
     /// 指定令牌的请求（`GET_DEVICE_TOKEN` 用 `invite_token`）。
@@ -273,7 +284,9 @@ impl BitCometDownloader {
     /// 非 2xx 时对齐上游抛 `IllegalStateException`；`ip_filter_config` / `enable_ipfilter`
     /// 缺失在 Java 里是 NPE（Gson 允许字段为 null），这里同样按错误处理。
     async fn query_need_reconfigure_ip_filter(&self) -> anyhow::Result<bool> {
-        let resp = self.post_authed(GET_IP_FILTER_CONFIG, "{}".to_string()).await?;
+        let resp = self
+            .post_authed(GET_IP_FILTER_CONFIG, "{}".to_string())
+            .await?;
         if !is_success(resp.status) {
             anyhow::bail!("Not a excepted statusCode while query the IPFilter status");
         }
@@ -305,7 +318,11 @@ impl BitCometDownloader {
             return Ok(());
         }
         let parsed: BCConfigSetResponse = serde_json::from_str(&resp.body)?;
-        if parsed.error_code.as_deref().is_some_and(|code| code.eq_ignore_ascii_case("ok")) {
+        if parsed
+            .error_code
+            .as_deref()
+            .is_some_and(|code| code.eq_ignore_ascii_case("ok"))
+        {
             info!("{}", tl(MSG_IP_FILTER_SUCCESS, Vec::new()));
         } else {
             error!("{}", tl(MSG_IP_FILTER_FAILED, Vec::new()));
@@ -334,7 +351,11 @@ impl BitCometDownloader {
         let task = response.task.clone().unwrap_or_default();
         TorrentData {
             // `infohash != null ? infohash : infohashV2`
-            hash: detail.infohash.clone().or_else(|| detail.infohash_v2.clone()).unwrap_or_default(),
+            hash: detail
+                .infohash
+                .clone()
+                .or_else(|| detail.infohash_v2.clone())
+                .unwrap_or_default(),
             // 名称取 `task.task_name`（而非 task_detail.task_name）
             name: task.task_name.clone().unwrap_or_default(),
             // `taskStatus.downloadPermillage / 1000.0d`
@@ -364,13 +385,16 @@ impl BitCometDownloader {
                 continue;
             }
             let remote_port = peer.remote_port.clamp(0, u16::MAX as i32) as u16;
-            let (raw_ip, raw_port) = parse_address(peer.ip.as_deref().unwrap_or_default(), remote_port);
+            let (raw_ip, raw_port) =
+                parse_address(peer.ip.as_deref().unwrap_or_default(), remote_port);
             // 对齐 `addressTranslate(new PeerAddress(ip, port, ip))`
             let (ip, port) = translate_peer_ip(&raw_ip, raw_port, &self.config.remap.ip_remapping);
             out.push(PeerData {
                 client_name: peer.client_type.clone(),
                 // `ByteUtil.hexToByteArray(peerId)` + `new String(bytes, ISO_8859_1)`
-                peer_id: Some(decode_peer_id_hex(peer.peer_id.as_deref().unwrap_or_default())),
+                peer_id: Some(decode_peer_id_hex(
+                    peer.peer_id.as_deref().unwrap_or_default(),
+                )),
                 dl_speed: peer.dl_rate,
                 // `dl_size` / `up_size` 可能为 null（上游旧版按 -1 兼容 BitComet 2.10）
                 downloaded: peer.dl_size.unwrap_or(-1),
@@ -518,7 +542,9 @@ impl Downloader for BitCometDownloader {
     fn feature_flags(&self) -> Vec<String> {
         let mut flags = vec![
             DownloaderFeature::UnbanIp.name().to_string(),
-            DownloaderFeature::LiveUpdateBtProtocolPort.name().to_string(),
+            DownloaderFeature::LiveUpdateBtProtocolPort
+                .name()
+                .to_string(),
         ];
         // `serverVersion.isGreaterThanOrEqualTo("2.20")`（未登录时上游 NPE，这里视为不满足）
         if self.server_version_at_least(TRAFFIC_STATS_VERSION.0, TRAFFIC_STATS_VERSION.1) {
@@ -565,7 +591,10 @@ impl Downloader for BitCometDownloader {
                     success: false,
                     message: tl(
                         MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(format!("{} {}", login_resp.status, login_resp.body))],
+                        vec![Param::Text(format!(
+                            "{} {}",
+                            login_resp.status, login_resp.body
+                        ))],
                     ),
                     version: String::new(),
                 });
@@ -642,15 +671,19 @@ impl Downloader for BitCometDownloader {
                     success: false,
                     message: tl(
                         MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(format!("{} {}", device_resp.status, device_resp.body))],
+                        vec![Param::Text(format!(
+                            "{} {}",
+                            device_resp.status, device_resp.body
+                        ))],
                     ),
                     version: raw_version,
                 });
             }
-            let device_token_result: BCDeviceTokenResult = match serde_json::from_str(&device_resp.body) {
-                Ok(parsed) => parsed,
-                Err(e) => return Ok(login_io_exception(&anyhow::Error::from(e))),
-            };
+            let device_token_result: BCDeviceTokenResult =
+                match serde_json::from_str(&device_resp.body) {
+                    Ok(parsed) => parsed,
+                    Err(e) => return Ok(login_io_exception(&anyhow::Error::from(e))),
+                };
             if let Ok(mut token) = self.device_token.lock() {
                 *token = device_token_result.device_token.clone().unwrap_or_default();
             }
@@ -691,7 +724,9 @@ impl Downloader for BitCometDownloader {
                 "start": 0,
                 "limit": i32::MAX - 1,
             });
-            let resp = self.post_authed(GET_TASK_LIST, requirements.to_string()).await?;
+            let resp = self
+                .post_authed(GET_TASK_LIST, requirements.to_string())
+                .await?;
             if !is_success(resp.status) {
                 anyhow::bail!(
                     "{}",
@@ -711,7 +746,11 @@ impl Downloader for BitCometDownloader {
             let include_private = !self.config.ignore_private;
             let mut task_ids = HashMap::new();
             let mut out = Vec::new();
-            for task in task_list.tasks.iter().filter(|t| t.kind.as_deref() == Some("BT")) {
+            for task in task_list
+                .tasks
+                .iter()
+                .filter(|t| t.kind.as_deref() == Some("BT"))
+            {
                 let task_id = task.task_id.to_string();
                 // `taskIds.put("task_id", String.valueOf(torrent.getTaskId()))`
                 let body = serde_json::json!({ "task_id": task_id }).to_string();
@@ -800,7 +839,8 @@ impl Downloader for BitCometDownloader {
             for ip in ips {
                 joined.extend(remap_ban_list_address(ip, true, &self.config.remap));
             }
-            self.operate_ban_list(IMPORT_REPLACE, &joined.join("\n")).await
+            self.operate_ban_list(IMPORT_REPLACE, &joined.join("\n"))
+                .await
         })
     }
 
@@ -808,12 +848,18 @@ impl Downloader for BitCometDownloader {
     /// 上游异常时返回 `null` ⇒ 调用方跳过；这里返回 `Err` 等价。
     fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
         Box::pin(async move {
-            let resp = match self.post_authed(GET_CONNECTION_CONFIG, "{}".to_string()).await {
+            let resp = match self
+                .post_authed(GET_CONNECTION_CONFIG, "{}".to_string())
+                .await
+            {
                 Ok(resp) => resp,
                 Err(e) => return Err(e),
             };
             if !is_success(resp.status) {
-                anyhow::bail!("BitComet getSpeedLimiter failed with status {}", resp.status);
+                anyhow::bail!(
+                    "BitComet getSpeedLimiter failed with status {}",
+                    resp.status
+                );
             }
             let parsed: BCConnectionConfigResponse = serde_json::from_str(&resp.body)
                 .map_err(|e| anyhow::anyhow!("BitComet getSpeedLimiter parse error: {e}"))?;
@@ -852,7 +898,10 @@ impl Downloader for BitCometDownloader {
             .to_string();
             let resp = self.post_authed(SET_CONNECTION_CONFIG, body).await?;
             if !is_success(resp.status) {
-                anyhow::bail!("BitComet setSpeedLimiter failed with status {}", resp.status);
+                anyhow::bail!(
+                    "BitComet setSpeedLimiter failed with status {}",
+                    resp.status
+                );
             }
             let parsed: BCConfigSetResponse = serde_json::from_str(&resp.body)
                 .map_err(|e| anyhow::anyhow!("BitComet setSpeedLimiter parse error: {e}"))?;
@@ -939,10 +988,8 @@ impl BitCometDownloader {
             );
         }
         let value_list: BCStatisticsValueListResponse = serde_json::from_str(&resp.body)?;
-        let byte_tokens = self.server_version_at_least(
-            TRAFFIC_STATS_VERSION.0,
-            TRAFFIC_STATS_VERSION.1,
-        );
+        let byte_tokens =
+            self.server_version_at_least(TRAFFIC_STATS_VERSION.0, TRAFFIC_STATS_VERSION.1);
         let mut total_uploaded = 0i64;
         let mut total_downloaded = 0i64;
         for value in &value_list.value_list {
@@ -1117,7 +1164,10 @@ fn login_io_exception(e: &anyhow::Error) -> LoginResult {
     let (class, message) = exception_params(e);
     LoginResult {
         success: false,
-        message: tl(MSG_LOGIN_IO_EXCEPTION, vec![Param::Text(format!("{class}: {message}"))]),
+        message: tl(
+            MSG_LOGIN_IO_EXCEPTION,
+            vec![Param::Text(format!("{class}: {message}"))],
+        ),
         version: String::new(),
     }
 }
@@ -1312,8 +1362,7 @@ mod tests {
                 .unwrap_or_default()
         }
         fn json(&self) -> Value {
-            serde_json::from_str(self.body.as_deref().unwrap_or_default())
-                .unwrap_or(Value::Null)
+            serde_json::from_str(self.body.as_deref().unwrap_or_default()).unwrap_or(Value::Null)
         }
     }
 
@@ -1414,7 +1463,8 @@ mod tests {
                 if url.ends_with(dto::GET_IP_FILTER_CONFIG) {
                     let required = self.ipfilter_token.lock().unwrap().clone();
                     if let Some(required) = required {
-                        if req.header("Authorization").unwrap_or_default() != format!("Bearer {required}")
+                        if req.header("Authorization").unwrap_or_default()
+                            != format!("Bearer {required}")
                         {
                             return respond(401, r#"{"error_code":"UNAUTHORIZED"}"#.to_string());
                         }
@@ -1536,14 +1586,22 @@ mod tests {
 
     /// 对齐上游 OkHttp interceptor：每个请求都必须带这三个头。
     fn assert_common_headers(req: &Recorded) {
-        assert_eq!(req.method, "POST", "BitComet WebUI 只会收到 POST: {}", req.url);
+        assert_eq!(
+            req.method, "POST",
+            "BitComet WebUI 只会收到 POST: {}",
+            req.url
+        );
         assert_eq!(
             req.header("Content-Type"),
             "application/json",
             "缺少 Content-Type: {:?}",
             req.headers
         );
-        assert_eq!(req.header("Client-Type"), "BitComet WebUI", "缺少 Client-Type");
+        assert_eq!(
+            req.header("Client-Type"),
+            "BitComet WebUI",
+            "缺少 Client-Type"
+        );
         assert_eq!(
             req.header("User-Agent"),
             "PeerBanHelper BitComet Adapter",
@@ -1595,7 +1653,11 @@ mod tests {
             .decode(login_body["authentication"].as_str().unwrap())
             .unwrap();
         assert_eq!(&raw[..2], &[3, 1]);
-        assert_eq!((raw.len() - 2 - 8 - 8 - 16 - 32) % 16, 0, "密文必须是 16 字节块");
+        assert_eq!(
+            (raw.len() - 2 - 8 - 8 - 16 - 32) % 16,
+            0,
+            "密文必须是 16 字节块"
+        );
         assert!(!raw.windows(12).any(|w| w == b"adminadmin"), "凭据必须加密");
 
         // device_token：用 invite_token 换取设备令牌
@@ -1684,7 +1746,11 @@ mod tests {
         assert!(!login.success);
         assert!(login.message.contains("2.18"), "{}", login.message);
         assert_eq!(login.version, "2.17.9");
-        assert_eq!(mock.requests().len(), 2, "版本不支持时不应继续换 device token");
+        assert_eq!(
+            mock.requests().len(),
+            2,
+            "版本不支持时不应继续换 device token"
+        );
 
         // 其它错误码 → DOWNLOADER_LOGIN_EXCEPTION，并把响应对象的 toString 作为参数
         let mock = mock_with_version("2.21.5", IPFILTER_OK);
@@ -1695,7 +1761,11 @@ mod tests {
         let dl = downloader(mock.clone(), false);
         let login = dl.login().await.unwrap();
         assert!(!login.success);
-        assert!(login.message.contains("无法连接到下载器"), "{}", login.message);
+        assert!(
+            login.message.contains("无法连接到下载器"),
+            "{}",
+            login.message
+        );
         assert!(login.message.contains("TOKEN_EXPIRED"), "{}", login.message);
     }
 
@@ -1749,7 +1819,10 @@ mod tests {
         assert!(!first.is_private());
 
         // infohash 为空 → 回退 infohash_v2；私有种子默认包含（ignore-private = false）
-        let second = torrent_by_hash(&torrents, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let second = torrent_by_hash(
+            &torrents,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
         assert_eq!(second.name, "private.bin");
         assert!(second.is_private());
         assert_eq!(second.progress, 1.0);
@@ -1799,7 +1872,10 @@ mod tests {
     #[tokio::test]
     async fn torrent_summary_failures_are_skipped() {
         let mock = mock_with_version("2.21.5", IPFILTER_OK);
-        mock.summaries.lock().unwrap().insert("11".to_string(), (500, "boom".to_string()));
+        mock.summaries
+            .lock()
+            .unwrap()
+            .insert("11".to_string(), (500, "boom".to_string()));
         let dl = downloader(mock.clone(), false);
         logged_in(&dl).await;
 
@@ -1844,7 +1920,8 @@ mod tests {
         );
 
         // 按下载器原始 `ip:port` 取（NAT64 翻译后与纯 IPv4 peer 的 `ip` 会重合）
-        let by_raw: HashMap<&str, &PeerData> = peers.iter().map(|p| (p.raw_ip.as_str(), p)).collect();
+        let by_raw: HashMap<&str, &PeerData> =
+            peers.iter().map(|p| (p.raw_ip.as_str(), p)).collect();
 
         // 普通 peer：peer_id 十六进制解码（不截断），flags 恒为 None（上游传 null）
         let normal = by_raw.get("9.9.9.9:6881").expect("peer 9.9.9.9");
@@ -1873,9 +1950,7 @@ mod tests {
         assert!(explicit.is_handshaking());
 
         // NAT64 → 翻译为 IPv4，raw_ip 保留下载器原始 ip:port；奇数长度 hex 前置补 0
-        let translated = by_raw
-            .get("64:ff9b::102:304:7001")
-            .expect("NAT64 peer");
+        let translated = by_raw.get("64:ff9b::102:304:7001").expect("NAT64 peer");
         assert_eq!(translated.ip, "1.2.3.4");
         assert_eq!(translated.port, 7001);
         assert_eq!(translated.peer_id.as_deref(), Some("\u{2}\u{d5}E#"));
@@ -2003,7 +2078,10 @@ mod tests {
         );
 
         *mock.unban_status.lock().unwrap() = 500;
-        let err = dl.unban_peers(&["1.2.3.4:6881".to_string()]).await.unwrap_err();
+        let err = dl
+            .unban_peers(&["1.2.3.4:6881".to_string()])
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("statusCode=500"), "{err}");
     }
 
@@ -2104,15 +2182,33 @@ mod tests {
 
     #[test]
     fn address_parsing_follows_host_and_port_rules() {
-        assert_eq!(parse_address("9.9.9.9", 6881), ("9.9.9.9".to_string(), 6881));
-        assert_eq!(parse_address("  9.9.9.9  ", 6881), ("9.9.9.9".to_string(), 6881));
+        assert_eq!(
+            parse_address("9.9.9.9", 6881),
+            ("9.9.9.9".to_string(), 6881)
+        );
+        assert_eq!(
+            parse_address("  9.9.9.9  ", 6881),
+            ("9.9.9.9".to_string(), 6881)
+        );
         // 恰好一个冒号 → host:port
-        assert_eq!(parse_address("1.2.3.4:7000", 1), ("1.2.3.4".to_string(), 7000));
+        assert_eq!(
+            parse_address("1.2.3.4:7000", 1),
+            ("1.2.3.4".to_string(), 7000)
+        );
         // 方括号 IPv6
-        assert_eq!(parse_address("[2001:db8::1]:7002", 1), ("2001:db8::1".to_string(), 7002));
-        assert_eq!(parse_address("[2001:db8::1]", 5), ("2001:db8::1".to_string(), 5));
+        assert_eq!(
+            parse_address("[2001:db8::1]:7002", 1),
+            ("2001:db8::1".to_string(), 7002)
+        );
+        assert_eq!(
+            parse_address("[2001:db8::1]", 5),
+            ("2001:db8::1".to_string(), 5)
+        );
         // 裸 IPv6（2 个以上冒号）→ 整体视为主机名，回退 remote_port
-        assert_eq!(parse_address("2001:db8::1", 7001), ("2001:db8::1".to_string(), 7001));
+        assert_eq!(
+            parse_address("2001:db8::1", 7001),
+            ("2001:db8::1".to_string(), 7001)
+        );
         // 端口非法：上游会抛 NumberFormatException，这里退回「整串为主机名」
         assert_eq!(
             parse_address("1.2.3.4:abc", 5),
@@ -2162,4 +2258,3 @@ mod tests {
         assert_eq!(parse_loose_semver("abc"), None);
     }
 }
-

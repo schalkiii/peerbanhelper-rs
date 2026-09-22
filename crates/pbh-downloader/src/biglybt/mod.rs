@@ -133,7 +133,11 @@ impl BiglyBtDownloader {
             Some(stripped) => stripped.to_string(),
             None => config.endpoint.clone(),
         };
-        Ok(Self { config, endpoint, http })
+        Ok(Self {
+            config,
+            endpoint,
+            http,
+        })
     }
 
     /// 上游 OkHttp interceptor：给每个请求补 `Content-Type` 与 Bearer 令牌。
@@ -149,7 +153,9 @@ impl BiglyBtDownloader {
 
     async fn post_json(&self, path: &str, body: String) -> anyhow::Result<HttpResponse> {
         let url = format!("{}{}", self.endpoint, path);
-        self.http.execute(self.authed(HttpRequest::post_json(url, body))).await
+        self.http
+            .execute(self.authed(HttpRequest::post_json(url, body)))
+            .await
     }
 
     async fn put_json(&self, path: &str, body: String) -> anyhow::Result<HttpResponse> {
@@ -304,7 +310,9 @@ impl Downloader for BiglyBtDownloader {
             DownloaderFeature::ReadPeerProtocols.name().to_string(),
             DownloaderFeature::UnbanIp.name().to_string(),
             DownloaderFeature::TrafficStats.name().to_string(),
-            DownloaderFeature::LiveUpdateBtProtocolPort.name().to_string(),
+            DownloaderFeature::LiveUpdateBtProtocolPort
+                .name()
+                .to_string(),
             DownloaderFeature::RangeBanIp.name().to_string(),
         ]
     }
@@ -466,7 +474,9 @@ impl Downloader for BiglyBtDownloader {
         torrent: &'a TorrentData,
     ) -> BoxFuture<'a, anyhow::Result<Vec<PeerData>>> {
         Box::pin(async move {
-            let resp = self.get(&format!("/download/{}/peers", torrent.id())).await?;
+            let resp = self
+                .get(&format!("/download/{}/peers", torrent.id()))
+                .await?;
             if resp.status == 404 {
                 // 种子被删除或者种子错误时会返回 404；Java 返回可变空表
                 return Ok(Vec::new());
@@ -930,7 +940,10 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
-                speedlimiter: Mutex::new((200, r#"{"upload":1048576,"download":2097152}"#.to_string())),
+                speedlimiter: Mutex::new((
+                    200,
+                    r#"{"upload":1048576,"download":2097152}"#.to_string(),
+                )),
                 metadata: Mutex::new((200, METADATA.to_string())),
                 downloads: Mutex::new((200, DOWNLOADS.to_string())),
                 peers: Mutex::new((200, PEERS.to_string())),
@@ -1076,7 +1089,11 @@ mod tests {
         assert!(login.message.contains("适配器"), "{}", login.message);
         assert!(login.message.contains("1.3.0"), "{}", login.message);
         assert_eq!(login.version, "1.2.9");
-        assert_eq!(mock.requests().len(), 1, "版本不支持时不应再发 setconnector");
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "版本不支持时不应再发 setconnector"
+        );
     }
 
     #[tokio::test]
@@ -1086,7 +1103,11 @@ mod tests {
         let dl = downloader(mock.clone(), false);
         let login = dl.login().await.unwrap();
         assert!(!login.success);
-        assert!(login.message.contains("statusCode=500"), "{}", login.message);
+        assert!(
+            login.message.contains("statusCode=500"),
+            "{}",
+            login.message
+        );
 
         let mock = BiglyBtMock::new();
         *mock.transport_error.lock().unwrap() = true;
@@ -1125,7 +1146,10 @@ mod tests {
 
         let req = mock.request("/downloads?filter=4&filter=5&filter=8");
         assert_eq!(req.method, "GET");
-        assert_eq!(req.url, "http://mock.local/downloads?filter=4&filter=5&filter=8");
+        assert_eq!(
+            req.url,
+            "http://mock.local/downloads?filter=4&filter=5&filter=8"
+        );
         assert_authed(&req);
 
         // ignore-private = true：私有种子被跳过
@@ -1338,8 +1362,14 @@ mod tests {
     #[test]
     fn adapter_version_gate_matches_semver_rules() {
         assert_eq!(adapter_version_lower_than_min("1.2.9", "1.3.0"), Some(true));
-        assert_eq!(adapter_version_lower_than_min("1.3.0", "1.3.0"), Some(false));
-        assert_eq!(adapter_version_lower_than_min("1.3.1", "1.3.0"), Some(false));
+        assert_eq!(
+            adapter_version_lower_than_min("1.3.0", "1.3.0"),
+            Some(false)
+        );
+        assert_eq!(
+            adapter_version_lower_than_min("1.3.1", "1.3.0"),
+            Some(false)
+        );
         // LOOSE 模式：缺省分量按 0
         assert_eq!(adapter_version_lower_than_min("1.3", "1.3.0"), Some(false));
         assert_eq!(adapter_version_lower_than_min("1", "1.3.0"), Some(true));

@@ -10,7 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::AppState;
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn week_start_ms() -> i64 {
@@ -43,11 +46,23 @@ pub async fn field(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let mode = params.get("type").cloned().unwrap_or_else(|| "count".into());
+    let mode = params
+        .get("type")
+        .cloned()
+        .unwrap_or_else(|| "count".into());
     let field = params.get("field").cloned().unwrap_or_default();
-    let filter = params.get("filter").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-    let downloader = params.get("downloader").map(|s| s.to_string()).filter(|s| !s.is_empty());
-    match state.db.field_stats(&field, &mode, filter, downloader.as_deref()) {
+    let filter = params
+        .get("filter")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let downloader = params
+        .get("downloader")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+    match state
+        .db
+        .field_stats(&field, &mode, filter, downloader.as_deref())
+    {
         Ok(rows) => {
             let results: Vec<Value> = rows
                 .iter()
@@ -68,9 +83,18 @@ pub async fn ban_trends(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let start = params.get("startAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    let end = params.get("endAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(now_ms());
-    let downloader = params.get("downloader").map(|s| s.to_string()).filter(|s| !s.is_empty());
+    let start = params
+        .get("startAt")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let end = params
+        .get("endAt")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(now_ms());
+    let downloader = params
+        .get("downloader")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
     match state.db.ban_trends(start, end, downloader.as_deref()) {
         Ok(rows) => {
             let results: Vec<Value> = rows
@@ -92,14 +116,26 @@ pub async fn date(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let start = params.get("startAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    let end = params.get("endAt").and_then(|v| v.parse::<i64>().ok()).unwrap_or(now_ms());
-    let downloader = params.get("downloader").map(|s| s.to_string()).filter(|s| !s.is_empty());
+    let start = params
+        .get("startAt")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let end = params
+        .get("endAt")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(now_ms());
+    let downloader = params
+        .get("downloader")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
     match state.db.ban_trends(start, end, downloader.as_deref()) {
         Ok(rows) => {
-            let mut buckets: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+            let mut buckets: std::collections::BTreeMap<i64, i64> =
+                std::collections::BTreeMap::new();
             for (day_start, count) in rows {
-                *buckets.entry((day_start / 86400000) * 86400000).or_insert(0) += count;
+                *buckets
+                    .entry((day_start / 86400000) * 86400000)
+                    .or_insert(0) += count;
             }
             let total: i64 = buckets.values().sum();
             let results: Vec<Value> = buckets

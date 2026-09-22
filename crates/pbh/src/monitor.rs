@@ -33,7 +33,7 @@ use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::RuleModule;
 use pbh_core::modules::{
     ActiveMonitoringModule, DownloaderTrafficStats, MonitorSink, PeerRecordingServiceModule,
-    SessionAnalyseServiceModule, SpeedLimiter, SpeedLimitChange, SwarmTrackingModule,
+    SessionAnalyseServiceModule, SpeedLimitChange, SpeedLimiter, SwarmTrackingModule,
     TrafficMonitoringAlert,
 };
 use std::sync::{Arc, Mutex};
@@ -184,7 +184,10 @@ impl MonitorHost {
         // 1) `updateTrafficStatus`：先判断到期（持锁），再在锁外做下载器网络 I/O
         let traffic_due = match self.schedule.lock() {
             Ok(mut schedule) => self.active_monitoring().is_some_and(|_| {
-                due(&mut schedule.traffic_tick, TRAFFIC_TICK_INTERVAL.as_millis() as i64)
+                due(
+                    &mut schedule.traffic_tick,
+                    TRAFFIC_TICK_INTERVAL.as_millis() as i64,
+                )
             }),
             Err(_) => false,
         };
@@ -209,8 +212,9 @@ impl MonitorHost {
                         );
                         continue;
                     }
-                    if let Some(entry) =
-                        entries.iter().find(|e| e.downloader.id() == change.downloader_id)
+                    if let Some(entry) = entries
+                        .iter()
+                        .find(|e| e.downloader.id() == change.downloader_id)
                     {
                         if let Err(e) = entry
                             .downloader
@@ -238,7 +242,10 @@ impl MonitorHost {
             return;
         };
         if let Some(session) = self.session_analyse() {
-            if due(&mut schedule.session_flush, session.settings.data_flush_interval_ms) {
+            if due(
+                &mut schedule.session_flush,
+                session.settings.data_flush_interval_ms,
+            ) {
                 let summary = session.flush_data(now_ms);
                 debug!(
                     "session-analyse flushData: track 行 {} / {}，删除 {} 条，缓存 {} 条",
@@ -248,7 +255,10 @@ impl MonitorHost {
                     session.cache_len()
                 );
             }
-            if due(&mut schedule.session_cleanup, session.settings.cleanup_interval_ms) {
+            if due(
+                &mut schedule.session_cleanup,
+                session.settings.cleanup_interval_ms,
+            ) {
                 let deleted = session.cleanup(now_ms);
                 if deleted > 0 {
                     info!("session-analyse 清理过期聚合数据 {deleted} 条");
@@ -277,7 +287,10 @@ impl MonitorHost {
             }
         }
         if let Some(swarm) = self.swarm_tracking() {
-            if due(&mut schedule.swarm_flush, swarm.settings.data_flush_interval_ms) {
+            if due(
+                &mut schedule.swarm_flush,
+                swarm.settings.data_flush_interval_ms,
+            ) {
                 swarm.flush_all();
                 debug!("swarm-tracking flushAll: 当前跟踪 {}", swarm.count());
             }
@@ -339,7 +352,10 @@ pub async fn collect_traffic_stats(entries: &[DownloaderEntry]) -> Vec<Downloade
         let login = match downloader.login().await {
             Ok(login) => login,
             Err(e) => {
-                debug!("active-monitoring: 下载器 {} 登录失败，跳过本轮流量统计: {e}", downloader.id());
+                debug!(
+                    "active-monitoring: 下载器 {} 登录失败，跳过本轮流量统计: {e}",
+                    downloader.id()
+                );
                 continue;
             }
         };
@@ -469,7 +485,10 @@ module:
         assert_eq!(sink.tracked_swarm().len(), 1);
         let restarted = MonitorHost::new(&profile(), sink.clone());
         assert!(restarted.swarm_tracking().is_some());
-        assert!(sink.tracked_swarm().is_empty(), "resetTable -> 数据随重启丢弃");
+        assert!(
+            sink.tracked_swarm().is_empty(),
+            "resetTable -> 数据随重启丢弃"
+        );
     }
 
     #[test]
@@ -497,10 +516,22 @@ module:
         assert!(sink.peer_records().is_empty(), "回调本身不落库");
 
         host.run_scheduled(&[], 0, false).await;
-        assert_eq!(host.peer_recording().unwrap().cache_len(), 2, "flush 不清空缓存");
+        assert_eq!(
+            host.peer_recording().unwrap().cache_len(),
+            2,
+            "flush 不清空缓存"
+        );
         assert_eq!(sink.peer_records().len(), 2, "peer-recording.flush 写库");
-        assert_eq!(sink.tracked_swarm().len(), 2, "swarm-tracking.flushAll 写库");
-        assert_eq!(host.swarm_tracking().unwrap().count(), 2, "count = trackedSwarmDao.count()");
+        assert_eq!(
+            sink.tracked_swarm().len(),
+            2,
+            "swarm-tracking.flushAll 写库"
+        );
+        assert_eq!(
+            host.swarm_tracking().unwrap().count(),
+            2,
+            "count = trackedSwarmDao.count()"
+        );
         // session-analyse 的 track 行先 upsert、再按「是否今天」聚合进 metrics 后删除
         assert_eq!(sink.connection_metrics().len(), 1, "flushData 聚合落库");
         assert!(sink.metrics_tracks().is_empty(), "聚合后的 track 行被删除");
@@ -519,10 +550,22 @@ module:
         assert_eq!(db.tracked_swarm_count().unwrap(), 0, "回调本身不落库");
 
         host.run_scheduled(&[], now, false).await;
-        assert_eq!(db.tracked_swarm_count().unwrap(), 2, "swarm-tracking.flushAll 写库");
-        assert_eq!(host.swarm_tracking().unwrap().count(), 2, "count = trackedSwarmDao.count()");
+        assert_eq!(
+            db.tracked_swarm_count().unwrap(),
+            2,
+            "swarm-tracking.flushAll 写库"
+        );
+        assert_eq!(
+            host.swarm_tracking().unwrap().count(),
+            2,
+            "count = trackedSwarmDao.count()"
+        );
         // `peer_records` / `peer_connection_metrics` 没有读取接口，用清理接口反查写入条数
-        assert_eq!(sink.remove_peer_records_before(i64::MAX), 2, "peer-recording.flush 写库");
+        assert_eq!(
+            sink.remove_peer_records_before(i64::MAX),
+            2,
+            "peer-recording.flush 写库"
+        );
         assert_eq!(
             sink.remove_connection_metrics_before(i64::MAX),
             1,
@@ -560,7 +603,10 @@ module:
 
         host.shutdown(&[], 5_000).await;
         assert_eq!(sink.peer_records().len(), 1, "onDisable 的 flush()");
-        assert!(!sink.connection_metrics().is_empty(), "onDisable 的 flushData()");
+        assert!(
+            !sink.connection_metrics().is_empty(),
+            "onDisable 的 flushData()"
+        );
     }
 
     // ---------------- 日流量阈值告警的推送分发（publishAlert(push=true)） ----------------
@@ -590,14 +636,15 @@ module:
         {
             Box::pin(async move {
                 self.requests.lock().unwrap().push(req);
-                Ok(pbh_downloader::http::HttpResponse::new(200, "{}".to_string()))
+                Ok(pbh_downloader::http::HttpResponse::new(
+                    200,
+                    "{}".to_string(),
+                ))
             })
         }
     }
 
-    fn alert_manager_with(
-        fetcher: Arc<RecordingFetcher>,
-    ) -> Arc<crate::push::AlertManager> {
+    fn alert_manager_with(fetcher: Arc<RecordingFetcher>) -> Arc<crate::push::AlertManager> {
         let section: crate::config::PushSection =
             serde_yaml::from_str("a:\n  type: bark\n  device_key: \"k\"\n")
                 .expect("测试用 push 配置应可解析");

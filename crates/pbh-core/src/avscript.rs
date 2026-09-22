@@ -88,17 +88,27 @@ pub fn build_script_env() -> ScriptEnv {
     engine.register_type_with_name::<PeerData>("Peer");
     engine.register_get("ip", |o: &mut PeerData| o.ip.clone());
     engine.register_get("port", |o: &mut PeerData| o.port as i64);
-    engine.register_get("peer_id", |o: &mut PeerData| o.peer_id.clone().unwrap_or_default());
-    engine.register_get("client_name", |o: &mut PeerData| o.client_name.clone().unwrap_or_default());
+    engine.register_get("peer_id", |o: &mut PeerData| {
+        o.peer_id.clone().unwrap_or_default()
+    });
+    engine.register_get("client_name", |o: &mut PeerData| {
+        o.client_name.clone().unwrap_or_default()
+    });
     engine.register_get("download_speed", |o: &mut PeerData| o.dl_speed);
     engine.register_get("upload_speed", |o: &mut PeerData| o.up_speed);
     engine.register_get("downloaded", |o: &mut PeerData| o.downloaded);
     engine.register_get("uploaded", |o: &mut PeerData| o.uploaded);
     engine.register_get("progress", |o: &mut PeerData| o.progress);
-    engine.register_get("flags", |o: &mut PeerData| o.flags.clone().unwrap_or_default());
+    engine.register_get("flags", |o: &mut PeerData| {
+        o.flags.clone().unwrap_or_default()
+    });
     // 驼峰别名（对齐上游 JavaBean getter：getPeerId/getClientName/…）
-    engine.register_get("peerId", |o: &mut PeerData| o.peer_id.clone().unwrap_or_default());
-    engine.register_get("clientName", |o: &mut PeerData| o.client_name.clone().unwrap_or_default());
+    engine.register_get("peerId", |o: &mut PeerData| {
+        o.peer_id.clone().unwrap_or_default()
+    });
+    engine.register_get("clientName", |o: &mut PeerData| {
+        o.client_name.clone().unwrap_or_default()
+    });
     engine.register_get("downloadSpeed", |o: &mut PeerData| o.dl_speed);
     engine.register_get("uploadSpeed", |o: &mut PeerData| o.up_speed);
     engine.register_get("peerAddress", |o: &mut PeerData| PeerAddressInfo {
@@ -110,7 +120,9 @@ pub fn build_script_env() -> ScriptEnv {
     engine.register_type_with_name::<PeerAddressInfo>("PeerAddress");
     engine.register_get("ip", |o: &mut PeerAddressInfo| o.ip.clone());
     engine.register_get("port", |o: &mut PeerAddressInfo| o.port);
-    engine.register_get("address", |o: &mut PeerAddressInfo| canonical_address(&o.ip));
+    engine.register_get("address", |o: &mut PeerAddressInfo| {
+        canonical_address(&o.ip)
+    });
 
     // ---- torrent：snake_case + 驼峰 + 上游接口补齐的字段 ----
     engine.register_type_with_name::<TorrentData>("Torrent");
@@ -126,7 +138,9 @@ pub fn build_script_env() -> ScriptEnv {
     // 上游 `Torrent#getCompletedSize`（各适配器同一语义，见 TorrentData::completed_size）
     engine.register_get("completedSize", |o: &mut TorrentData| o.completed_size());
     // 上游 `isPrivate()` / `isSeeding()`
-    engine.register_get("private", |o: &mut TorrentData| o.is_private.unwrap_or(false));
+    engine.register_get("private", |o: &mut TorrentData| {
+        o.is_private.unwrap_or(false)
+    });
     engine.register_get("seeding", |o: &mut TorrentData| o.progress >= 1.0);
     engine.register_get("hashedIdentifier", |o: &mut TorrentData| {
         crate::btn_transport::get_hashed_identifier(&o.hash)
@@ -160,16 +174,21 @@ pub fn build_script_env() -> ScriptEnv {
     });
     // `seq.map` 的保序访问函数（见模块文档：rhai Map 有序，Aviator 保持插入序）
     engine.register_fn("av_keys", |m: rhai::Array| -> rhai::Array {
-        m.chunks(2).filter_map(|pair| pair.first().cloned()).collect()
+        m.chunks(2)
+            .filter_map(|pair| pair.first().cloned())
+            .collect()
     });
-    engine.register_fn("av_get", |m: rhai::Array, key: rhai::ImmutableString| -> rhai::Dynamic {
-        for pair in m.chunks(2) {
-            if pair.len() == 2 && pair[0].to_string() == key.as_str() {
-                return pair[1].clone();
+    engine.register_fn(
+        "av_get",
+        |m: rhai::Array, key: rhai::ImmutableString| -> rhai::Dynamic {
+            for pair in m.chunks(2) {
+                if pair.len() == 2 && pair[0].to_string() == key.as_str() {
+                    return pair[1].clone();
+                }
             }
-        }
-        rhai::Dynamic::UNIT
-    });
+            rhai::Dynamic::UNIT
+        },
+    );
 
     // ---- 超时兜底（对齐上游 runExpression 的 maxScriptExecuteTime） ----
     let start_for_cb = start.clone();
@@ -305,7 +324,8 @@ pub fn transpile(source: &str) -> Result<String, String> {
             // 3) 语句级裸赋值 `x = …`（非 `==`）→ `let x = …`
             //    （rhai 允许 let 重声明遮蔽；上游脚本惯用隐式全局赋值）
             if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') {
-                let at_statement = prev_sig == '\0' || prev_sig == ';' || prev_sig == '{' || prev_sig == '}';
+                let at_statement =
+                    prev_sig == '\0' || prev_sig == ';' || prev_sig == '{' || prev_sig == '}';
                 if at_statement {
                     out.push_str("let ");
                 }
@@ -638,7 +658,10 @@ fn emit_method_call(
     out.push('(');
     out.push_str(&a0);
     out.push_str(&format!(").{method}("));
-    let rest: Vec<String> = args[1..].iter().map(|r| transpile_arg(chars, *r)).collect::<Result<_, _>>()?;
+    let rest: Vec<String> = args[1..]
+        .iter()
+        .map(|r| transpile_arg(chars, *r))
+        .collect::<Result<_, _>>()?;
     out.push_str(&rest.join(", "));
     out.push(')');
     Ok(())
@@ -646,7 +669,10 @@ fn emit_method_call(
 
 fn require_arg_count(name: &str, args: &[(usize, usize)], expected: usize) -> Result<(), String> {
     if args.len() != expected {
-        return Err(format!("{name} 需要 {expected} 个参数，实际 {}", args.len()));
+        return Err(format!(
+            "{name} 需要 {expected} 个参数，实际 {}",
+            args.len()
+        ));
     }
     Ok(())
 }
@@ -661,12 +687,16 @@ mod tests {
 
     fn eval_string(script: &str) -> String {
         let env = build_script_env();
-        env.engine.eval::<String>(&transpiled(script)).expect("rhai 执行失败")
+        env.engine
+            .eval::<String>(&transpiled(script))
+            .expect("rhai 执行失败")
     }
 
     fn eval_array(script: &str) -> rhai::Array {
         let env = build_script_env();
-        env.engine.eval::<rhai::Array>(&transpiled(script)).expect("rhai 执行失败")
+        env.engine
+            .eval::<rhai::Array>(&transpiled(script))
+            .expect("rhai 执行失败")
     }
 
     // ---------- 翻译器：注释 / 字符串 / 裸赋值 / nil ----------
@@ -689,7 +719,8 @@ mod tests {
 
     #[test]
     fn transpile_bare_assignment_becomes_let() {
-        let out = transpile("ipAddress = peer.peerAddress.address;\nstrIp = toString(ipAddress);").unwrap();
+        let out = transpile("ipAddress = peer.peerAddress.address;\nstrIp = toString(ipAddress);")
+            .unwrap();
         assert_eq!(
             out,
             "let ipAddress = peer.peerAddress.address;\nlet strIp = (ipAddress).to_string();"
@@ -742,10 +773,11 @@ mod tests {
     #[test]
     fn seq_map_preserves_insertion_order_unlike_rhai_map() {
         // rhai 的 `#{}` map 按键排序；`aria2explorer` 必须先于 `aria2` 被 keys 迭代
-        let keys: Vec<String> = eval_array("return seq.keys(seq.map('aria2explorer','-ae','aria2','a2'));")
-            .iter()
-            .map(|d| d.clone().into_string().unwrap())
-            .collect();
+        let keys: Vec<String> =
+            eval_array("return seq.keys(seq.map('aria2explorer','-ae','aria2','a2'));")
+                .iter()
+                .map(|d| d.clone().into_string().unwrap())
+                .collect();
         assert_eq!(keys, vec!["aria2explorer", "aria2"]);
     }
 
@@ -772,7 +804,10 @@ mod tests {
     #[test]
     fn rhai_index_of_returns_minus_one_when_missing() {
         let env = build_script_env();
-        let hit: i64 = env.engine.eval("\"hello gopeed dev\".index_of(\"gopeed dev\")").unwrap();
+        let hit: i64 = env
+            .engine
+            .eval("\"hello gopeed dev\".index_of(\"gopeed dev\")")
+            .unwrap();
         let miss: i64 = env.engine.eval("\"abc\".index_of(\"zzz\")").unwrap();
         assert_eq!(hit, 6);
         assert_eq!(miss, -1, "index_of 未命中应为 -1（对齐 Java indexOf）");
@@ -802,7 +837,10 @@ mod tests {
             env.engine.eval::<String>("(\"AbC\").to_lower()").unwrap(),
             "abc"
         );
-        assert_eq!(env.engine.eval::<String>("(123).to_string()").unwrap(), "123");
+        assert_eq!(
+            env.engine.eval::<String>("(123).to_string()").unwrap(),
+            "123"
+        );
     }
 
     // ---------- 端到端：翻译后的社区脚本骨架在引擎里跑通 ----------
@@ -833,7 +871,12 @@ return false;
             let mut scope = rhai::Scope::new();
             scope.push("clientNameLowercase", client.to_string());
             scope.push("peerIdLowercase", pid.to_string());
-            env.engine.eval_ast_with_scope::<rhai::Dynamic>(&mut scope, &env.engine.compile(&src).unwrap()).unwrap()
+            env.engine
+                .eval_ast_with_scope::<rhai::Dynamic>(
+                    &mut scope,
+                    &env.engine.compile(&src).unwrap(),
+                )
+                .unwrap()
         };
         // 表内匹配 → false（放行）
         assert!(run("bitcomet 2.0", "-bc0001-x").is_bool());
@@ -847,4 +890,3 @@ return false;
         assert!(run("xunlei 3.0", "-xl0001-x").is_bool());
     }
 }
-

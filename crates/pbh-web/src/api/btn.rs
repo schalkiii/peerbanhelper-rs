@@ -28,7 +28,11 @@ pub async fn auto_stun_status(
 ) -> Response {
     let status = state.auto_stun_status();
     let _ = params;
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!(status))).into_response()
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!(status)),
+    )
+        .into_response()
 }
 
 impl AppState {

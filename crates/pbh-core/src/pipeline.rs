@@ -71,7 +71,9 @@ impl Pipeline {
                 data: serde_json::json!({ "type": "ignoredAddresses" }),
                 // 上游此处直接用字面量作为 key（文案表中不存在，渲染即原样输出）
                 rule_key: Some(TranslationComponent::new("general-rule-ignored-address")),
-                reason_key: Some(TranslationComponent::new("general-reason-skip-ignored-peers")),
+                reason_key: Some(TranslationComponent::new(
+                    "general-reason-skip-ignored-peers",
+                )),
             });
         }
 
@@ -87,7 +89,8 @@ impl Pipeline {
                 Some(current) => {
                     let (new_rank, cur_rank) = (result.action.ordinal(), current.action.ordinal());
                     new_rank > cur_rank
-                        || (new_rank == cur_rank && result.ban_duration_ms > current.ban_duration_ms)
+                        || (new_rank == cur_rank
+                            && result.ban_duration_ms > current.ban_duration_ms)
                 }
             };
             if replace {

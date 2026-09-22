@@ -14,6 +14,7 @@ use crate::geoip::{
     NET_TYPE_INTERNET_CAFE, NET_TYPE_IOT, NET_TYPE_IP_PRIVATE_NETWORK, NET_TYPE_WIDEBAND,
 };
 use crate::iputil::IpSet;
+use crate::module::RuleModule;
 use crate::modules::{
     ActiveMonitoringModule, AntiVampire, AntiVampireSettings, AutoRangeBan, BtnNetworkOnline,
     ExpressionEngine, IdleConnectionDosProtection, IdleProtectionSettings, IpBlacklist,
@@ -21,7 +22,6 @@ use crate::modules::{
     ProgressCheatBlocker, ProtectionMode, SessionAnalyseServiceModule, StringBlacklist,
     SwarmTrackingModule,
 };
-use crate::module::RuleModule;
 use crate::pipeline::Pipeline;
 use crate::rule::RuleSet;
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,10 @@ where
 }
 
 fn default_ignore_addresses() -> Vec<String> {
-    defaults::DEFAULT_IGNORE_ADDRESSES.iter().map(|s| s.to_string()).collect()
+    defaults::DEFAULT_IGNORE_ADDRESSES
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn default_true() -> bool {
@@ -74,9 +77,16 @@ pub struct ProfileConfig {
     #[serde(rename = "check-interval", default = "default_check_interval")]
     pub check_interval: u64,
     /// 全局封禁时长（毫秒），模块 ban-duration 为 0/缺省时使用
-    #[serde(rename = "ban-duration", default = "default_global_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_global_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration: i64,
-    #[serde(rename = "ignore-peers-from-addresses", default = "default_ignore_addresses")]
+    #[serde(
+        rename = "ignore-peers-from-addresses",
+        default = "default_ignore_addresses"
+    )]
     pub ignore_peers_from_addresses: Vec<String>,
     #[serde(default)]
     pub module: ModulesSection,
@@ -141,7 +151,11 @@ pub struct ModulesSection {
 pub struct PtrBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_ptr_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_ptr_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "ptr-rules", default = "default_ptr_rules")]
     pub ptr_rules: Vec<String>,
@@ -163,13 +177,20 @@ fn default_ptr_rules() -> Vec<String> {
 pub struct IdleProtectionConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_idle_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_idle_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "max-allowed-idle-time", default = "default_idle_max")]
     pub max_allowed_idle_time_ms: i64,
     #[serde(rename = "idle-speed-threshold", default = "default_idle_speed")]
     pub idle_speed_threshold: i64,
-    #[serde(rename = "min-status-change-percentage", default = "default_idle_status_change")]
+    #[serde(
+        rename = "min-status-change-percentage",
+        default = "default_idle_status_change"
+    )]
     pub min_status_change_percentage: f64,
     #[serde(rename = "reset-on-status-change", default = "default_true")]
     pub reset_on_status_change: bool,
@@ -198,7 +219,11 @@ fn default_idle_status_change() -> f64 {
 pub struct ExpressionEngineConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     /// 显式指定脚本目录（默认 `<data>/scripts`）；留空则按 `PBH_DATA_DIR` 解析
     #[serde(rename = "scripts-dir", default)]
@@ -210,7 +235,11 @@ pub struct ExpressionEngineConfig {
 pub struct IpRuleListConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_ip_rule_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_ip_rule_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     /// 检查（刷新）间隔，毫秒；上游 profile.yml 默认 14400000（4 小时），代码内默认 86400000
     #[serde(rename = "check-interval", default = "default_ip_rule_check_interval")]
@@ -252,7 +281,11 @@ fn default_ip_rule_check_interval() -> i64 {
 pub struct AntiVampireConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_anti_vampire_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_anti_vampire_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(default)]
     pub presets: AntiVampirePresets,
@@ -280,7 +313,11 @@ fn default_anti_vampire_duration() -> i64 {
 pub struct MultiDialingBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "subnet-mask-length", default = "default_mdb_subnet_v4")]
     pub subnet_mask_length: u8,
@@ -296,7 +333,10 @@ pub struct MultiDialingBlockerConfig {
     #[serde(rename = "keep-hunting", default)]
     pub keep_hunting: bool,
     /// 秒（上游默认 2592000 = 30 天）
-    #[serde(rename = "keep-hunting-time", default = "default_mdb_keep_hunting_time")]
+    #[serde(
+        rename = "keep-hunting-time",
+        default = "default_mdb_keep_hunting_time"
+    )]
     pub keep_hunting_time_secs: i64,
 }
 
@@ -339,7 +379,11 @@ fn default_mdb_keep_hunting_time() -> i64 {
 pub struct AutoRangeBanConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(default = "default_arb_ipv4")]
     pub ipv4: u8,
@@ -363,35 +407,53 @@ fn enabled_or_disabled(v: &Option<bool>) -> bool {
 pub struct PeerIdBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "banned-peer-id", default = "default_banned_peer_id")]
     pub banned_peer_id: Vec<String>,
 }
 
 fn default_banned_peer_id() -> Vec<String> {
-    defaults::DEFAULT_BANNED_PEER_ID.iter().map(|s| s.to_string()).collect()
+    defaults::DEFAULT_BANNED_PEER_ID
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientNameBlacklistConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "banned-client-name", default = "default_banned_client_name")]
     pub banned_client_name: Vec<String>,
 }
 
 fn default_banned_client_name() -> Vec<String> {
-    defaults::DEFAULT_BANNED_CLIENT_NAME.iter().map(|s| s.to_string()).collect()
+    defaults::DEFAULT_BANNED_CLIENT_NAME
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpAddressBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default, deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default,
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(default)]
     pub ips: Vec<String>,
@@ -599,15 +661,25 @@ fn default_database_geocn() -> String {
 pub struct ProgressCheatBlockerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_pcb_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_pcb_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
     #[serde(rename = "minimum-size", default = "default_pcb_minimum_size")]
     pub minimum_size: i64,
     #[serde(rename = "block-excessive-clients", default = "default_true")]
     pub block_excessive_clients: bool,
-    #[serde(rename = "excessive-threshold", default = "default_pcb_excessive_threshold")]
+    #[serde(
+        rename = "excessive-threshold",
+        default = "default_pcb_excessive_threshold"
+    )]
     pub excessive_threshold: f64,
-    #[serde(rename = "maximum-difference", default = "default_pcb_maximum_difference")]
+    #[serde(
+        rename = "maximum-difference",
+        default = "default_pcb_maximum_difference"
+    )]
     pub maximum_difference: f64,
     #[serde(
         rename = "rewind-maximum-difference",
@@ -622,7 +694,10 @@ pub struct ProgressCheatBlockerConfig {
     pub persist_duration_ms: i64,
     #[serde(rename = "max-wait-duration", default = "default_pcb_max_wait")]
     pub max_wait_duration_ms: i64,
-    #[serde(rename = "fast-pcb-test-percentage", default = "default_pcb_fast_percentage")]
+    #[serde(
+        rename = "fast-pcb-test-percentage",
+        default = "default_pcb_fast_percentage"
+    )]
     pub fast_pcb_test_percentage: f64,
     #[serde(
         rename = "fast-pcb-test-block-duration",
@@ -698,13 +773,20 @@ impl ProgressCheatBlockerConfig {
 pub struct BtnConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "ban-duration", default = "default_btn_ban_duration", deserialize_with = "deserialize_ban_duration")]
+    #[serde(
+        rename = "ban-duration",
+        default = "default_btn_ban_duration",
+        deserialize_with = "deserialize_ban_duration"
+    )]
     pub ban_duration_ms: i64,
 }
 
 impl Default for BtnConfig {
     fn default() -> Self {
-        Self { enabled: Some(true), ban_duration_ms: default_btn_ban_duration() }
+        Self {
+            enabled: Some(true),
+            ban_duration_ms: default_btn_ban_duration(),
+        }
     }
 }
 
@@ -751,7 +833,9 @@ pub struct TrafficMonitoringConfig {
 
 impl Default for TrafficMonitoringConfig {
     fn default() -> Self {
-        Self { daily: default_daily_traffic_capping() }
+        Self {
+            daily: default_daily_traffic_capping(),
+        }
     }
 }
 
@@ -848,11 +932,20 @@ impl SwarmTrackingConfig {
 pub struct PeerRecordingConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(rename = "data-retention-time", default = "default_peer_recording_retention")]
+    #[serde(
+        rename = "data-retention-time",
+        default = "default_peer_recording_retention"
+    )]
     pub data_retention_time_ms: i64,
-    #[serde(rename = "data-cleanup-interval", default = "default_peer_recording_cleanup")]
+    #[serde(
+        rename = "data-cleanup-interval",
+        default = "default_peer_recording_cleanup"
+    )]
     pub data_cleanup_interval_ms: i64,
-    #[serde(rename = "data-flush-interval", default = "default_peer_recording_flush")]
+    #[serde(
+        rename = "data-flush-interval",
+        default = "default_peer_recording_flush"
+    )]
     pub data_flush_interval_ms: i64,
 }
 
@@ -1051,7 +1144,10 @@ impl ProfileConfig {
         if let Some(cfg) = &self.module.peer_analyse_service {
             if let Some(sub) = &cfg.swarm_tracking {
                 if enabled_or_disabled(&sub.enabled) {
-                    modules.push(Box::new(SwarmTrackingModule::new(sink.clone(), sub.to_settings())));
+                    modules.push(Box::new(SwarmTrackingModule::new(
+                        sink.clone(),
+                        sub.to_settings(),
+                    )));
                 }
             }
             if let Some(sub) = &cfg.session_analyse {
@@ -1116,7 +1212,10 @@ mod tests {
             enable_persist: true,
         });
         let p = cfg.build_pipeline();
-        assert_eq!(module_config_names(&p), vec!["peer-id-blacklist", "progress-cheat-blocker"]);
+        assert_eq!(
+            module_config_names(&p),
+            vec!["peer-id-blacklist", "progress-cheat-blocker"]
+        );
     }
 
     /// 上游 `profile.yml` 的 `net-type:` 是 kebab 布尔开关映射，
@@ -1285,7 +1384,10 @@ module:
         let btn = cfg.module.btn.expect("btn 段必须可解析");
         assert!(enabled_or_disabled(&btn.enabled));
         assert_eq!(btn.ban_duration_ms, 259_200_000);
-        assert_eq!(btn.ban_duration_ms, crate::modules::btn::BTN_BAN_DURATION_MS);
+        assert_eq!(
+            btn.ban_duration_ms,
+            crate::modules::btn::BTN_BAN_DURATION_MS
+        );
 
         // 上游 profile.yml 的默认值；缺 `enabled` 键 -> 视为禁用（对齐 shouldModuleEnabled）
         let defaulted = BtnConfig::default();
@@ -1322,7 +1424,9 @@ module:
             vec!["auto-range-ban", "btn", "ip-address-blocker-rules"],
             "对齐上游 registerModules：AutoRangeBan -> BtnNetworkOnline -> IPBlackRuleList"
         );
-        let btn = pipeline.module_as::<crate::modules::BtnNetworkOnline>("btn").unwrap();
+        let btn = pipeline
+            .module_as::<crate::modules::BtnNetworkOnline>("btn")
+            .unwrap();
         assert!(!btn.is_manager_initialized(), "未握手 -> 未初始化");
         let torrent = crate::model::TorrentData {
             hash: "h".into(),
@@ -1350,7 +1454,10 @@ module:
             raw_ip: "1.2.3.4:6881".into(),
             connection: Some("uTP".into()),
         };
-        let ctx = crate::module::CheckContext { now_ms: 0, features: vec!["UNBAN_IP".into()] };
+        let ctx = crate::module::CheckContext {
+            now_ms: 0,
+            features: vec!["UNBAN_IP".into()],
+        };
         assert_eq!(
             btn.check("d", &torrent, &peer, &ctx).action,
             crate::module::PeerAction::NoAction
@@ -1403,14 +1510,14 @@ module:
         assert!(cfg.build_pipeline().modules.is_empty());
 
         // `enabled: false` / 配置节缺失 -> 不构造
-        let disabled: ProfileConfig = serde_yaml::from_str(
-            "module:\n  active-monitoring:\n    enabled: false\n",
-        )
-        .unwrap();
+        let disabled: ProfileConfig =
+            serde_yaml::from_str("module:\n  active-monitoring:\n    enabled: false\n").unwrap();
         let sink: std::sync::Arc<dyn MonitorSink> = std::sync::Arc::new(InMemoryMonitorSink::new());
         assert!(disabled.build_monitor_modules(sink).is_empty());
         let sink: std::sync::Arc<dyn MonitorSink> = std::sync::Arc::new(InMemoryMonitorSink::new());
-        assert!(ProfileConfig::default().build_monitor_modules(sink).is_empty());
+        assert!(ProfileConfig::default()
+            .build_monitor_modules(sink)
+            .is_empty());
     }
 
     /// `module.active-monitoring` 段（值逐字取自上游 `profile.yml` 第 381-405 行）。
@@ -1434,21 +1541,25 @@ module:
 "#,
         )
         .expect("profile yaml");
-        let active = cfg.module.active_monitoring.expect("active-monitoring 段必须可解析");
+        let active = cfg
+            .module
+            .active_monitoring
+            .expect("active-monitoring 段必须可解析");
         assert!(enabled_or_disabled(&active.enabled));
         assert_eq!(active.traffic_monitoring.daily, -1);
         assert!(!active.traffic_sliding_capping.enabled);
         // 上游 profile.yml 的 `max-allowed-upload-traffic` 会被解析，但 Java 从不读取它
         assert_eq!(
-            active.traffic_sliding_capping.profile_yml_max_allowed_upload_traffic,
+            active
+                .traffic_sliding_capping
+                .profile_yml_max_allowed_upload_traffic,
             Some(25_000_000_000)
         );
         let settings = active.to_settings();
         assert_eq!(settings.daily_traffic_capping, -1);
         assert!(!settings.use_traffic_sliding_capping);
         assert_eq!(
-            settings.max_traffic_allowed_in_window_period,
-            0,
+            settings.max_traffic_allowed_in_window_period, 0,
             "归属 Java 实际读取的 daily-max-allowed-upload-traffic（缺键 -> 0）"
         );
         assert_eq!(settings.traffic_sliding_capping_max_speed, 0);
@@ -1467,17 +1578,26 @@ traffic-sliding-capping:
         )
         .expect("migrated active-monitoring yaml");
         let settings = migrated.to_settings();
-        assert_eq!(settings.max_traffic_allowed_in_window_period, 53_687_091_200);
+        assert_eq!(
+            settings.max_traffic_allowed_in_window_period,
+            53_687_091_200
+        );
         assert_eq!(settings.traffic_sliding_capping_max_speed, 10_485_760);
         assert_eq!(settings.traffic_sliding_capping_min_speed, 0);
         assert!(settings.use_traffic_sliding_capping);
-        assert_eq!(settings.daily_traffic_capping, -1, "traffic-monitoring 段缺失 -> -1");
+        assert_eq!(
+            settings.daily_traffic_capping, -1,
+            "traffic-monitoring 段缺失 -> -1"
+        );
 
         // 代码级默认值
         let defaulted = ActiveMonitoringConfig::default();
         assert_eq!(defaulted.enabled, None);
         assert_eq!(defaulted.to_settings().daily_traffic_capping, -1);
-        assert_eq!(defaulted.to_settings().max_traffic_allowed_in_window_period, 0);
+        assert_eq!(
+            defaulted.to_settings().max_traffic_allowed_in_window_period,
+            0
+        );
         assert!(!defaulted.to_settings().use_traffic_sliding_capping);
     }
 
@@ -1547,7 +1667,10 @@ module:
         assert_eq!(defaulted_recording.data_flush_interval_ms, 20_000);
 
         // 未写 peer-analyse-service 段的配置不产生这些模块
-        assert!(ProfileConfig::default().module.peer_analyse_service.is_none());
+        assert!(ProfileConfig::default()
+            .module
+            .peer_analyse_service
+            .is_none());
         assert!(ProfileConfig::default().module.active_monitoring.is_none());
     }
 

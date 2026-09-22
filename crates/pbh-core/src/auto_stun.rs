@@ -176,7 +176,10 @@ impl std::fmt::Debug for AutoStun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AutoStun")
             .field("enabled", &self.enabled)
-            .field("use_friendly_loopback_mapping", &self.use_friendly_loopback_mapping)
+            .field(
+                "use_friendly_loopback_mapping",
+                &self.use_friendly_loopback_mapping,
+            )
             .field("downloaders", &self.downloaders)
             .field("udp_servers", &self.udp_servers)
             .field("nat_type", &self.nat_type())
@@ -228,7 +231,10 @@ impl AutoStun {
 
     /// 最近一次 STUN 发现到的 NAT 公网端点（`outerAddress`）。
     pub fn public_endpoint(&self) -> Option<SocketAddr> {
-        self.public_endpoint.read().ok().and_then(|endpoint| *endpoint)
+        self.public_endpoint
+            .read()
+            .ok()
+            .and_then(|endpoint| *endpoint)
     }
 
     /// 注入一条映射：`local` 为网段或单个 IP（按 /32、/128 处理），`public` 为 NAT 地址。
@@ -454,7 +460,10 @@ impl AutoStunRefresher {
 
     /// 不持有线程的已完成句柄（`enabled=false` ⇒ 严格 no-op，不创建任何线程）。
     pub(crate) fn completed() -> Self {
-        Self { stop: Arc::new(AtomicBool::new(true)), handle: None }
+        Self {
+            stop: Arc::new(AtomicBool::new(true)),
+            handle: None,
+        }
     }
 }
 
@@ -475,11 +484,19 @@ pub struct TcpStunClient {
 
 impl TcpStunClient {
     /// 空服务器列表 ⇒ `None`（上游抛 `IllegalArgumentException("STUN server list cannot be empty")`）。
-    pub fn new(servers: Vec<String>, source_host: impl Into<String>, source_port: u16) -> Option<Self> {
+    pub fn new(
+        servers: Vec<String>,
+        source_host: impl Into<String>,
+        source_port: u16,
+    ) -> Option<Self> {
         if servers.is_empty() {
             return None;
         }
-        Some(Self { servers, source_host: source_host.into(), source_port })
+        Some(Self {
+            servers,
+            source_host: source_host.into(),
+            source_port,
+        })
     }
 
     /// 按顺序轮换服务器直到成功；全部失败 ⇒ `None`。
@@ -536,7 +553,11 @@ pub fn parse_stun_server(server: &str) -> Option<(String, u16)> {
         return None;
     }
     match parts.next() {
-        Some(raw) => raw.trim().parse::<u16>().ok().map(|port| (host.to_string(), port)),
+        Some(raw) => raw
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .map(|port| (host.to_string(), port)),
         None => Some((host.to_string(), DEFAULT_STUN_PORT)),
     }
 }
@@ -566,7 +587,9 @@ pub fn parse_stun_response(buffer: &[u8]) -> io::Result<SocketAddr> {
     }
     let message_type = u16::from_be_bytes([buffer[0], buffer[1]]);
     if message_type != 0x0101 {
-        return Err(invalid_data(format!("Invalid STUN response type: {message_type:x}")));
+        return Err(invalid_data(format!(
+            "Invalid STUN response type: {message_type:x}"
+        )));
     }
     let magic_cookie = u32::from_be_bytes([buffer[4], buffer[5], buffer[6], buffer[7]]);
     if magic_cookie != 0x2112_A442 {
@@ -628,7 +651,11 @@ pub fn parse_stun_response(buffer: &[u8]) -> io::Result<SocketAddr> {
 /// `StunSocketTool.getSocket()` → `bind(source)` → `connect(server)` → `getLocalSocketAddress()`
 /// → `write/read`）。先绑定 `sourceHost:sourcePort` 以保持隧道端口的 NAT 映射
 /// （经 `socket2` 实现「先绑定再连接」，与上游语义完全一致）。
-fn exchange_stun(source: SocketAddr, target: SocketAddr, timeout: Duration) -> io::Result<StunMapping> {
+fn exchange_stun(
+    source: SocketAddr,
+    target: SocketAddr,
+    timeout: Duration,
+) -> io::Result<StunMapping> {
     let mut stream = crate::auto_stun_forwarder::bind_connect(source, target, timeout)?;
     // 上游未设读写超时（可能永久阻塞）；本实现统一套用调用方超时，保证后台线程可退出
     stream.set_read_timeout(Some(timeout))?;
@@ -637,7 +664,9 @@ fn exchange_stun(source: SocketAddr, target: SocketAddr, timeout: Duration) -> i
     stream.write_all(&create_stun_binding_request())?;
     stream.flush()?;
     let outer = read_stun_response(&mut stream)?;
-    tracing::debug!("STUN TCP: outer={outer}, inter={inter}, 期望本机端点={source}, server={target}");
+    tracing::debug!(
+        "STUN TCP: outer={outer}, inter={inter}, 期望本机端点={source}, server={target}"
+    );
     Ok(StunMapping { inter, outer })
 }
 
@@ -702,7 +731,10 @@ mod tests {
     use std::net::TcpListener;
 
     fn config(enabled: bool) -> AutoStunConfig {
-        AutoStunConfig { enabled, ..AutoStunConfig::default() }
+        AutoStunConfig {
+            enabled,
+            ..AutoStunConfig::default()
+        }
     }
 
     fn public_ip() -> IpAddr {
@@ -713,7 +745,10 @@ mod tests {
     fn default_config_matches_upstream_yaml() {
         let cfg = AutoStunConfig::default();
         assert!(!cfg.enabled, "auto-stun.enabled 默认 false");
-        assert!(cfg.use_friendly_loopback_mapping, "use-friendly-loopback-mapping 默认 true");
+        assert!(
+            cfg.use_friendly_loopback_mapping,
+            "use-friendly-loopback-mapping 默认 true"
+        );
         assert!(cfg.downloaders.is_empty());
         assert!(!cfg.build().is_enabled());
         // `stun.tcp-servers` / `stun.udp-servers` 的缺省值即上游随包 config.yml 的值
@@ -726,7 +761,10 @@ mod tests {
             ]
         );
         assert_eq!(cfg.udp_servers.len(), 5);
-        assert!(cfg.udp_servers.iter().any(|s| s == "stun.l.google.com:3478"));
+        assert!(cfg
+            .udp_servers
+            .iter()
+            .any(|s| s == "stun.l.google.com:3478"));
         // 服务器列表可被 YAML 覆盖（键名与上游 `stun:` 段一致）
         let custom: AutoStunConfig =
             serde_yaml::from_str("enabled: true\ntcp-servers:\n  - \"1.2.3.4:3478\"\n").unwrap();
@@ -761,10 +799,16 @@ mod tests {
     fn enabled_but_unmapped_private_ip_is_passthrough() {
         let table = config(true).build();
         assert!(table.insert_mapping("192.168.1.0/24", "203.0.113.9"));
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 5)), 6881), None);
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 5)), 6881),
+            None
+        );
         // 尚未解析出映射（STUN 不可达 / 未启动）时同样直通
         let empty = config(true).build();
-        assert_eq!(empty.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881), None);
+        assert_eq!(
+            empty.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881),
+            None
+        );
         assert!(empty.mappings().is_empty());
         assert_eq!(empty.public_endpoint(), None);
     }
@@ -774,8 +818,14 @@ mod tests {
         let table = config(true).build();
         assert!(table.insert_mapping("192.168.0.0/16", "203.0.113.9"));
         assert!(table.insert_mapping("10.0.0.0/8", "203.0.113.10"));
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 6881), None);
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 1), None);
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 6881),
+            None
+        );
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 1),
+            None
+        );
     }
 
     #[test]
@@ -817,7 +867,10 @@ mod tests {
         );
         // 同一公网地址换绑到另一个本地网段时，旧键被移除
         assert!(table.insert_mapping("10.0.0.0/8", "203.0.113.9"));
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881), None);
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881),
+            None
+        );
         assert_eq!(
             table.translate(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 6881),
             Some((public_ip(), 6881))
@@ -833,7 +886,10 @@ mod tests {
             table.translate(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6881),
             Some((public_ip(), 6881))
         );
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 6881), None);
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 6881),
+            None
+        );
     }
 
     #[test]
@@ -850,7 +906,10 @@ mod tests {
         assert!(table.insert_mapping("192.168.1.0/24", "203.0.113.9"));
         table.clear_mappings();
         assert!(table.mappings().is_empty());
-        assert_eq!(table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881), None);
+        assert_eq!(
+            table.translate(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 6881),
+            None
+        );
     }
 
     #[test]
@@ -859,14 +918,20 @@ mod tests {
         assert_eq!(request.len(), 20);
         assert_eq!(u16::from_be_bytes([request[0], request[1]]), 0x0001);
         assert_eq!(u16::from_be_bytes([request[2], request[3]]), 0);
-        assert_eq!(u32::from_be_bytes([request[4], request[5], request[6], request[7]]), 0x2112_A442);
+        assert_eq!(
+            u32::from_be_bytes([request[4], request[5], request[6], request[7]]),
+            0x2112_A442
+        );
         assert_eq!(&request[8..12], b"NATR");
         assert_ne!(create_stun_binding_request(), request, "事务 ID 随机");
     }
 
     #[test]
     fn stun_server_string_parsing_defaults_to_3478() {
-        assert_eq!(parse_stun_server("stun.nextcloud.com"), Some(("stun.nextcloud.com".into(), 3478)));
+        assert_eq!(
+            parse_stun_server("stun.nextcloud.com"),
+            Some(("stun.nextcloud.com".into(), 3478))
+        );
         assert_eq!(
             parse_stun_server("stun.nextcloud.com:3479"),
             Some(("stun.nextcloud.com".into(), 3479))
@@ -875,7 +940,13 @@ mod tests {
         assert_eq!(parse_stun_server("host:not-a-port"), None);
     }
 
-    fn binding_response(attr_type: u16, ip: Ipv4Addr, port: u16, magic: u32, msg_type: u16) -> Vec<u8> {
+    fn binding_response(
+        attr_type: u16,
+        ip: Ipv4Addr,
+        port: u16,
+        magic: u32,
+        msg_type: u16,
+    ) -> Vec<u8> {
         let mut out = Vec::with_capacity(32);
         out.extend_from_slice(&msg_type.to_be_bytes());
         out.extend_from_slice(&12u16.to_be_bytes());
@@ -899,20 +970,41 @@ mod tests {
 
     #[test]
     fn parse_xor_mapped_address_response() {
-        let raw = binding_response(0x0020, Ipv4Addr::new(203, 0, 113, 9), 50000, 0x2112_A442, 0x0101);
+        let raw = binding_response(
+            0x0020,
+            Ipv4Addr::new(203, 0, 113, 9),
+            50000,
+            0x2112_A442,
+            0x0101,
+        );
         let addr = parse_stun_response(&raw).unwrap();
         assert_eq!(addr, SocketAddr::from(([203, 0, 113, 9], 50000)));
     }
 
     #[test]
     fn parse_plain_mapped_address_response() {
-        let raw = binding_response(0x0001, Ipv4Addr::new(198, 51, 100, 7), 3478, 0x2112_A442, 0x0101);
-        assert_eq!(parse_stun_response(&raw).unwrap(), SocketAddr::from(([198, 51, 100, 7], 3478)));
+        let raw = binding_response(
+            0x0001,
+            Ipv4Addr::new(198, 51, 100, 7),
+            3478,
+            0x2112_A442,
+            0x0101,
+        );
+        assert_eq!(
+            parse_stun_response(&raw).unwrap(),
+            SocketAddr::from(([198, 51, 100, 7], 3478))
+        );
     }
 
     #[test]
     fn parse_skips_unknown_attributes_with_padding() {
-        let mut raw = binding_response(0x0020, Ipv4Addr::new(203, 0, 113, 9), 50000, 0x2112_A442, 0x0101);
+        let mut raw = binding_response(
+            0x0020,
+            Ipv4Addr::new(203, 0, 113, 9),
+            50000,
+            0x2112_A442,
+            0x0101,
+        );
         let header_len = 20;
         let attr = raw.split_off(header_len);
         raw.extend_from_slice(&0x8022u16.to_be_bytes()); // SOFTWARE（长度 3，需补齐 1 字节）
@@ -933,10 +1025,12 @@ mod tests {
         assert!(parse_stun_response(&[]).is_err());
         assert!(parse_stun_response(&[0u8; 19]).is_err());
         // 非 Binding Response
-        let wrong_type = binding_response(0x0020, Ipv4Addr::new(1, 2, 3, 4), 1, 0x2112_A442, 0x0111);
+        let wrong_type =
+            binding_response(0x0020, Ipv4Addr::new(1, 2, 3, 4), 1, 0x2112_A442, 0x0111);
         assert!(parse_stun_response(&wrong_type).is_err());
         // magic cookie 错误
-        let wrong_cookie = binding_response(0x0020, Ipv4Addr::new(1, 2, 3, 4), 1, 0x2112_A443, 0x0101);
+        let wrong_cookie =
+            binding_response(0x0020, Ipv4Addr::new(1, 2, 3, 4), 1, 0x2112_A443, 0x0101);
         assert!(parse_stun_response(&wrong_cookie).is_err());
         // 无映射属性
         let mut no_addr = Vec::new();
@@ -958,8 +1052,7 @@ mod tests {
                 if stream.read_exact(&mut request).is_err() {
                     continue;
                 }
-                let mut response =
-                    binding_response(0x0020, outer, outer_port, 0x2112_A442, 0x0101);
+                let mut response = binding_response(0x0020, outer, outer_port, 0x2112_A442, 0x0101);
                 response[8..12].copy_from_slice(&request[8..12]); // 回显事务 ID 前缀
                 let _ = stream.write_all(&response);
             }
@@ -971,7 +1064,9 @@ mod tests {
     fn tcp_stun_client_discovers_outer_endpoint_over_loopback() {
         let server = fake_stun_server(Ipv4Addr::new(203, 0, 113, 9), 50000);
         let client = TcpStunClient::new(vec![server], "127.0.0.1", 0).expect("非空服务器列表");
-        let mapping = client.get_mapping(DEFAULT_STUN_TIMEOUT).expect("回环 STUN 应答");
+        let mapping = client
+            .get_mapping(DEFAULT_STUN_TIMEOUT)
+            .expect("回环 STUN 应答");
         assert_eq!(mapping.outer, SocketAddr::from(([203, 0, 113, 9], 50000)));
         assert_eq!(mapping.inter.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_ne!(mapping.inter.port(), 0);
@@ -1005,7 +1100,12 @@ mod tests {
         let server = fake_stun_server(Ipv4Addr::new(198, 51, 100, 7), 51413);
         let table = config(true).build();
         let mapping = table
-            .refresh_from_servers(std::slice::from_ref(&server), "127.0.0.1", 0, DEFAULT_STUN_TIMEOUT)
+            .refresh_from_servers(
+                std::slice::from_ref(&server),
+                "127.0.0.1",
+                0,
+                DEFAULT_STUN_TIMEOUT,
+            )
             .expect("回环 STUN 应答");
         assert_eq!(mapping.outer, SocketAddr::from(([198, 51, 100, 7], 51413)));
         assert_eq!(table.public_endpoint(), Some(mapping.outer));
@@ -1028,7 +1128,10 @@ mod tests {
         while shared.public_endpoint().is_none() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(shared.public_endpoint(), Some(SocketAddr::from(([198, 51, 100, 7], 51413))));
+        assert_eq!(
+            shared.public_endpoint(),
+            Some(SocketAddr::from(([198, 51, 100, 7], 51413)))
+        );
         // `close()`（以及随后的 `Drop`）必须能及时停止后台线程
         refresher.close();
     }

@@ -78,7 +78,11 @@ const ACCEPT_TICK: Duration = Duration::from_millis(50);
 
 /// 「先 bind 再 connect」的 TCP 连接（对齐 `StunSocketTool.getSocket()`：
 /// `setReuseAddress` + 平台支持时的 `SO_REUSEPORT`/`SO_REUSEADDR`，随后 `bind` + `connect`）。
-pub fn bind_connect(local: SocketAddr, remote: SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
+pub fn bind_connect(
+    local: SocketAddr,
+    remote: SocketAddr,
+    timeout: Duration,
+) -> io::Result<TcpStream> {
     let domain = socket2::Domain::for_address(local);
     let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
     socket.set_reuse_address(true)?;
@@ -102,10 +106,12 @@ pub fn resolve_first(host: &str, port: u16) -> io::Result<SocketAddr> {
     if let Ok(ip) = literal.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, port));
     }
-    (trimmed, port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("无法解析地址 {host}:{port}")))
+    (trimmed, port).to_socket_addrs()?.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("无法解析地址 {host}:{port}"),
+        )
+    })
 }
 
 /// `MiscUtil.randomAvailablePort()`：临时绑定 `0.0.0.0:0` 取端口后关闭；失败返回 0。
@@ -225,7 +231,12 @@ impl NatKeepAlive {
                 }
             })
             .ok();
-        Self { valid, last_success_ms, stop, handle }
+        Self {
+            valid,
+            last_success_ms,
+            stop,
+            handle,
+        }
     }
 
     /// `StunTcpTunnel.isValid()`。
@@ -444,7 +455,9 @@ impl TcpForwarder {
     /// 依次尝试 `bind(127.{d1}.{d2}.{d3}:{下游端口})` → `bind(同地址随机端口)` → 默认连接。
     fn connect_upstream_friendly(&self, downstream: SocketAddr) -> io::Result<TcpStream> {
         let upstream = resolve_first(&self.config.upstream_host, self.config.upstream_port)?;
-        let use_friendly = self.config.use_friendly_loopback && upstream.ip().is_loopback() && downstream.is_ipv4();
+        let use_friendly = self.config.use_friendly_loopback
+            && upstream.ip().is_loopback()
+            && downstream.is_ipv4();
         if use_friendly {
             let octets = match downstream.ip() {
                 IpAddr::V4(v4) => v4.octets(),
@@ -467,7 +480,11 @@ impl TcpForwarder {
                 }
             }
             // 第二次：绑定友好地址 + 随机端口
-            match bind_connect(SocketAddr::new(IpAddr::V4(friendly), 0), upstream, self.config.connect_timeout) {
+            match bind_connect(
+                SocketAddr::new(IpAddr::V4(friendly), 0),
+                upstream,
+                self.config.connect_timeout,
+            ) {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
                     tracing::debug!("[AutoSTUN] 绑定友好地址 {friendly}（随机端口）也失败: {e}");
@@ -491,7 +508,10 @@ impl TcpForwarder {
 
     /// `getEstablishedConnections()`。
     pub fn established_connections(&self) -> usize {
-        self.connections.read().map(|connections| connections.len()).unwrap_or(0)
+        self.connections
+            .read()
+            .map(|connections| connections.len())
+            .unwrap_or(0)
     }
 
     pub fn connection_handled(&self) -> u64 {
@@ -519,7 +539,8 @@ impl TcpForwarder {
 
 /// 双向中继（对齐 `RelayHandler`：任一侧关闭即断开另一侧）。
 fn relay(mut downstream: TcpStream, mut upstream: TcpStream) {
-    let (Ok(mut down_clone), Ok(mut up_clone)) = (downstream.try_clone(), upstream.try_clone()) else {
+    let (Ok(mut down_clone), Ok(mut up_clone)) = (downstream.try_clone(), upstream.try_clone())
+    else {
         return;
     };
     let to_upstream = std::thread::Builder::new()
@@ -628,7 +649,12 @@ fn is_public_v6(ip: std::net::Ipv6Addr) -> bool {
     let unique_local = (octets[0] & 0xfe) == 0xfc; // fc00::/7
     let site_local = octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80; // fec0::/10
     let zero_host = octets[8..].iter().all(|&byte| byte == 0); // ipaddr 默认 /64
-    !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || unique_local || site_local || zero_host)
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || unique_local
+        || site_local
+        || zero_host)
 }
 
 /// 隧道装配配置（默认值全部对齐上游 config.yml/ExternalSwitch 缺省）。
@@ -712,7 +738,12 @@ impl StunTcpTunnel {
     pub fn last_success_heartbeat_at(&self) -> u64 {
         self.keep_alive
             .lock()
-            .map(|guard| guard.as_ref().map(NatKeepAlive::last_success_heartbeat_at).unwrap_or(0))
+            .map(|guard| {
+                guard
+                    .as_ref()
+                    .map(NatKeepAlive::last_success_heartbeat_at)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
     }
 
@@ -763,7 +794,9 @@ pub fn create_tunnel(
         return Err(invalid_data("No available STUN server"));
     };
     let (inter, outer) = (mapping.inter, mapping.outer);
-    tracing::debug!("[AutoSTUN] STUN CreateMapping: Inter address: {inter}, Outer address: {outer}");
+    tracing::debug!(
+        "[AutoSTUN] STUN CreateMapping: Inter address: {inter}, Outer address: {outer}"
+    );
     // stun.available-test（默认 true）
     if config.available_test && !test_mapping(inter, outer, config.timeout)? {
         tracing::warn!("[AutoSTUN] 隧道映射自测未通过，放弃建立隧道");
@@ -776,7 +809,11 @@ pub fn create_tunnel(
     }
     // TCPForwarderImpl：监听 [::]|0.0.0.0:inter.port，转发到 downloaderHost:outer.port
     let forwarder = TcpForwarder::new(TcpForwarderConfig {
-        proxy_host: if config.ipv6_support { "[::]".to_string() } else { "0.0.0.0".to_string() },
+        proxy_host: if config.ipv6_support {
+            "[::]".to_string()
+        } else {
+            "0.0.0.0".to_string()
+        },
         proxy_port: inter.port(),
         upstream_host: downloader_host.to_string(),
         upstream_port: outer.port(),
@@ -823,8 +860,8 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, UdpSocket};
-    use std::time::Instant;
     use std::sync::atomic::AtomicUsize;
+    use std::time::Instant;
 
     /// 一个回显「下载器」：accept 后把收到的字节原样回写。
     fn spawn_echo_downloader() -> SocketAddr {
@@ -841,7 +878,9 @@ mod tests {
                 if let Ok(peer) = stream.peer_addr() {
                     peers.lock().unwrap().push(peer);
                 }
-                let Ok(mut clone) = stream.try_clone() else { continue };
+                let Ok(mut clone) = stream.try_clone() else {
+                    continue;
+                };
                 std::thread::spawn(move || {
                     let mut buffer = [0u8; 4096];
                     while let Ok(n) = stream.read(&mut buffer) {
@@ -887,15 +926,27 @@ mod tests {
     #[test]
     fn defaults_match_upstream_switches() {
         let config = TunnelConfig::default();
-        assert_eq!(config.local_port, 0, "pbh.btstun.localPort 默认 0 ⇒ 随机端口");
+        assert_eq!(
+            config.local_port, 0,
+            "pbh.btstun.localPort 默认 0 ⇒ 随机端口"
+        );
         assert!(config.available_test, "stun.available-test 默认 true");
-        assert!(config.ipv6_support, "pbh.btstun.ipv6support 默认 true ⇒ 监听 [::]");
-        assert_eq!(config.keep_alive_test_host, "qq.com", "pbh.stunTcpTunnel.testHost 默认 qq.com");
+        assert!(
+            config.ipv6_support,
+            "pbh.btstun.ipv6support 默认 true ⇒ 监听 [::]"
+        );
+        assert_eq!(
+            config.keep_alive_test_host, "qq.com",
+            "pbh.stunTcpTunnel.testHost 默认 qq.com"
+        );
         assert_eq!(config.keep_alive_test_port, 80);
         assert_eq!(config.keep_alive_initial_delay, Duration::from_secs(1));
         assert_eq!(config.keep_alive_interval, Duration::from_secs(10));
         assert_eq!(config.max_keep_alive_failures, 5);
-        assert!(config.use_friendly_loopback, "useFriendlyAddressForLoopback 默认 true");
+        assert!(
+            config.use_friendly_loopback,
+            "useFriendlyAddressForLoopback 默认 true"
+        );
         assert!(!config.allow_public_downloader_host);
         assert_eq!(config.timeout, DEFAULT_STUN_TIMEOUT);
         assert!(random_available_port() > 0, "随机可用端口工具可用");
@@ -925,12 +976,18 @@ mod tests {
         let (forwarder, port) = started_forwarder(0, upstream);
         let mut client = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
         assert!(
-            wait_until(|| forwarder.established_connections() == 1, Duration::from_secs(2)),
+            wait_until(
+                || forwarder.established_connections() == 1,
+                Duration::from_secs(2)
+            ),
             "连接应在连接表中登记"
         );
         // 回显服务观测到的 peer = 转发器上游连接的本机地址（即连接表的值）
         // 无法直接读取，改用负例 + 行为断言：未知地址反查为 None
-        assert_eq!(forwarder.translate(SocketAddr::from(([127, 0, 0, 1], 1))), None);
+        assert_eq!(
+            forwarder.translate(SocketAddr::from(([127, 0, 0, 1], 1))),
+            None
+        );
         let _ = client.write_all(b"x");
         forwarder.close();
     }
@@ -941,12 +998,17 @@ mod tests {
         let (forwarder, port) = started_forwarder(0, upstream);
         let mut first = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
         assert!(
-            wait_until(|| forwarder.established_connections() == 1, Duration::from_secs(2)),
+            wait_until(
+                || forwarder.established_connections() == 1,
+                Duration::from_secs(2)
+            ),
             "第一条连接先建立"
         );
         // 同 IP 的第二条连接应被立即关闭
         let mut second = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
-        second.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut buffer = [0u8; 1];
         let read = second.read(&mut buffer).unwrap_or(0);
         assert_eq!(read, 0, "重复连接应被关闭（EOF）");
@@ -980,7 +1042,10 @@ mod tests {
         let Ok(mut client) = TcpStream::connect(format!("{local_ip}:{port}")) else {
             return; // 该地址不可达（如容器无对外路由）：跳过
         };
-        assert!(wait_until(|| !peers.lock().unwrap().is_empty(), Duration::from_secs(2)));
+        assert!(wait_until(
+            || !peers.lock().unwrap().is_empty(),
+            Duration::from_secs(2)
+        ));
         let downstream_port = client.local_addr().unwrap().port();
         let observed = peers.lock().unwrap()[0];
         assert_eq!(
@@ -1003,7 +1068,10 @@ mod tests {
         forwarder.start().unwrap();
         let port = forwarder.local_addr().unwrap().port();
         let client = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
-        assert!(wait_until(|| !peers.lock().unwrap().is_empty(), Duration::from_secs(2)));
+        assert!(wait_until(
+            || !peers.lock().unwrap().is_empty(),
+            Duration::from_secs(2)
+        ));
         let observed = peers.lock().unwrap()[0];
         assert_ne!(
             observed.port(),
@@ -1057,16 +1125,23 @@ mod tests {
         });
         assert!(keep_alive.is_valid());
         assert!(
-            wait_until(
-                || hits.load(Ordering::Relaxed) >= 3,
-                Duration::from_secs(3)
-            ),
+            wait_until(|| hits.load(Ordering::Relaxed) >= 3, Duration::from_secs(3)),
             "keepalive 应按注入的短间隔重复发送（≥3 次）"
         );
-        let request = first_request.lock().unwrap().clone().expect("至少收到一次请求");
-        assert!(request.starts_with("HEAD / HTTP/1.1\r\nHost: "), "报文与上游逐字节一致");
+        let request = first_request
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("至少收到一次请求");
+        assert!(
+            request.starts_with("HEAD / HTTP/1.1\r\nHost: "),
+            "报文与上游逐字节一致"
+        );
         assert!(request.contains("User-Agent: PeerBanHelper-NAT-Keeper/1.0"));
-        assert!(keep_alive.last_success_heartbeat_at() > 0, "成功心跳时间被记录");
+        assert!(
+            keep_alive.last_success_heartbeat_at() > 0,
+            "成功心跳时间被记录"
+        );
         keep_alive.close();
         let after = hits.load(Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(150));
@@ -1130,7 +1205,10 @@ mod tests {
         assert!(downloader_host_allowed("172.16.0.1", false));
         assert!(downloader_host_allowed("169.254.1.1", false));
         assert!(downloader_host_allowed("0.0.0.0", false));
-        assert!(downloader_host_allowed("192.168.1.0", false), "C 类零主机（ipaddr isZeroHost）");
+        assert!(
+            downloader_host_allowed("192.168.1.0", false),
+            "C 类零主机（ipaddr isZeroHost）"
+        );
         assert!(downloader_host_allowed("10.0.0.0", false), "A 类零主机");
         assert!(downloader_host_allowed("224.0.0.1", false), "组播");
         assert!(downloader_host_allowed("fe80::1", false));
@@ -1142,7 +1220,10 @@ mod tests {
         // 公网 ⇒ 默认拒绝
         assert!(!downloader_host_allowed("93.184.216.34", false));
         assert!(!downloader_host_allowed("8.8.8.8", false));
-        assert!(downloader_host_allowed("8.8.8.8", true), "allowPublicIpAsDownloaderHost=true 放行");
+        assert!(
+            downloader_host_allowed("8.8.8.8", true),
+            "allowPublicIpAsDownloaderHost=true 放行"
+        );
     }
 
     #[test]
@@ -1163,8 +1244,13 @@ mod tests {
                 }
             }
         });
-        let mut stream = bind_connect(local, real_addr, Duration::from_secs(2)).expect("bind+connect");
-        assert_eq!(stream.local_addr().unwrap().port(), source_port, "源端口保持绑定值");
+        let mut stream =
+            bind_connect(local, real_addr, Duration::from_secs(2)).expect("bind+connect");
+        assert_eq!(
+            stream.local_addr().unwrap().port(),
+            source_port,
+            "源端口保持绑定值"
+        );
         assert!(
             wait_until(|| !peers.lock().unwrap().is_empty(), Duration::from_secs(2)),
             "对端应观测到绑定的源端口"
@@ -1263,6 +1349,9 @@ mod tests {
         };
         // RFC 5737 文档地址不会应答
         assert!(create_tunnel(&["203.0.113.1:3478".to_string()], "127.0.0.1", &config).is_err());
-        assert!(create_tunnel(&[], "127.0.0.1", &config).is_err(), "空服务器列表 ⇒ Err");
+        assert!(
+            create_tunnel(&[], "127.0.0.1", &config).is_err(),
+            "空服务器列表 ⇒ Err"
+        );
     }
 }

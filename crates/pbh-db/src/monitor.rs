@@ -47,7 +47,8 @@ fn now_ms() -> i64 {
 }
 
 /// `peer_records` 的列（读取顺序与 [`map_peer_record`] 一致）。
-pub const PEER_RECORD_COLUMNS: &str = "address, port, torrent_id, downloader, peer_id, client_name, \
+pub const PEER_RECORD_COLUMNS: &str =
+    "address, port, torrent_id, downloader, peer_id, client_name, \
      uploaded, uploaded_offset, upload_speed, downloaded, downloaded_offset, download_speed, \
      last_flags, first_time_seen, last_time_seen, peer_geoip";
 
@@ -1092,8 +1093,10 @@ mod tests {
 
     fn count_of(db: &Database, table: &str) -> i64 {
         let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-            .unwrap()
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     /// `traffic_journal_v3` 的原始列（用于判断 `*_at_start` 是否被改动）。
@@ -1122,7 +1125,13 @@ mod tests {
             .unwrap();
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })
             .unwrap();
         rows.collect::<Result<Vec<_>, _>>().unwrap()
@@ -1206,13 +1215,19 @@ mod tests {
         {
             let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
             let size: i64 = conn
-                .query_row("SELECT size FROM torrents WHERE info_hash = 'hash-1'", [], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT size FROM torrents WHERE info_hash = 'hash-1'",
+                    [],
+                    |row| row.get(0),
+                )
                 .unwrap();
             assert_eq!(size, 2048);
         }
-        assert_eq!(sink.ensure_torrent(&torrent("hash-2")), "3", "不同 info hash -> 新主键");
+        assert_eq!(
+            sink.ensure_torrent(&torrent("hash-2")),
+            "3",
+            "不同 info hash -> 新主键"
+        );
         // 注：中间那次 upsert 走的是 ON CONFLICT DO UPDATE，SQLite 的 AUTOINCREMENT 仍会
         // 消耗一个 id（对齐上游同一 SQL 的行为），所以下一个新 hash 拿到 3 而不是 2。
     }
@@ -1245,7 +1260,10 @@ mod tests {
         // 下一个小时 -> 新行，*_at_start 取当时的传入值
         sink.update_traffic_journal("qb", 500, 600, 1, 2, now + HOUR_MS);
         assert_eq!(count_of(&db, "traffic_journal_v3"), 2);
-        assert_eq!(raw_traffic_row(&db, "qb", hour + HOUR_MS), (500, 500, 600, 600));
+        assert_eq!(
+            raw_traffic_row(&db, "qb", hour + HOUR_MS),
+            (500, 500, 600, 600)
+        );
         assert_eq!(
             raw_traffic_row(&db, "qb", hour),
             (300, 100, 400, 200),
@@ -1259,7 +1277,10 @@ mod tests {
         let sink = DbMonitorSink::new(db.clone());
         sink.update_traffic_journal("qb", -5, -6, 0, 0, 0);
         // 上游新建后立刻比较 `0 < 传入值`：负值不抬高 data_*，但 *_at_start 原样落库
-        assert_eq!(raw_traffic_row(&db, "qb", start_of_hour_ms(0)), (0, -5, 0, -6));
+        assert_eq!(
+            raw_traffic_row(&db, "qb", start_of_hour_ms(0)),
+            (0, -5, 0, -6)
+        );
     }
 
     // ---------------- query_traffic_overall（闭区间 + 聚合 / MAX(0, …)） ----------------
@@ -1319,7 +1340,11 @@ mod tests {
             .unwrap();
         }
         let aggregated = sink.query_traffic_overall(None, base, base);
-        assert_eq!(aggregated[0].data_overall_downloaded, 10 - 100, "聚合允许负差值");
+        assert_eq!(
+            aggregated[0].data_overall_downloaded,
+            10 - 100,
+            "聚合允许负差值"
+        );
         assert_eq!(
             sink.query_traffic_overall(Some("C"), base, base)[0].data_overall_downloaded,
             0,
@@ -1331,9 +1356,20 @@ mod tests {
         sink.update_traffic_journal("A", 900, 900, 0, 0, last_hour);
         assert_eq!(sink.query_traffic_overall(None, base, last_hour).len(), 2);
         assert_eq!(sink.query_traffic_overall(None, base, base).len(), 1);
-        assert_eq!(sink.query_traffic_overall(None, base + 1, last_hour).len(), 1);
-        assert_eq!(sink.query_traffic_overall(None, base - HOUR_MS, base - 1).len(), 0);
-        assert_eq!(sink.query_traffic_overall(None, last_hour + 1, last_hour + 2).len(), 0);
+        assert_eq!(
+            sink.query_traffic_overall(None, base + 1, last_hour).len(),
+            1
+        );
+        assert_eq!(
+            sink.query_traffic_overall(None, base - HOUR_MS, base - 1)
+                .len(),
+            0
+        );
+        assert_eq!(
+            sink.query_traffic_overall(None, last_hour + 1, last_hour + 2)
+                .len(),
+            0
+        );
     }
 
     // ---------------- alert（AlertManager.publishAlert） ----------------
@@ -1350,7 +1386,13 @@ mod tests {
         );
         let content =
             TranslationComponent::new("MODULE_AMM_TRAFFIC_MONITORING_TRAFFIC_ALERT_DESCRIPTION");
-        sink.publish_alert(true, AlertLevel::Warn, "dataTrafficCapping-1", &title, &content);
+        sink.publish_alert(
+            true,
+            AlertLevel::Warn,
+            "dataTrafficCapping-1",
+            &title,
+            &content,
+        );
         assert!(sink.alert_exists_include_read("dataTrafficCapping-1"));
         assert!(!sink.alert_exists_include_read("dataTrafficCapping-2"));
 
@@ -1358,7 +1400,10 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].level, "WARN");
         assert_eq!(alerts[0].identifier, "dataTrafficCapping-1");
-        assert!(alerts[0].create_at_ms > 0, "create_at = OffsetDateTime.now()");
+        assert!(
+            alerts[0].create_at_ms > 0,
+            "create_at = OffsetDateTime.now()"
+        );
         assert_eq!(alerts[0].read_at_ms, None, "新告警未读");
         assert_eq!(
             serde_json::from_str::<TranslationComponent>(&alerts[0].title).unwrap(),
@@ -1396,7 +1441,10 @@ mod tests {
         sink.upsert_metrics_tracks(std::slice::from_ref(&row));
 
         // cache-miss 回查（对齐 `syncPeers` 的 selectOne）
-        assert_eq!(sink.load_metrics_track(&track_key(today, "1.2.3.4")), Some(row.clone()));
+        assert_eq!(
+            sink.load_metrics_track(&track_key(today, "1.2.3.4")),
+            Some(row.clone())
+        );
         assert_eq!(sink.load_metrics_track(&track_key(today, "5.6.7.8")), None);
 
         // 冲突键命中：只覆盖 peer_id / client_name / last_flags（可置空）
@@ -1405,11 +1453,17 @@ mod tests {
         updated.client_name = Some("qBittorrent/4.6.0".into());
         updated.last_flags = None;
         sink.upsert_metrics_tracks(std::slice::from_ref(&updated));
-        let loaded = sink.load_metrics_track(&track_key(today, "1.2.3.4")).unwrap();
+        let loaded = sink
+            .load_metrics_track(&track_key(today, "1.2.3.4"))
+            .unwrap();
         assert_eq!(loaded.peer_id.as_deref(), Some("-qB4500-second"));
         assert_eq!(loaded.client_name.as_deref(), Some("qBittorrent/4.6.0"));
         assert_eq!(loaded.last_flags, None);
-        assert_eq!(count_of(&db, "peer_connection_metrics_track"), 1, "同一唯一键只有一行");
+        assert_eq!(
+            count_of(&db, "peer_connection_metrics_track"),
+            1,
+            "同一唯一键只有一行"
+        );
 
         // 另一天 / 另一地址 -> 各自新行
         let mut other_day = MetricsTrackRow::new(track_key(yesterday, "1.2.3.4"));
@@ -1571,7 +1625,11 @@ mod tests {
         older.download_speed = 2;
         older.peer_geoip = Some("{\"city\":{\"name\":\"new\"}}".to_string());
         sink.upsert_peer_record(&older);
-        assert_eq!(raw_peer_record(&db, "1.2.3.4"), first, "更旧的上报被整行忽略");
+        assert_eq!(
+            raw_peer_record(&db, "1.2.3.4"),
+            first,
+            "更旧的上报被整行忽略"
+        );
 
         // 较新的上报：uploaded + 本次值 - 已存偏移量
         let mut newer = peer_record("1.2.3.4", 2000);
@@ -1604,8 +1662,16 @@ mod tests {
         reset.downloaded_offset = 20;
         sink.upsert_peer_record(&reset);
         let after_reset = raw_peer_record(&db, "1.2.3.4");
-        assert_eq!(after_reset.uploaded, 3000 + 10, "计数被重置 -> 整个本次值累加");
-        assert_eq!(after_reset.downloaded, 5000 + 20, "计数被重置 -> 整个本次值累加");
+        assert_eq!(
+            after_reset.uploaded,
+            3000 + 10,
+            "计数被重置 -> 整个本次值累加"
+        );
+        assert_eq!(
+            after_reset.downloaded,
+            5000 + 20,
+            "计数被重置 -> 整个本次值累加"
+        );
         assert_eq!(after_reset.uploaded_offset, 10);
         assert_eq!(after_reset.downloaded_offset, 20);
         assert_eq!(after_reset.last_time_seen_ms, 3000);
@@ -1630,10 +1696,18 @@ mod tests {
         same_key.port = 6882;
         sink.upsert_peer_record(&same_key);
         assert_eq!(count_of(&db, "peer_records"), 3, "冲突键不含 port");
-        assert_eq!(raw_peer_record(&db, "1.2.3.4").port, 6882, "port 仍会被更新");
+        assert_eq!(
+            raw_peer_record(&db, "1.2.3.4").port,
+            6882,
+            "port 仍会被更新"
+        );
 
         // `lt`：开区间，边界上的行保留
-        assert_eq!(sink.remove_peer_records_before(200), 2, "只删 last_time_seen < 200 的行");
+        assert_eq!(
+            sink.remove_peer_records_before(200),
+            2,
+            "只删 last_time_seen < 200 的行"
+        );
         assert_eq!(count_of(&db, "peer_records"), 1);
         assert_eq!(raw_peer_record(&db, "1.2.3.4").last_time_seen_ms, 200);
         assert_eq!(sink.remove_peer_records_before(200), 0);
@@ -1686,7 +1760,11 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(stored.as_deref(), Some("{\"city\":null}"), "行内值优先于 IP 库查询");
+            assert_eq!(
+                stored.as_deref(),
+                Some("{\"city\":null}"),
+                "行内值优先于 IP 库查询"
+            );
         }
         // 同一行再次上报其它 geo：peer_geoip 永不更新（DB 里仍是首插的值）
         let mut again = peer_record("1.2.3.4", 1500);
@@ -1712,7 +1790,11 @@ mod tests {
 
     // ---------------- tracked swarm（upsert / 取最近一行 / 清空 / 计数 / 分页） ----------------
 
-    fn swarm_row(address: &str, first_time_seen_ms: i64, last_time_seen_ms: i64) -> TrackedSwarmRow {
+    fn swarm_row(
+        address: &str,
+        first_time_seen_ms: i64,
+        last_time_seen_ms: i64,
+    ) -> TrackedSwarmRow {
         TrackedSwarmRow {
             id: None,
             ip: address.to_string(),
@@ -1772,7 +1854,11 @@ mod tests {
         assert_eq!(loaded.last_flags, "U");
         assert_eq!(loaded.uploaded, 700);
         // 上游 SQLite 迁移脚本把该列建为 NOT NULL：`None`（未知）按 `false` 落库
-        assert_eq!(loaded.torrent_is_private, Some(false), "未知值按 false 落库");
+        assert_eq!(
+            loaded.torrent_is_private,
+            Some(false),
+            "未知值按 false 落库"
+        );
 
         // 另一 peer / 另一 info hash -> 新行
         sink.upsert_tracked_swarm(&swarm_row("5.6.7.8", 1000, 1000));
@@ -1794,7 +1880,8 @@ mod tests {
         // 这里去掉索引构造「同键多行」以锁定该语义。
         {
             let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
-            conn.execute("DROP INDEX idx_tracked_swarm_unique", []).unwrap();
+            conn.execute("DROP INDEX idx_tracked_swarm_unique", [])
+                .unwrap();
             conn.execute(
                 "INSERT INTO tracked_swarm (ip, port, info_hash, torrent_is_private, torrent_size,
                      downloader, downloader_progress, peer_id, client_name, peer_progress, uploaded,
@@ -1862,7 +1949,11 @@ mod tests {
         assert!(db
             .page_tracked_swarm(&[("id; DROP TABLE tracked_swarm".to_string(), true)], 1, 0)
             .is_err());
-        assert!(db.page_tracked_swarm(&[("no_such_column".to_string(), true)], 1, 0).is_err());
-        assert!(db.page_tracked_swarm(&[("".to_string(), true)], 1, 0).is_err());
+        assert!(db
+            .page_tracked_swarm(&[("no_such_column".to_string(), true)], 1, 0)
+            .is_err());
+        assert!(db
+            .page_tracked_swarm(&[("".to_string(), true)], 1, 0)
+            .is_err());
     }
 }

@@ -443,10 +443,9 @@ impl Downloader for DelugeDownloader {
             let config: CoreConfig = serde_json::from_value(result).map_err(|e| {
                 anyhow::anyhow!("NullPointerException: core.get_config result is null: {e}")
             })?;
-            let download_limit = config
-                .max_download_speed
-                .ok_or_else(|| anyhow::anyhow!("NullPointerException: max_download_speed is null"))?
-                * SPEED_LIMIT_UNIT;
+            let download_limit = config.max_download_speed.ok_or_else(|| {
+                anyhow::anyhow!("NullPointerException: max_download_speed is null")
+            })? * SPEED_LIMIT_UNIT;
             let upload_limit = config
                 .max_upload_speed
                 .ok_or_else(|| anyhow::anyhow!("NullPointerException: max_upload_speed is null"))?
@@ -467,8 +466,16 @@ impl Downloader for DelugeDownloader {
         download: i64,
     ) -> BoxFuture<'a, anyhow::Result<()>> {
         Box::pin(async move {
-            let upload_limit = if upload <= 0 { 0 } else { upload / SPEED_LIMIT_UNIT };
-            let download_limit = if download <= 0 { 0 } else { download / SPEED_LIMIT_UNIT };
+            let upload_limit = if upload <= 0 {
+                0
+            } else {
+                upload / SPEED_LIMIT_UNIT
+            };
+            let download_limit = if download <= 0 {
+                0
+            } else {
+                download / SPEED_LIMIT_UNIT
+            };
             let config = json!({
                 "max_download_speed": download_limit,
                 "max_upload_speed": upload_limit,
@@ -995,7 +1002,10 @@ mod tests {
     async fn speed_limiter_is_written_in_kib() {
         let mock = DelugeMock::new();
         let deluge = mock_downloader(mock.clone());
-        deluge.set_speed_limiter(1_048_576, 2_097_152).await.unwrap();
+        deluge
+            .set_speed_limiter(1_048_576, 2_097_152)
+            .await
+            .unwrap();
         assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_SET_CONFIG]);
         assert_eq!(
             mock.params_of(M_SET_CONFIG),

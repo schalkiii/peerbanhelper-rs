@@ -31,7 +31,12 @@ impl TrMock {
     }
 
     fn methods(&self) -> Vec<String> {
-        self.requests.lock().unwrap().iter().map(|(m, _)| m.clone()).collect()
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, _)| m.clone())
+            .collect()
     }
 
     fn arguments_of(&self, method: &str) -> Option<serde_json::Value> {
@@ -41,18 +46,28 @@ impl TrMock {
             .iter()
             .find(|(m, _)| m == method)
             .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
-            .map(|v| v.get("arguments").cloned().unwrap_or(serde_json::Value::Null))
+            .map(|v| {
+                v.get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            })
     }
 }
 
 impl HttpFetcher for TrMock {
     fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
         Box::pin(async move {
-            assert!(req.url.ends_with("/transmission/rpc"), "unexpected url {}", req.url);
+            assert!(
+                req.url.ends_with("/transmission/rpc"),
+                "unexpected url {}",
+                req.url
+            );
             // 409 会话握手
             if req.header("X-Transmission-Session-Id").is_none() {
                 self.handshakes.fetch_add(1, Ordering::SeqCst);
-                return Ok(HttpResponse::new(409, "").with_header("X-Transmission-Session-Id", SESSION_ID));
+                return Ok(
+                    HttpResponse::new(409, "").with_header("X-Transmission-Session-Id", SESSION_ID)
+                );
             }
             assert_eq!(req.header("X-Transmission-Session-Id"), Some(SESSION_ID));
             let body = req.body.clone().unwrap_or_default();
@@ -103,8 +118,12 @@ fn downloader(mock: Arc<TrMock>) -> Arc<TransmissionDownloader> {
         ..TRConfig::default()
     };
     Arc::new(
-        TransmissionDownloader::with_fetcher(cfg, RemapConfig::default(), mock as Arc<dyn HttpFetcher>)
-            .unwrap(),
+        TransmissionDownloader::with_fetcher(
+            cfg,
+            RemapConfig::default(),
+            mock as Arc<dyn HttpFetcher>,
+        )
+        .unwrap(),
     )
 }
 
@@ -118,7 +137,10 @@ async fn login_handshakes_session_and_configures_blocklist() {
     assert_eq!(mock.handshakes.load(Ordering::SeqCst), 1, "首发 409 后重试");
 
     let methods = mock.methods();
-    assert_eq!(methods, vec!["session-get", "session-set", "blocklist-update"]);
+    assert_eq!(
+        methods,
+        vec!["session-get", "session-set", "blocklist-update"]
+    );
     let args = mock.arguments_of("session-set").unwrap();
     assert_eq!(args["blocklist-enabled"], true);
     assert!(
@@ -138,7 +160,11 @@ async fn login_skips_blocklist_configuration_when_already_set() {
         "http://127.0.0.1:9898/blocklist/p2p-plain-format?t=1".into();
     let tr = downloader(mock.clone());
     assert!(tr.login().await.unwrap().success);
-    assert_eq!(mock.methods(), vec!["session-get"], "已配置好则不再设置/更新");
+    assert_eq!(
+        mock.methods(),
+        vec!["session-get"],
+        "已配置好则不再设置/更新"
+    );
 }
 
 #[tokio::test]
@@ -171,11 +197,16 @@ async fn login_fails_when_blocklist_update_fails_and_restores_failed_url() {
         .filter_map(|(_, body)| {
             serde_json::from_str::<serde_json::Value>(body)
                 .ok()
-                .and_then(|v| v["arguments"]["blocklist-url"].as_str().map(|s| s.to_string()))
+                .and_then(|v| {
+                    v["arguments"]["blocklist-url"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                })
         })
         .collect();
     assert!(
-        urls.iter().any(|u| u.contains("peerbanhelper-blocklist-update-failed")),
+        urls.iter()
+            .any(|u| u.contains("peerbanhelper-blocklist-update-failed")),
         "失败后应写入失败占位 URL: {urls:?}"
     );
 }
@@ -198,12 +229,18 @@ async fn torrents_are_filtered_and_mapped() {
     // Transmission 的完成量口径：sizeWhenDone * percentDone
     assert_eq!(t.completed_size(), 200_000_000);
     assert!(
-        torrents.iter().all(|t| t.hash != "0404040404040404040404040404040404040404"),
+        torrents
+            .iter()
+            .all(|t| t.hash != "0404040404040404040404040404040404040404"),
         "无速度无连接的种子不应出现"
     );
 
     let fields = mock.arguments_of("torrent-get").unwrap();
-    assert!(fields["fields"].as_array().unwrap().iter().any(|f| f == "peers"));
+    assert!(fields["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f == "peers"));
 }
 
 #[tokio::test]
@@ -218,8 +255,12 @@ async fn private_torrents_are_filtered_when_ignore_private_enabled() {
         ..TRConfig::default()
     };
     let tr = Arc::new(
-        TransmissionDownloader::with_fetcher(cfg, RemapConfig::default(), mock as Arc<dyn HttpFetcher>)
-            .unwrap(),
+        TransmissionDownloader::with_fetcher(
+            cfg,
+            RemapConfig::default(),
+            mock as Arc<dyn HttpFetcher>,
+        )
+        .unwrap(),
     );
     let torrents = tr.fetch_torrents().await.unwrap();
     assert_eq!(torrents.len(), 1);
@@ -232,7 +273,11 @@ async fn peers_come_from_torrent_get_and_decode_base64_peer_id() {
     let tr = downloader(mock.clone());
     let torrents = tr.fetch_torrents().await.unwrap();
     let peers = tr.fetch_peers(&torrents[0]).await.unwrap();
-    assert_eq!(peers.len(), 2, "peers 来自 torrent-get 响应（不额外发 RPC）");
+    assert_eq!(
+        peers.len(),
+        2,
+        "peers 来自 torrent-get 响应（不额外发 RPC）"
+    );
 
     let by_ip: std::collections::HashMap<&str, _> =
         peers.iter().map(|p| (p.ip.as_str(), p)).collect();
@@ -249,7 +294,13 @@ async fn peers_come_from_torrent_get_and_decode_base64_peer_id() {
     assert_eq!(by_ip.get("7.7.7.7").unwrap().peer_id.as_deref(), Some(""));
 
     // 只发出一次 torrent-get
-    assert_eq!(mock.methods().iter().filter(|m| *m == "torrent-get").count(), 1);
+    assert_eq!(
+        mock.methods()
+            .iter()
+            .filter(|m| *m == "torrent-get")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -264,7 +315,10 @@ async fn statistics_and_feature_flags() {
     assert!(flags.contains(&"UNBAN_IP".to_string()));
     assert!(flags.contains(&"TRAFFIC_STATS".to_string()));
     assert!(flags.contains(&"LIVE_UPDATE_BT_PROTOCOL_PORT".to_string()));
-    assert!(!flags.contains(&"RANGE_BAN_IP".to_string()), "Transmission 不支持范围封禁");
+    assert!(
+        !flags.contains(&"RANGE_BAN_IP".to_string()),
+        "Transmission 不支持范围封禁"
+    );
 }
 
 #[tokio::test]
@@ -282,6 +336,8 @@ async fn increment_ban_is_noop_and_full_ban_triggers_blocklist_update() {
     assert!(mock.methods().is_empty());
 
     // 全量：触发 blocklist-update（内容由 PBH 自己的端点提供）
-    tr.replace_banned_ips(&["1.2.3.4".to_string()]).await.unwrap();
+    tr.replace_banned_ips(&["1.2.3.4".to_string()])
+        .await
+        .unwrap();
     assert_eq!(mock.methods(), vec!["blocklist-update"]);
 }

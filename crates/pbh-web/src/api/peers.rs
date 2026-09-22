@@ -22,7 +22,10 @@ pub async fn info(
 ) -> Response {
     let host = parse_ip(&ip);
     let ban_count: i64 = state.db.history_count_by_ip(&host).unwrap_or(0);
-    let access = state.db.peer_access_summary(&host).unwrap_or((0, 0, 0, 0, 0, 0));
+    let access = state
+        .db
+        .peer_access_summary(&host)
+        .unwrap_or((0, 0, 0, 0, 0, 0));
     let found = access.0 > 0;
     let data = json!({
         "found": found,
@@ -48,7 +51,11 @@ pub async fn access_history(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let host = parse_ip(&ip);
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
     let size = params
         .get("pageSize")
         .or_else(|| params.get("size"))
@@ -60,7 +67,10 @@ pub async fn access_history(
         .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
         .flat_map(|(_, value)| crate::parse_order_by(Some(value)))
         .collect();
-    match state.db.query_access_history(Some(&host), None, &order, size, page * size) {
+    match state
+        .db
+        .query_access_history(Some(&host), None, &order, size, page * size)
+    {
         Ok((rows, total)) => {
             let results = rows
                 .iter()
@@ -112,7 +122,12 @@ pub async fn ban_history(
 ) -> Response {
     let host = parse_ip(&ip);
     let (page, size) = crate::api::pagination(&params);
-    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
+    let locale = normalize_locale(
+        params
+            .get("locale")
+            .map(String::as_str)
+            .unwrap_or(&state.locale),
+    );
     match state.db.history_by_ip(&host, size, (page - 1) * size) {
         Ok((rows, total)) => {
             let results = rows
@@ -141,20 +156,34 @@ pub async fn btn_query(
     Path(ip): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
+    let locale = normalize_locale(
+        params
+            .get("locale")
+            .map(String::as_str)
+            .unwrap_or(&state.locale),
+    );
     let host = parse_ip(&ip);
     let Some(network) = state.btn_network.get() else {
-        let message = state
-            .translator
-            .render(&TranslationComponent::new("BTN_NETWORK_NOT_ENABLED"), &locale);
-        return (StatusCode::OK, crate::std_resp(false, Some(&message), Value::Null)).into_response();
+        let message = state.translator.render(
+            &TranslationComponent::new("BTN_NETWORK_NOT_ENABLED"),
+            &locale,
+        );
+        return (
+            StatusCode::OK,
+            crate::std_resp(false, Some(&message), Value::Null),
+        )
+            .into_response();
     };
     // `ip_query` 是阻塞 HTTP（含 PoW）：放到阻塞线程池，避免卡住 tokio worker
     let queried = tokio::task::spawn_blocking(move || network.query_ip(&host)).await;
     match queried {
         Ok(Ok(Some(result))) => (
             StatusCode::OK,
-            crate::std_resp(true, None, serde_json::to_value(result).unwrap_or(Value::Null)),
+            crate::std_resp(
+                true,
+                None,
+                serde_json::to_value(result).unwrap_or(Value::Null),
+            ),
         )
             .into_response(),
         Ok(Ok(None)) => {
@@ -162,7 +191,11 @@ pub async fn btn_query(
                 &TranslationComponent::new("BTN_ABILITY_IP_QUERY_NOT_PROVIDED"),
                 &locale,
             );
-            (StatusCode::OK, crate::std_resp(false, Some(&message), Value::Null)).into_response()
+            (
+                StatusCode::OK,
+                crate::std_resp(false, Some(&message), Value::Null),
+            )
+                .into_response()
         }
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -171,7 +204,11 @@ pub async fn btn_query(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            crate::std_resp(false, Some(&format!("btn query task failed: {e}")), Value::Null),
+            crate::std_resp(
+                false,
+                Some(&format!("btn query task failed: {e}")),
+                Value::Null,
+            ),
         )
             .into_response(),
     }

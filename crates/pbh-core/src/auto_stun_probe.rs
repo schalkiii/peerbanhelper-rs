@@ -92,7 +92,10 @@ pub struct UdpStunChangeRequest {
 
 impl UdpStunChangeRequest {
     pub fn new(change_ip: bool, change_port: bool) -> Self {
-        Self { change_ip, change_port }
+        Self {
+            change_ip,
+            change_port,
+        }
     }
 }
 
@@ -153,7 +156,10 @@ pub fn parse_udp_stun_response(data: &[u8]) -> io::Result<UdpStunResponse> {
     }
     let message_type = u16::from_be_bytes([data[0], data[1]]);
     // cdnbye StunMessageType 全部已知值
-    if !matches!(message_type, 0x0001 | 0x0101 | 0x0111 | 0x0002 | 0x0102 | 0x0112) {
+    if !matches!(
+        message_type,
+        0x0001 | 0x0101 | 0x0111 | 0x0002 | 0x0102 | 0x0112
+    ) {
         return Err(invalid_data("Invalid STUN message type value !"));
     }
     let message_length = u16::from_be_bytes([data[2], data[3]]) as usize;
@@ -213,7 +219,9 @@ pub fn udp_change_request_flags(request: &[u8]) -> (bool, bool) {
         Some(b) => u16::from_be_bytes([b[0], b[1]]) as usize,
         None => return (false, false),
     };
-    while offset.saturating_sub(20) + 4 <= request.len() && offset.saturating_sub(20) < message_length {
+    while offset.saturating_sub(20) + 4 <= request.len()
+        && offset.saturating_sub(20) < message_length
+    {
         let attr_type = u16::from_be_bytes([request[offset], request[offset + 1]]);
         let attr_len = u16::from_be_bytes([request[offset + 2], request[offset + 3]]) as usize;
         let value_at = offset + 4;
@@ -239,14 +247,22 @@ impl UdpStunClient {
     /// 绑定任意可用端口（上游 `Bootstrap.bind(0)`）。
     pub fn bind() -> io::Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        Ok(Self { socket, transaction_timeout: UDP_TRANSACTION_TIMEOUT, send_count: UDP_SEND_COUNT })
+        Ok(Self {
+            socket,
+            transaction_timeout: UDP_TRANSACTION_TIMEOUT,
+            send_count: UDP_SEND_COUNT,
+        })
     }
 
     /// 测试专用：注入更短的超时/重发次数（默认值必须保持上游常量）。
     #[cfg(test)]
     fn with_tuning(transaction_timeout: Duration, send_count: usize) -> io::Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        Ok(Self { socket, transaction_timeout, send_count })
+        Ok(Self {
+            socket,
+            transaction_timeout,
+            send_count,
+        })
     }
 
     /// 对单台服务器执行 RFC 3489 NAT 判定，返回 `(NAT 类型, Test I 映射地址)`
@@ -254,13 +270,20 @@ impl UdpStunClient {
     ///
     /// `local_ip` 即上游 `StunManager` 固定传入的 `"0.0.0.0"`，仅用于
     /// `isNat = mapped.ip != local_ip` 比较。整体超时 [`UDP_TOTAL_TIMEOUT`] 内未完成 ⇒ `Unknown`。
-    pub fn query(&self, server: SocketAddr, local_ip: IpAddr, deadline: Instant) -> (NatType, Option<SocketAddr>) {
+    pub fn query(
+        &self,
+        server: SocketAddr,
+        local_ip: IpAddr,
+        deadline: Instant,
+    ) -> (NatType, Option<SocketAddr>) {
         // Test I
         let test1_request = create_udp_binding_request(None);
         let test1 = match self.do_transaction(&test1_request, server, deadline) {
             Ok(response) => response,
             Err(_) => {
-                tracing::debug!("UDP seems to be blocked, no response from STUN server at {server}");
+                tracing::debug!(
+                    "UDP seems to be blocked, no response from STUN server at {server}"
+                );
                 return (NatType::UdpBlocked, None);
             }
         };
@@ -286,7 +309,9 @@ impl UdpStunClient {
         }
         // 在 NAT 后
         match self.do_transaction(&test2_request, server, deadline) {
-            Ok(test2) if response_from_different_address(&test2, server) => (NatType::FullCone, Some(mapped)),
+            Ok(test2) if response_from_different_address(&test2, server) => {
+                (NatType::FullCone, Some(mapped))
+            }
             Ok(_) => {
                 tracing::debug!("STUN server {server} did not change IP/port as requested in Test II (non-compliant)");
                 (NatType::Unknown, Some(mapped))
@@ -323,7 +348,12 @@ impl UdpStunClient {
     /// 单个 STUN 事务，对齐 `StunClientHandler.doTransaction`：
     /// 立即发送，之后每过 `transaction_timeout` 重发一次，共 `send_count` 次；
     /// 响应按事务 ID 匹配（未知 ID 忽略），解析失败视同事务失败。
-    fn do_transaction(&self, request: &[u8], remote: SocketAddr, deadline: Instant) -> io::Result<UdpStunResponse> {
+    fn do_transaction(
+        &self,
+        request: &[u8],
+        remote: SocketAddr,
+        deadline: Instant,
+    ) -> io::Result<UdpStunResponse> {
         let Some(txid) = udp_transaction_id(request) else {
             return Err(invalid_data("Invalid STUN request length"));
         };
@@ -351,7 +381,10 @@ impl UdpStunClient {
                         // 未知事务 ID：上游 log.warn 后忽略
                     }
                     Err(e)
-                        if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
                     {
                         break;
                     }
@@ -410,7 +443,9 @@ impl Default for NatTypeProber {
 
 impl NatTypeProber {
     pub fn new() -> Self {
-        Self { cached: RwLock::new(NatType::Unknown) }
+        Self {
+            cached: RwLock::new(NatType::Unknown),
+        }
     }
 
     /// `StunManager.getCachedNatType()`。
@@ -430,15 +465,22 @@ impl NatTypeProber {
                 continue;
             }
             match query_udp_stun_server(server) {
-                Some((nat_type, _)) if nat_type != NatType::Unknown && nat_type != NatType::UdpBlocked => {
-                    tracing::debug!("Successfully determined NAT type {} using server {server}", nat_type.as_str());
+                Some((nat_type, _))
+                    if nat_type != NatType::Unknown && nat_type != NatType::UdpBlocked =>
+                {
+                    tracing::debug!(
+                        "Successfully determined NAT type {} using server {server}",
+                        nat_type.as_str()
+                    );
                     if let Ok(mut cached) = self.cached.write() {
                         *cached = nat_type;
                     }
                     return nat_type;
                 }
                 Some(_) => {
-                    tracing::debug!("STUN server {server} returned Unknown NAT type, trying next server");
+                    tracing::debug!(
+                        "STUN server {server} returned Unknown NAT type, trying next server"
+                    );
                 }
                 None => {
                     tracing::debug!("Failed to query STUN server {server}, trying next server");
@@ -516,10 +558,10 @@ fn timeout_error() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use std::collections::HashSet;
     use std::net::{Ipv4Addr, UdpSocket};
     use std::sync::atomic::AtomicUsize;
+    use std::sync::Mutex;
 
     /// 调短超时（默认常量必须仍是上游值，见 `default_constants_match_upstream`）。
     const FAST_TIMEOUT: Duration = Duration::from_millis(30);
@@ -603,7 +645,11 @@ mod tests {
         assert_eq!(plain.len(), 20);
         assert_eq!(u16::from_be_bytes([plain[0], plain[1]]), 0x0001);
         assert_eq!(u16::from_be_bytes([plain[2], plain[3]]), 0);
-        assert_eq!(&plain[4..8], &0u32.to_be_bytes(), "cdnbye magic cookie 恒为 0");
+        assert_eq!(
+            &plain[4..8],
+            &0u32.to_be_bytes(),
+            "cdnbye magic cookie 恒为 0"
+        );
         assert_eq!(udp_change_request_flags(&plain), (false, false));
 
         let change = create_udp_binding_request(Some(UdpStunChangeRequest::new(true, true)));
@@ -656,11 +702,16 @@ mod tests {
         assert!(parse_udp_stun_response(&overlong).is_err());
     }
 
-    fn responder_full_cone(alt: SocketAddr) -> impl Fn(&[u8], (bool, bool)) -> Option<Vec<Vec<u8>>> + Send {
+    fn responder_full_cone(
+        alt: SocketAddr,
+    ) -> impl Fn(&[u8], (bool, bool)) -> Option<Vec<Vec<u8>>> + Send {
         move |_request, (change_ip, change_port)| {
             if change_ip || change_port {
                 // Test II：从「另一地址」应答（SOURCE-ADDRESS 属性不同于请求目标）
-                Some(vec![address_attr(0x0001, localhost(50000)), address_attr(0x0004, alt)])
+                Some(vec![
+                    address_attr(0x0001, localhost(50000)),
+                    address_attr(0x0004, alt),
+                ])
             } else {
                 // Test I：映射地址 + CHANGED-ADDRESS
                 Some(vec![
@@ -677,7 +728,8 @@ mod tests {
         let alt = spawn_udp_stun_mock(|_, _| None); // 占位（仅作为 SOURCE-ADDRESS 属性值）
         let primary = spawn_udp_stun_mock(responder_full_cone(alt));
         let client = fast_client();
-        let (nat, mapped) = client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
+        let (nat, mapped) =
+            client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
         assert_eq!(nat, NatType::FullCone);
         assert_eq!(mapped, Some(localhost(50000)));
     }
@@ -691,7 +743,10 @@ mod tests {
                 if change_ip || change_port {
                     // 不合规：声称仍从原地址应答（SOURCE-ADDRESS == 请求目标）
                     let own = holder.lock().unwrap().expect("测试中已注入自身地址");
-                    Some(vec![address_attr(0x0001, localhost(50000)), address_attr(0x0004, own)])
+                    Some(vec![
+                        address_attr(0x0001, localhost(50000)),
+                        address_attr(0x0004, own),
+                    ])
                 } else {
                     Some(vec![address_attr(0x0001, localhost(50000))])
                 }
@@ -709,7 +764,10 @@ mod tests {
         // 上游 isNat = mapped.ip != "0.0.0.0"：映射到 0.0.0.0 即「无 NAT」
         let primary = spawn_udp_stun_mock(move |_request, (change_ip, change_port)| {
             if change_ip || change_port {
-                Some(vec![address_attr(0x0001, localhost(1)), address_attr(0x0004, alt)])
+                Some(vec![
+                    address_attr(0x0001, localhost(1)),
+                    address_attr(0x0004, alt),
+                ])
             } else {
                 Some(vec![
                     address_attr(0x0001, localhost(0)),
@@ -731,7 +789,10 @@ mod tests {
             if change_ip {
                 None // Test II 无响应
             } else {
-                Some(vec![address_attr(0x0001, localhost(0)), address_attr(0x0005, alt)])
+                Some(vec![
+                    address_attr(0x0001, localhost(0)),
+                    address_attr(0x0005, alt),
+                ])
             }
         });
         let client = fast_client();
@@ -742,7 +803,10 @@ mod tests {
     /// 场景骨架：Test II 无响应，但 CHANGED-ADDRESS（alt）上的普通请求有响应。
     /// `alt_plain_mapped`：Test I(II) 的映射地址（不同 ⇒ Symmetric；相同 ⇒ 继续判定）；
     /// `answer_test_three`：alt 是否回答 changePort-only 请求（是 ⇒ RestrictedCone）。
-    fn restricted_family_scenario(alt_plain_mapped: SocketAddr, answer_test_three: bool) -> NatType {
+    fn restricted_family_scenario(
+        alt_plain_mapped: SocketAddr,
+        answer_test_three: bool,
+    ) -> NatType {
         let alt_holder: Arc<Mutex<Option<SocketAddr>>> = Arc::new(Mutex::new(None));
         let alt = spawn_udp_stun_mock(move |_request, (change_ip, change_port)| {
             if !change_ip && !change_port {
@@ -772,7 +836,8 @@ mod tests {
                 ])
             }
         });
-        let (nat, mapped) = fast_client().query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
+        let (nat, mapped) =
+            fast_client().query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
         assert_eq!(mapped, Some(localhost(50000)));
         nat
     }
@@ -806,7 +871,8 @@ mod tests {
     fn udp_blocked_when_server_never_answers() {
         let primary = spawn_udp_stun_mock(|_, _| None);
         let client = fast_client();
-        let (nat, mapped) = client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
+        let (nat, mapped) =
+            client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
         assert_eq!(nat, NatType::UdpBlocked);
         assert_eq!(mapped, None);
     }
@@ -817,7 +883,8 @@ mod tests {
         // 2 次发送 × 30ms ≈ 60ms 后放弃（默认 UDP_SEND_COUNT=3 时则约 90ms）
         let client = UdpStunClient::with_tuning(FAST_TIMEOUT, 2).unwrap();
         let start = Instant::now();
-        let result = client.do_transaction(&create_udp_binding_request(None), primary, fast_deadline());
+        let result =
+            client.do_transaction(&create_udp_binding_request(None), primary, fast_deadline());
         assert!(result.is_err());
         assert!(start.elapsed() >= FAST_TIMEOUT, "至少等待过一个事务超时");
     }
@@ -835,7 +902,8 @@ mod tests {
     fn missing_mapped_address_degrades_to_unknown() {
         let primary = spawn_udp_stun_mock(|_, _| Some(Vec::new())); // 应答但无 MAPPED-ADDRESS
         let client = fast_client();
-        let (nat, mapped) = client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
+        let (nat, mapped) =
+            client.query(primary, IpAddr::V4(Ipv4Addr::UNSPECIFIED), fast_deadline());
         assert_eq!(nat, NatType::Unknown);
         assert_eq!(mapped, None);
     }
@@ -843,7 +911,10 @@ mod tests {
     #[test]
     fn server_string_must_have_exactly_two_parts() {
         assert!(split_udp_stun_server("stun.example.com:3478").is_some());
-        assert!(split_udp_stun_server("stun.example.com").is_none(), "上游 split(\":\").length != 2 即跳过");
+        assert!(
+            split_udp_stun_server("stun.example.com").is_none(),
+            "上游 split(\":\").length != 2 即跳过"
+        );
         assert!(split_udp_stun_server("a:b:c").is_none());
         assert!(split_udp_stun_server("host:not-a-port").is_none());
     }
@@ -854,7 +925,10 @@ mod tests {
         let alt = localhost(40000);
         let working = spawn_udp_stun_mock(move |_request, (change_ip, change_port)| {
             if change_ip || change_port {
-                Some(vec![address_attr(0x0001, localhost(50000)), address_attr(0x0004, alt)])
+                Some(vec![
+                    address_attr(0x0001, localhost(50000)),
+                    address_attr(0x0004, alt),
+                ])
             } else {
                 Some(vec![
                     address_attr(0x0001, localhost(50000)),
@@ -865,7 +939,7 @@ mod tests {
         let prober = NatTypeProber::new();
         assert_eq!(prober.cached_nat_type(), NatType::Unknown, "初始 Unknown");
         let servers = vec![
-            "not-a-stun-server".to_string(), // 格式非法：跳过
+            "not-a-stun-server".to_string(),        // 格式非法：跳过
             format!("127.0.0.1:{}", silent.port()), // 无响应：换下一台
             format!("127.0.0.1:{}", working.port()),
         ];
@@ -927,6 +1001,9 @@ mod tests {
         // 这里断言「全部失败 ⇒ UdpBlocked 且确有网络活动」作为对照组。
         let servers = vec![format!("127.0.0.1:{}", server.port())];
         assert_eq!(prober.refresh_nat_type(&servers), NatType::UdpBlocked);
-        assert!(counter.load(Ordering::Relaxed) >= 1, "对照组：探测确实发出了请求");
+        assert!(
+            counter.load(Ordering::Relaxed) >= 1,
+            "对照组：探测确实发出了请求"
+        );
     }
 }

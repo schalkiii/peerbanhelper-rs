@@ -82,9 +82,13 @@ fn parse_metadata(source: &str) -> (String, bool) {
     let mut name = String::new();
     let mut cacheable = true;
     for line in source.lines() {
-        let Some(rest) = line.trim_start().strip_prefix('#') else { continue };
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
         let rest = rest.trim_start_matches('#').trim();
-        let Some(body) = rest.strip_prefix('@') else { continue };
+        let Some(body) = rest.strip_prefix('@') else {
+            continue;
+        };
         let body = body.trim();
         if let Some(v) = body.strip_prefix("NAME") {
             name = v.trim().to_string();
@@ -127,7 +131,9 @@ fn load_scripts(engine: &Engine, dir: &std::path::Path) -> Vec<LoadedScript> {
                 let translated = match transpile(&source) {
                     Ok(t) => t,
                     Err(e) => {
-                        tracing::warn!("表达式脚本 {name} 的 AviatorScript 含暂不支持的语法（{e}），已跳过");
+                        tracing::warn!(
+                            "表达式脚本 {name} 的 AviatorScript 含暂不支持的语法（{e}），已跳过"
+                        );
                         continue;
                     }
                 };

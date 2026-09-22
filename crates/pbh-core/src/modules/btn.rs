@@ -80,13 +80,13 @@
 //! （同样是 `NO_ACTION`、同样绝不封禁，仅 `status`/文案不同），本移植统一返回 `pass()`
 //! （`status: "pass"`）；上游结果形态保留在 [`btn_manager_not_initialized_result`] 中以便对照。
 
+use crate::avscript::ScriptDownloader;
 use crate::banlist::BanList;
 use crate::i18n::{Param, TranslationComponent};
 use crate::iputil::parse_addr;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
 use crate::rule::{Matcher, RuleSet};
-use crate::avscript::ScriptDownloader;
 use rhai::Engine;
 use rhai::Scope;
 use serde::{Deserialize, Serialize};
@@ -151,12 +151,19 @@ impl BtnIpList {
         let mut entries = Vec::with_capacity(items.len());
         for raw in items {
             match crate::iputil::parse_net(raw) {
-                Some(net) => entries.push(crate::modules::RuleListEntry { net, comment: String::new() }),
+                Some(net) => entries.push(crate::modules::RuleListEntry {
+                    net,
+                    comment: String::new(),
+                }),
                 // 上游对不可解析项会抛异常并中止整份规则集加载；此处跳过（不会误命中，行为等价）
                 None => tracing::warn!("BTN 规则集包含不可解析的 IP 规则 `{raw}`，已跳过"),
             }
         }
-        Self { rule_name: rule_name.to_string(), version: version.to_string(), entries }
+        Self {
+            rule_name: rule_name.to_string(),
+            version: version.to_string(),
+            entries,
+        }
     }
 
     /// 由允许/拒绝列表的规则文本构造，对齐上游 `BtnAbilityIP*List.stringToIPList`
@@ -166,7 +173,14 @@ impl BtnIpList {
     /// 返回 `(解析后的匹配器, 上游口径的加载行数)`。
     pub fn from_rule_text(rule_name: &str, version: &str, text: &str) -> (Self, usize) {
         let (entries, loaded) = crate::modules::ip_rule_list::parse_rule_list(text);
-        (Self { rule_name: rule_name.to_string(), version: version.to_string(), entries }, loaded)
+        (
+            Self {
+                rule_name: rule_name.to_string(),
+                version: version.to_string(),
+                entries,
+            },
+            loaded,
+        )
     }
 
     /// 最长前缀匹配，返回命中规则的备注（上游 `IPMatcher.match0` 的
@@ -226,7 +240,10 @@ impl BtnRulesetParsed {
         let version = ruleset.version_or_initial();
         let mut ip_rules = BTreeMap::new();
         for (category, raw) in &ruleset.ip_rules {
-            ip_rules.insert(category.clone(), BtnIpList::from_cidrs(category, &version, raw));
+            ip_rules.insert(
+                category.clone(),
+                BtnIpList::from_cidrs(category, &version, raw),
+            );
         }
         Ok(Self {
             version,
@@ -295,7 +312,11 @@ pub trait BtnTransport: Send + Sync {
     /// 拉取规则集；`Ok(None)` 表示服务端返回 204（无变化）。
     fn fetch_ruleset(&self, rev: &str) -> anyhow::Result<Option<BtnRuleset>>;
     /// 拉取 IP 列表；`Ok(None)` 表示 204（无变化）；返回 `(规则文本, X-BTN-ContentVersion)`。
-    fn fetch_ip_list(&self, kind: BtnIpAbility, rev: &str) -> anyhow::Result<Option<(String, String)>>;
+    fn fetch_ip_list(
+        &self,
+        kind: BtnIpAbility,
+        rev: &str,
+    ) -> anyhow::Result<Option<(String, String)>>;
 }
 
 /// 对齐上游 `BtnNetworkOnline` 持有的 `btnNetwork.abilities`（仅保留判定所需部分）。
@@ -338,7 +359,10 @@ fn now_millis() -> i64 {
 /// `peer.peerAddress.{ip,port,address}`）。
 fn build_script_engine() -> BtnScriptEngine {
     let env = crate::avscript::build_script_env();
-    BtnScriptEngine { engine: env.engine, start: env.start }
+    BtnScriptEngine {
+        engine: env.engine,
+        start: env.start,
+    }
 }
 
 impl BtnScriptEngine {
@@ -352,12 +376,17 @@ impl BtnScriptEngine {
             let translated = match crate::avscript::transpile(content) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("Unable to load BTN script {name}: AviatorScript 含暂不支持的语法（{e}）");
+                    tracing::error!(
+                        "Unable to load BTN script {name}: AviatorScript 含暂不支持的语法（{e}）"
+                    );
                     continue;
                 }
             };
             match self.engine.compile(&translated) {
-                Ok(ast) => compiled.push(BtnScript { name: name.clone(), ast }),
+                Ok(ast) => compiled.push(BtnScript {
+                    name: name.clone(),
+                    ast,
+                }),
                 Err(e) => tracing::error!("Unable to load BTN script {name}: {e}"),
             }
         }
@@ -382,7 +411,10 @@ impl BtnScriptEngine {
         scope.push_constant("torrent", torrent.clone());
         scope.push_constant(
             "downloader",
-            ScriptDownloader { id: downloader_id.to_string(), name: downloader_id.to_string() },
+            ScriptDownloader {
+                id: downloader_id.to_string(),
+                name: downloader_id.to_string(),
+            },
         );
         scope.push_constant("banDuration", ban_duration_ms);
         scope.push_constant("cacheable", true);
@@ -397,7 +429,12 @@ impl BtnScriptEngine {
         match result {
             Ok(ret) => {
                 let (action, payload) = handle_script_return(&ret)?;
-                Some(build_script_result(action, ban_duration_ms, &script.name, &payload))
+                Some(build_script_result(
+                    action,
+                    ban_duration_ms,
+                    &script.name,
+                    &payload,
+                ))
             }
             Err(e) => {
                 tracing::debug!("BTN 脚本 {} 执行异常，按 pass 处理: {e}", script.name);
@@ -559,7 +596,10 @@ impl BtnNetworkOnline {
     }
 
     pub fn is_manager_initialized(&self) -> bool {
-        self.state.read().map(|s| s.manager_initialized).unwrap_or(false)
+        self.state
+            .read()
+            .map(|s| s.manager_initialized)
+            .unwrap_or(false)
     }
 
     /// 注入 BTN 规则集（对齐上游 `BtnAbilityRules.updateRule` 的成功分支：
@@ -624,7 +664,9 @@ impl BtnNetworkOnline {
     /// 也绝不会因失败而清空既有规则。返回 `true` 表示规则集被更新（用于日志/状态展示）。
     pub fn sync_from_transport(&self, transport: &dyn BtnTransport) -> bool {
         let mut updated = false;
-        let ruleset_rev = self.ruleset_version().unwrap_or_else(|| "initial".to_string());
+        let ruleset_rev = self
+            .ruleset_version()
+            .unwrap_or_else(|| "initial".to_string());
         match transport.fetch_ruleset(&ruleset_rev) {
             Ok(Some(ruleset)) => match self.apply_ruleset(&ruleset) {
                 Ok(()) => updated = true,
@@ -636,7 +678,10 @@ impl BtnNetworkOnline {
             Err(e) => tracing::warn!("BTN 规则集拉取失败，保留旧规则: {e}"),
         }
 
-        for (kind, allow) in [(BtnIpAbility::AllowList, true), (BtnIpAbility::DenyList, false)] {
+        for (kind, allow) in [
+            (BtnIpAbility::AllowList, true),
+            (BtnIpAbility::DenyList, false),
+        ] {
             let rev = self.ip_list_version(allow);
             match transport.fetch_ip_list(kind, &rev) {
                 Ok(Some((text, version))) => {
@@ -660,7 +705,11 @@ impl BtnNetworkOnline {
             .read()
             .ok()
             .and_then(|s| {
-                let list = if allow { s.ip_allow_list.as_ref() } else { s.ip_deny_list.as_ref() };
+                let list = if allow {
+                    s.ip_allow_list.as_ref()
+                } else {
+                    s.ip_deny_list.as_ref()
+                };
                 list.map(|l| l.version.clone())
             })
             .unwrap_or_else(|| "initial".to_string())
@@ -677,7 +726,10 @@ impl BtnNetworkOnline {
     }
 
     pub fn ruleset_version(&self) -> Option<String> {
-        self.state.read().ok().and_then(|s| s.ruleset.as_ref().map(|r| r.version.clone()))
+        self.state
+            .read()
+            .ok()
+            .and_then(|s| s.ruleset.as_ref().map(|r| r.version.clone()))
     }
 
     /// 对齐上游 `BtnNetworkOnline.checkScript`：逐条执行已编译的 BTN 脚本规则。
@@ -699,7 +751,8 @@ impl BtnNetworkOnline {
         let mut decided: Option<CheckResult> = None;
         for script in scripts.iter() {
             let Some(result) =
-                self.script_engine.run(script, self.ban_duration_ms, torrent, peer, downloader_id)
+                self.script_engine
+                    .run(script, self.ban_duration_ms, torrent, peer, downloader_id)
             else {
                 continue;
             };
@@ -813,16 +866,31 @@ impl RuleModule for BtnNetworkOnline {
         // 上游顺序：peerId -> clientName -> ip -> port（仅当对应类别非空才参与）
         let mut candidates: Vec<Option<CheckResult>> = Vec::with_capacity(4);
         if !ruleset.peer_id_rules.is_empty() {
-            candidates.push(check_peer_id_rule(&module, self.ban_duration_ms, ruleset, peer));
+            candidates.push(check_peer_id_rule(
+                &module,
+                self.ban_duration_ms,
+                ruleset,
+                peer,
+            ));
         }
         if !ruleset.client_name_rules.is_empty() {
-            candidates.push(check_client_name_rule(&module, self.ban_duration_ms, ruleset, peer));
+            candidates.push(check_client_name_rule(
+                &module,
+                self.ban_duration_ms,
+                ruleset,
+                peer,
+            ));
         }
         if !ruleset.ip_rules.is_empty() {
             candidates.push(check_ip_rule(&module, self.ban_duration_ms, ruleset, peer));
         }
         if !ruleset.port_rules.is_empty() {
-            candidates.push(check_port_rule(&module, self.ban_duration_ms, ruleset, peer));
+            candidates.push(check_port_rule(
+                &module,
+                self.ban_duration_ms,
+                ruleset,
+                peer,
+            ));
         }
 
         let mut last_ban: Option<CheckResult> = None;
@@ -1141,22 +1209,34 @@ mod tests {
     fn no_rules_loaded_passes_and_never_bans() {
         // 从未初始化（对齐上游 btnNetwork == null）
         let fresh = BtnNetworkOnline::new(BTN_BAN_DURATION_MS);
-        let result = check(&fresh, &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"));
+        let result = check(
+            &fresh,
+            &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.ban_duration_ms, 0);
         assert_eq!(result.data["status"], "pass");
-        assert_eq!(result.reason_key, Some(TranslationComponent::new("Check passed")));
+        assert_eq!(
+            result.reason_key,
+            Some(TranslationComponent::new("Check passed"))
+        );
 
         // 已初始化但规则集为空：上游所有 ability 为 null -> 逐步 pass()
         let initialized = BtnNetworkOnline::new(BTN_BAN_DURATION_MS);
         initialized.set_manager_initialized(true);
-        let result = check(&initialized, &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"));
+        let result = check(
+            &initialized,
+            &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.data["status"], "pass");
 
         // 空规则集（各类别都为空）同样不封禁
         let empty = module_with_ruleset(r#"{"version":"v1"}"#);
-        let result = check(&empty, &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"));
+        let result = check(
+            &empty,
+            &peer("1.2.3.4", 51413, "-hp001-xxxxxxxxxxxx", "Xunlei"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.data["status"], "pass");
     }
@@ -1170,7 +1250,10 @@ mod tests {
                 "peer_id": { "xunlei": ["{\"method\":\"STARTS_WITH\",\"content\":\"-hp\"}"] }
             }"#,
         );
-        let result = check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::Ban);
         assert_eq!(result.module, "btn");
         assert_eq!(result.ban_duration_ms, BTN_BAN_DURATION_MS);
@@ -1203,12 +1286,16 @@ mod tests {
                 "client_name": { "xunlei": ["{\"method\":\"CONTAINS\",\"content\":\"xunlei\"}"] }
             }"#,
         );
-        let result = check(&module, &peer("9.9.9.9", 51413, "-qb0000-abcdefghijkl", "Xunlei 1.0"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-qb0000-abcdefghijkl", "Xunlei 1.0"),
+        );
         assert_eq!(result.action, PeerAction::Ban);
         assert_eq!(result.ban_duration_ms, BTN_BAN_DURATION_MS);
         assert_eq!(result.data["type"], "clientName");
         assert_eq!(result.data["category"], "xunlei");
-        let name = TranslationComponent::with_params("MATCH_STRING_CONTAINS", vec!["xunlei".into()]);
+        let name =
+            TranslationComponent::with_params("MATCH_STRING_CONTAINS", vec!["xunlei".into()]);
         assert_eq!(
             result.rule_key,
             Some(TranslationComponent::with_params(
@@ -1235,7 +1322,10 @@ mod tests {
             }"#,
         );
         // IPv4：规则集内 CIDR 命中
-        let result = check(&module, &peer("1.2.3.77", 51413, "-qb0000-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("1.2.3.77", 51413, "-qb0000-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::Ban);
         assert_eq!(result.ban_duration_ms, BTN_BAN_DURATION_MS);
         assert_eq!(result.data["type"], "ip");
@@ -1264,7 +1354,12 @@ mod tests {
         // IPv4-mapped IPv6 归一化为 IPv4 后再匹配
         let result = check(
             &module,
-            &peer("::ffff:1.2.3.77", 51413, "-qb0000-abcdefghijkl", "qBittorrent"),
+            &peer(
+                "::ffff:1.2.3.77",
+                51413,
+                "-qb0000-abcdefghijkl",
+                "qBittorrent",
+            ),
         );
         assert_eq!(result.data["category"], "malicious");
     }
@@ -1272,10 +1367,11 @@ mod tests {
     /// 端口规则：matcherName 为 BTN_PORT_RULE(version)，data 带端口号
     #[test]
     fn port_rule_ban_uses_btn_port_rule_matcher() {
-        let module = module_with_ruleset(
-            r#"{"version":"v9.5.1","port":{"badport":[51413]}}"#,
+        let module = module_with_ruleset(r#"{"version":"v9.5.1","port":{"badport":[51413]}}"#);
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-qb0000-abcdefghijkl", "qBittorrent"),
         );
-        let result = check(&module, &peer("9.9.9.9", 51413, "-qb0000-abcdefghijkl", "qBittorrent"));
         assert_eq!(result.action, PeerAction::Ban);
         assert_eq!(result.data["type"], "port");
         assert_eq!(result.data["category"], "badport");
@@ -1298,7 +1394,10 @@ mod tests {
         );
 
         // 端口不同 ⇒ pass
-        let result = check(&module, &peer("9.9.9.9", 12345, "-qb0000-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 12345, "-qb0000-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
     }
 
@@ -1314,11 +1413,17 @@ mod tests {
                 "port": { "badport": [51413] }
             }"#,
         );
-        let result = check(&module, &peer("8.8.8.8", 12345, "-qb0000-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("8.8.8.8", 12345, "-qb0000-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.ban_duration_ms, 0);
         assert_eq!(result.data["status"], "pass");
-        assert_eq!(result.reason_key, Some(TranslationComponent::new("Check passed")));
+        assert_eq!(
+            result.reason_key,
+            Some(TranslationComponent::new("Check passed"))
+        );
 
         // 规则集的 FALSE 短路：显式 FALSE 规则使 peer-id 规则集整体不命中
         let module = module_with_ruleset(
@@ -1326,7 +1431,10 @@ mod tests {
                 "peer_id": { "xunlei": ["{\"method\":\"EQUALS\",\"content\":\"qbittorrent\",\"hit\":\"FALSE\"}"] }
             }"#,
         );
-        let result = check(&module, &peer("8.8.8.8", 12345, "qbittorrent", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("8.8.8.8", 12345, "qbittorrent", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
     }
 
@@ -1340,21 +1448,33 @@ mod tests {
 
         // 规则集已加载 + 握手中 ⇒ handshaking()（即使命中规则也不封禁）
         let module = module_with_ruleset(json);
-        let result = check(&module, &handshaking_peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &handshaking_peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.ban_duration_ms, 0);
         assert_eq!(result.data["status"], "handshaking");
-        assert_eq!(result.reason_key, Some(TranslationComponent::new("Peer handshaking")));
+        assert_eq!(
+            result.reason_key,
+            Some(TranslationComponent::new("Peer handshaking"))
+        );
 
         // 未加载规则集 + 握手中 ⇒ pass（上游 `rule == null` 在握手判断之前返回 pass()）
         let initialized = BtnNetworkOnline::new(BTN_BAN_DURATION_MS);
         initialized.set_manager_initialized(true);
-        let result = check(&initialized, &handshaking_peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &initialized,
+            &handshaking_peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.data["status"], "pass");
 
         // 握手完成后同一 peer 命中规则 ⇒ BAN
-        let result = check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::Ban);
     }
 
@@ -1364,10 +1484,16 @@ mod tests {
         let module = BtnNetworkOnline::new(BTN_BAN_DURATION_MS);
         let loaded = module.apply_ip_denylist_text("2.2.2.0/24 # 恶意网段\n", "v1");
         assert_eq!(loaded, 1);
-        assert_eq!(module.apply_ip_allowlist_text("2.2.2.2 # 白名单\n", "v1"), 1);
+        assert_eq!(
+            module.apply_ip_allowlist_text("2.2.2.2 # 白名单\n", "v1"),
+            1
+        );
 
         // 白名单命中 ⇒ SKIP（ban-duration 0，带 matchedValue）
-        let result = check(&module, &peer("2.2.2.2", 51413, "-qb0000-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("2.2.2.2", 51413, "-qb0000-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::Skip);
         assert_eq!(result.ban_duration_ms, 0);
         assert_eq!(result.data["type"], "ipAllowList");
@@ -1385,7 +1511,10 @@ mod tests {
         );
 
         // 黑名单命中 ⇒ BAN（注释作为 reason 参数）
-        let result = check(&module, &peer("2.2.2.3", 51413, "-qb0000-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("2.2.2.3", 51413, "-qb0000-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::Ban);
         assert_eq!(result.ban_duration_ms, BTN_BAN_DURATION_MS);
         assert_eq!(result.data["type"], "ip");
@@ -1449,7 +1578,11 @@ mod tests {
             .is_err());
         assert_eq!(module.ruleset_version().as_deref(), Some("v1"));
         assert_eq!(
-            check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent")).action,
+            check(
+                &module,
+                &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent")
+            )
+            .action,
             PeerAction::Ban
         );
     }
@@ -1461,13 +1594,20 @@ mod tests {
             r#"{"version":"v1","peer_id":{"xunlei":["{\"method\":\"STARTS_WITH\",\"content\":\"-hp\"}"]}}"#,
         );
         assert_eq!(
-            check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent")).action,
+            check(
+                &module,
+                &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent")
+            )
+            .action,
             PeerAction::Ban
         );
         module.unload();
         assert!(!module.is_manager_initialized());
         assert_eq!(module.ruleset_version(), None);
-        let result = check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "qBittorrent"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.data["status"], "pass");
     }
@@ -1503,7 +1643,11 @@ mod tests {
         let list = BtnIpList::from_cidrs(
             "test",
             "v1",
-            &["1.0.0.0/8".to_string(), "1.2.3.0/24".to_string(), "bad".to_string()],
+            &[
+                "1.0.0.0/8".to_string(),
+                "1.2.3.0/24".to_string(),
+                "bad".to_string(),
+            ],
         );
         assert_eq!(list.len(), 2);
         assert!(list.match_ip("1.2.3.4").is_some());
@@ -1533,7 +1677,10 @@ mod tests {
         let module = BtnNetworkOnline::new(BTN_BAN_DURATION_MS);
         assert!(!module.sync_from_transport(&FailingTransport));
         assert!(!module.is_manager_initialized());
-        let result = check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei"));
+        let result = check(
+            &module,
+            &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei"),
+        );
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.data["status"], "pass");
 
@@ -1544,7 +1691,11 @@ mod tests {
         assert!(!module.sync_from_transport(&FailingTransport));
         assert_eq!(module.ruleset_version().as_deref(), Some("v1"));
         assert_eq!(
-            check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei")).action,
+            check(
+                &module,
+                &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei")
+            )
+            .action,
             PeerAction::Ban
         );
     }
@@ -1587,12 +1738,20 @@ mod tests {
         assert!(module.sync_from_transport(&FakeTransport(ruleset.clone())));
         assert_eq!(module.ruleset_version().as_deref(), Some("v1"));
         assert_eq!(
-            check(&module, &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei")).action,
+            check(
+                &module,
+                &peer("9.9.9.9", 51413, "-hp001-abcdefghijkl", "Xunlei")
+            )
+            .action,
             PeerAction::Ban
         );
         // 黑名单已随同注入
         assert_eq!(
-            check(&module, &peer("2.2.2.9", 12345, "-qb0000-abcdefghijkl", "qBittorrent")).action,
+            check(
+                &module,
+                &peer("2.2.2.9", 12345, "-qb0000-abcdefghijkl", "qBittorrent")
+            )
+            .action,
             PeerAction::Ban
         );
 
@@ -1608,7 +1767,10 @@ mod tests {
         assert_eq!(result.action, PeerAction::NoAction);
         assert_eq!(result.ban_duration_ms, 0);
         assert_eq!(result.data["status"], "btn_manager_not_initialized");
-        assert_eq!(result.rule_key, Some(TranslationComponent::new("GENERAL_NA")));
+        assert_eq!(
+            result.rule_key,
+            Some(TranslationComponent::new("GENERAL_NA"))
+        );
         assert_eq!(
             result.reason_key,
             Some(TranslationComponent::new("BtnManager not initialized"))

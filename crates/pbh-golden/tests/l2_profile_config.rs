@@ -37,7 +37,14 @@ fn profile() -> ProfileConfig {
     serde_yaml::from_str(PROFILE).expect("profile yaml")
 }
 
-fn peer(ip: &str, port: u16, peer_id: &str, client: &str, uploaded: i64, progress: f64) -> PeerData {
+fn peer(
+    ip: &str,
+    port: u16,
+    peer_id: &str,
+    client: &str,
+    uploaded: i64,
+    progress: f64,
+) -> PeerData {
     PeerData {
         client_name: Some(client.to_string()),
         peer_id: Some(peer_id.to_string()),
@@ -70,7 +77,10 @@ fn torrent() -> TorrentData {
 }
 
 fn ctx() -> CheckContext {
-    CheckContext { now_ms: 0, features: vec!["UNBAN_IP".into()] }
+    CheckContext {
+        now_ms: 0,
+        features: vec!["UNBAN_IP".into()],
+    }
 }
 
 #[test]
@@ -88,7 +98,12 @@ fn profile_rules_and_ban_durations_are_applied() {
     let t = torrent();
 
     // 自定义 peer-id 规则 + 模块级 ban-duration
-    match p.evaluate("d", &t, &peer("9.9.9.9", 1, "evil", "qBittorrent", 10, 0.1), &ctx()) {
+    match p.evaluate(
+        "d",
+        &t,
+        &peer("9.9.9.9", 1, "evil", "qBittorrent", 10, 0.1),
+        &ctx(),
+    ) {
         Decision::Ban(r) => {
             assert_eq!(r.module, "peer-id-blacklist");
             assert_eq!(r.ban_duration_ms, 1_000, "使用模块级 ban-duration");
@@ -97,14 +112,38 @@ fn profile_rules_and_ban_durations_are_applied() {
     }
 
     // 配置的 CIDR 与端口黑名单
-    match p.evaluate("d", &t, &peer("1.2.3.77", 1, "-qB5000-xxxxxxxxxxxx", "qBittorrent", 10, 0.1), &ctx()) {
+    match p.evaluate(
+        "d",
+        &t,
+        &peer(
+            "1.2.3.77",
+            1,
+            "-qB5000-xxxxxxxxxxxx",
+            "qBittorrent",
+            10,
+            0.1,
+        ),
+        &ctx(),
+    ) {
         Decision::Ban(r) => {
             assert_eq!(r.module, "ip-address-blocker");
             assert_eq!(r.ban_duration_ms, 2_000);
         }
         other => panic!("expected ban, got {other:?}"),
     }
-    match p.evaluate("d", &t, &peer("8.8.8.8", 4444, "-qB5000-xxxxxxxxxxxx", "qBittorrent", 10, 0.1), &ctx()) {
+    match p.evaluate(
+        "d",
+        &t,
+        &peer(
+            "8.8.8.8",
+            4444,
+            "-qB5000-xxxxxxxxxxxx",
+            "qBittorrent",
+            10,
+            0.1,
+        ),
+        &ctx(),
+    ) {
         Decision::Ban(r) => assert_eq!(r.module, "ip-address-blocker"),
         other => panic!("expected ban, got {other:?}"),
     }
@@ -115,7 +154,12 @@ fn profile_bypass_addresses_come_from_config() {
     let p = profile().build_pipeline();
     let t = torrent();
     // 10.0.0.0/8 在配置的 bypass 列表中 -> SKIP
-    match p.evaluate("d", &t, &peer("10.1.2.3", 1, "evil", "qBittorrent", 10, 0.1), &ctx()) {
+    match p.evaluate(
+        "d",
+        &t,
+        &peer("10.1.2.3", 1, "evil", "qBittorrent", 10, 0.1),
+        &ctx(),
+    ) {
         Decision::Skip(r) => {
             assert_eq!(r.action, PeerAction::Skip);
             assert_eq!(r.rule, "general-rule-ignored-address");
@@ -124,11 +168,21 @@ fn profile_bypass_addresses_come_from_config() {
     }
     // 未在列表中的地址仍然参与判定（192.168.0.0/16 命中 -> SKIP）
     assert!(matches!(
-        p.evaluate("d", &t, &peer("192.168.5.5", 1, "evil", "qBittorrent", 10, 0.1), &ctx()),
+        p.evaluate(
+            "d",
+            &t,
+            &peer("192.168.5.5", 1, "evil", "qBittorrent", 10, 0.1),
+            &ctx()
+        ),
         Decision::Skip(_)
     ));
     assert!(matches!(
-        p.evaluate("d", &t, &peer("8.8.4.4", 1, "evil", "qBittorrent", 10, 0.1), &ctx()),
+        p.evaluate(
+            "d",
+            &t,
+            &peer("8.8.4.4", 1, "evil", "qBittorrent", 10, 0.1),
+            &ctx()
+        ),
         Decision::Ban(_)
     ));
 }
@@ -146,7 +200,12 @@ module:
 "#;
     let cfg: ProfileConfig = serde_yaml::from_str(yaml).unwrap();
     let p = cfg.build_pipeline();
-    match p.evaluate("d", &torrent(), &peer("1.2.3.77", 1, "-qB-", "qB", 10, 0.1), &ctx()) {
+    match p.evaluate(
+        "d",
+        &torrent(),
+        &peer("1.2.3.77", 1, "-qB-", "qB", 10, 0.1),
+        &ctx(),
+    ) {
         Decision::Ban(r) => assert_eq!(r.ban_duration_ms, 1_209_600_000, "回退到全局 ban-duration"),
         other => panic!("expected ban, got {other:?}"),
     }
@@ -163,7 +222,8 @@ fn shipped_default_config_is_equivalent_to_upstream_profile() {
         #[serde(rename = "ip-database")]
         ip_database: pbh_core::config::IpDatabaseConfig,
     }
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pbh/src/default-config.yml");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pbh/src/default-config.yml");
     let text = std::fs::read_to_string(&path).expect("crates/pbh/src/default-config.yml 必须存在");
     let doc: Doc = serde_yaml::from_str(&text).expect("默认配置必须可解析");
 
@@ -251,13 +311,22 @@ fn shipped_default_config_is_equivalent_to_upstream_profile() {
     assert!(av.presets.xunlei.enabled);
 
     // BTN（上游 profile.yml 第 264-267 行）：enabled: true / ban-duration: 259200000
-    let btn = doc.profile.module.btn.as_ref().expect("默认配置必须包含 module.btn");
+    let btn = doc
+        .profile
+        .module
+        .btn
+        .as_ref()
+        .expect("默认配置必须包含 module.btn");
     assert!(matches!(btn.enabled, Some(true)));
     assert_eq!(btn.ban_duration_ms, 259_200_000);
 
     // `ip-address-blocker` 的 GeoIP 维度（逐字对齐上游 profile.yml 的随包值）
     let ipb = doc.profile.module.ip_address_blocker.as_ref().unwrap();
-    assert_eq!(ipb.asns, vec![0], "上游写成字符串 \"0\"，按 getLongList 口径解析为整数");
+    assert_eq!(
+        ipb.asns,
+        vec![0],
+        "上游写成字符串 \"0\"，按 getLongList 口径解析为整数"
+    );
     assert_eq!(ipb.regions, vec!["0".to_string()]);
     assert_eq!(ipb.cities, vec!["示例海南".to_string()]);
     assert!(
@@ -275,13 +344,24 @@ fn shipped_default_config_is_equivalent_to_upstream_profile() {
 
     // 监控模块（上游 registerModules 顺序：ActiveMonitoring → SwarmTracking →
     // SessionAnalyse → PeerRecording），**不进入**判定流水线
-    let active = doc.profile.module.active_monitoring.as_ref().expect("active-monitoring");
+    let active = doc
+        .profile
+        .module
+        .active_monitoring
+        .as_ref()
+        .expect("active-monitoring");
     assert!(matches!(active.enabled, Some(true)));
     let active_settings = active.to_settings();
     assert_eq!(active_settings.daily_traffic_capping, -1);
     assert!(!active_settings.use_traffic_sliding_capping);
-    assert_eq!(active_settings.max_traffic_allowed_in_window_period, 53_687_091_200);
-    assert_eq!(active_settings.traffic_sliding_capping_max_speed, 10_485_760);
+    assert_eq!(
+        active_settings.max_traffic_allowed_in_window_period,
+        53_687_091_200
+    );
+    assert_eq!(
+        active_settings.traffic_sliding_capping_max_speed,
+        10_485_760
+    );
     assert_eq!(active_settings.traffic_sliding_capping_min_speed, 0);
 
     let analyse = doc
@@ -331,7 +411,8 @@ fn shipped_default_config_has_upstream_remap_defaults() {
         ip_remapping: IpRemapConfig,
     }
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pbh/src/default-config.yml");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pbh/src/default-config.yml");
     let text = std::fs::read_to_string(&path).expect("crates/pbh/src/default-config.yml 必须存在");
     let doc: Doc = serde_yaml::from_str(&text).expect("默认配置必须可解析");
 
@@ -342,14 +423,26 @@ fn shipped_default_config_has_upstream_remap_defaults() {
 
     assert!(!doc.ip_remapping.teredo, "Teredo 默认不转换");
     assert!(doc.ip_remapping.nat64.enabled);
-    assert_eq!(doc.ip_remapping.nat64.prefix, vec!["64:ff9b::/96".to_string()]);
+    assert_eq!(
+        doc.ip_remapping.nat64.prefix,
+        vec!["64:ff9b::/96".to_string()]
+    );
 
     // AutoSTUN（`ip-remapping.auto-stun`）：默认关闭 ⇒ 不挂载翻译表、翻译严格直通；
     // STUN 服务器列表对齐上游 config.yml 的 `stun.tcp-servers` / `stun.udp-servers`
     let auto_stun = &doc.ip_remapping.auto_stun;
-    assert!(!auto_stun.enabled, "auto-stun 默认关闭（上游 `auto-stun.enabled: false`）");
-    assert!(auto_stun.use_friendly_loopback_mapping, "友好回环映射默认开启");
-    assert!(auto_stun.downloaders.is_empty(), "默认不为任何下载器启用隧道");
+    assert!(
+        !auto_stun.enabled,
+        "auto-stun 默认关闭（上游 `auto-stun.enabled: false`）"
+    );
+    assert!(
+        auto_stun.use_friendly_loopback_mapping,
+        "友好回环映射默认开启"
+    );
+    assert!(
+        auto_stun.downloaders.is_empty(),
+        "默认不为任何下载器启用隧道"
+    );
     assert_eq!(
         auto_stun.tcp_servers,
         vec![
@@ -381,7 +474,12 @@ fn missing_module_section_disables_the_module() {
     assert!(p.modules.is_empty(), "配置节缺失时上游视为禁用");
     // 默认 bypass 地址仍然生效
     assert!(matches!(
-        p.evaluate("d", &torrent(), &peer("192.168.1.1", 1, "evil", "qB", 10, 0.1), &ctx()),
+        p.evaluate(
+            "d",
+            &torrent(),
+            &peer("192.168.1.1", 1, "evil", "qB", 10, 0.1),
+            &ctx()
+        ),
         Decision::Skip(_)
     ));
 }

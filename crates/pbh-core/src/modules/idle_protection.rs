@@ -87,7 +87,10 @@ pub struct IdleConnectionDosProtection {
 
 impl IdleConnectionDosProtection {
     pub fn new(settings: IdleProtectionSettings) -> Self {
-        Self { settings, idle_connections: StdMutex::new(HashMap::new()) }
+        Self {
+            settings,
+            idle_connections: StdMutex::new(HashMap::new()),
+        }
     }
 
     /// 当前跟踪的空闲连接数（供测试与状态展示）。

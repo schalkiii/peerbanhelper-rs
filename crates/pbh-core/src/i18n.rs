@@ -52,9 +52,15 @@ impl<'de> Deserialize<'de> for Param {
             /// 嵌套组件（上游 `Object[]` 里也可以是 `TranslationComponent`）
             Component(TranslationComponent),
             /// 本移植早期格式：`{"Text": "…"}`
-            TaggedText { #[serde(rename = "Text")] text: String },
+            TaggedText {
+                #[serde(rename = "Text")]
+                text: String,
+            },
             /// 本移植早期格式：`{"Component": {…}}`
-            TaggedComponent { #[serde(rename = "Component")] component: TranslationComponent },
+            TaggedComponent {
+                #[serde(rename = "Component")]
+                component: TranslationComponent,
+            },
         }
         Ok(match Raw::deserialize(deserializer)? {
             Raw::Text(text) => Param::Text(text),
@@ -112,11 +118,17 @@ pub struct TranslationComponent {
 
 impl TranslationComponent {
     pub fn new(key: impl Into<String>) -> Self {
-        Self { key: key.into(), params: Vec::new() }
+        Self {
+            key: key.into(),
+            params: Vec::new(),
+        }
     }
 
     pub fn with_params(key: impl Into<String>, params: Vec<Param>) -> Self {
-        Self { key: key.into(), params }
+        Self {
+            key: key.into(),
+            params,
+        }
     }
 
     /// 便捷渲染（等价 `Translator::render`）。
@@ -175,7 +187,10 @@ impl Translator {
                     let locale = entry.file_name().to_string_lossy().to_lowercase();
                     let file = path.join("messages.yml");
                     if let Ok(text) = std::fs::read_to_string(&file) {
-                        self.tables.entry(locale).or_default().extend(parse_messages(&text));
+                        self.tables
+                            .entry(locale)
+                            .or_default()
+                            .extend(parse_messages(&text));
                     }
                 }
             }
@@ -207,7 +222,9 @@ impl Translator {
         if component.key.is_empty() {
             return String::new();
         }
-        let template = self.template(&component.key, locale).unwrap_or(&component.key);
+        let template = self
+            .template(&component.key, locale)
+            .unwrap_or(&component.key);
         let args: Vec<String> = component
             .params
             .iter()

@@ -76,14 +76,13 @@ impl PbhBackend {
     ) -> Self {
         let install_id = read_installation_id(&data_dir);
         // 推送渠道重建复用的 HTTP 客户端（对齐 `HTTPUtil.newBuilder()`：校验 TLS、超时 15s/60s）
-        let fetcher: Arc<dyn HttpFetcher + Send + Sync> =
-            match ReqwestFetcher::new(true, 15, 60) {
-                Ok(f) => Arc::new(f),
-                Err(e) => {
-                    warn!("推送 HTTP 客户端初始化失败，推送渠道热管理不可用: {e}");
-                    Arc::new(ReqwestFetcher::new(true, 15, 60).expect("重试初始化"))
-                }
-            };
+        let fetcher: Arc<dyn HttpFetcher + Send + Sync> = match ReqwestFetcher::new(true, 15, 60) {
+            Ok(f) => Arc::new(f),
+            Err(e) => {
+                warn!("推送 HTTP 客户端初始化失败，推送渠道热管理不可用: {e}");
+                Arc::new(ReqwestFetcher::new(true, 15, 60).expect("重试初始化"))
+            }
+        };
         Self {
             data_dir,
             config: StdMutex::new(config),
@@ -102,7 +101,10 @@ impl PbhBackend {
 
     /// 当前配置快照。
     fn snapshot(&self) -> AppConfig {
-        self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 保存配置到磁盘并更新内存态。
@@ -174,7 +176,10 @@ impl WebBackend for PbhBackend {
 
     fn set_global_paused(&self, paused: bool) -> Result<(), String> {
         self.global_pause.store(paused, Ordering::Relaxed);
-        info!("全局封禁已{}（web 操作）", if paused { "暂停" } else { "恢复" });
+        info!(
+            "全局封禁已{}（web 操作）",
+            if paused { "暂停" } else { "恢复" }
+        );
         Ok(())
     }
 
@@ -245,7 +250,11 @@ impl WebBackend for PbhBackend {
     fn ban_peers(&self, ips: &[String]) -> Result<(), String> {
         // 只改内存封禁表（对齐上游 `scheduleBanPeerNoAssign`）：持久化由 ban wave 的
         // 定时全量 `saveBanList` 完成（`WaveEngine::persist_ban_list`）。
-        let mut list = self.pipeline.ban_list.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list = self
+            .pipeline
+            .ban_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for ip in ips {
             list.add(ip, 0, MANUAL_MODULE, false);
         }
@@ -256,7 +265,11 @@ impl WebBackend for PbhBackend {
     }
 
     fn unban_peers(&self, ips: &[String]) -> Result<(), String> {
-        let mut list = self.pipeline.ban_list.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list = self
+            .pipeline
+            .ban_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if ips.iter().any(|ip| ip == "*") {
             // 对齐上游 DELETE /api/bans 的 `*` 清空语义
             list.clear();
@@ -306,9 +319,8 @@ impl WebBackend for PbhBackend {
     fn add_downloader(&self, config: &Value) -> Result<(), String> {
         let dl_cfg: DownloaderConfig =
             serde_json::from_value(config.clone()).map_err(|e| format!("配置无效: {e}"))?;
-        let (downloader, increment) =
-            build_downloader(&dl_cfg, &self.remap, &self.blocklist_url)
-                .map_err(|e| format!("创建下载器失败: {e}"))?;
+        let (downloader, increment) = build_downloader(&dl_cfg, &self.remap, &self.blocklist_url)
+            .map_err(|e| format!("创建下载器失败: {e}"))?;
         let mut cfg = self.snapshot();
         if cfg.downloaders.iter().any(|d| d.name == dl_cfg.name) {
             return Err("DL_DUPLICATE_NAME".into());
@@ -330,9 +342,8 @@ impl WebBackend for PbhBackend {
         if parsed.name.is_empty() {
             parsed.name = id.to_string();
         }
-        let (downloader, increment) =
-            build_downloader(&parsed, &self.remap, &self.blocklist_url)
-                .map_err(|e| format!("重建下载器失败: {e}"))?;
+        let (downloader, increment) = build_downloader(&parsed, &self.remap, &self.blocklist_url)
+            .map_err(|e| format!("重建下载器失败: {e}"))?;
         let mut cfg = self.snapshot();
         let slot = cfg
             .downloaders
@@ -373,8 +384,8 @@ impl WebBackend for PbhBackend {
     fn test_downloader(&self, config: &Value) -> Result<(), String> {
         let dl_cfg: DownloaderConfig =
             serde_json::from_value(config.clone()).map_err(|e| format!("配置无效: {e}"))?;
-        let (downloader, _) =
-            build_downloader(&dl_cfg, &self.remap, &self.blocklist_url).map_err(|e| e.to_string())?;
+        let (downloader, _) = build_downloader(&dl_cfg, &self.remap, &self.blocklist_url)
+            .map_err(|e| e.to_string())?;
         // 登录校验与 ban wave 完全一致（`login()` 内含暂停短路与凭据校验）；
         // 在独立 current_thread runtime 上执行，避免在 axum handler 的
         // async 上下文里 `block_on`。
@@ -418,11 +429,16 @@ impl WebBackend for PbhBackend {
         PushProviderConfig::parse(&serde_yaml::Value::Mapping(section.clone()))
             .map_err(|e| format!("渠道配置无效: {e}"))?;
         let mut cfg = self.snapshot();
-        if cfg.push.contains_key(serde_yaml::Value::String(name.clone())) {
+        if cfg
+            .push
+            .contains_key(serde_yaml::Value::String(name.clone()))
+        {
             return Err("PUSH_CHANNEL_ALREADY_EXISTS".into());
         }
-        cfg.push
-            .insert(serde_yaml::Value::String(name), serde_yaml::Value::Mapping(section));
+        cfg.push.insert(
+            serde_yaml::Value::String(name),
+            serde_yaml::Value::Mapping(section),
+        );
         self.save_config(&cfg)?;
         self.rebuild_push();
         Ok(())
@@ -437,7 +453,8 @@ impl WebBackend for PbhBackend {
         if !cfg.push.contains_key(&key_name) {
             return Err("PUSH_CHANNEL_NOT_FOUND".into());
         }
-        cfg.push.insert(key_name, serde_yaml::Value::Mapping(section));
+        cfg.push
+            .insert(key_name, serde_yaml::Value::Mapping(section));
         self.save_config(&cfg)?;
         self.rebuild_push();
         Ok(())
@@ -445,8 +462,7 @@ impl WebBackend for PbhBackend {
 
     fn remove_push_channel(&self, name: &str) -> Result<(), String> {
         let mut cfg = self.snapshot();
-        cfg.push
-            .remove(serde_yaml::Value::String(name.to_string()));
+        cfg.push.remove(serde_yaml::Value::String(name.to_string()));
         self.save_config(&cfg)?;
         self.rebuild_push();
         Ok(())
@@ -650,9 +666,7 @@ fn normalize_keys(value: &serde_yaml::Value) -> Value {
             }
             Value::Object(json_map)
         }
-        serde_yaml::Value::Sequence(seq) => {
-            Value::Array(seq.iter().map(normalize_keys).collect())
-        }
+        serde_yaml::Value::Sequence(seq) => Value::Array(seq.iter().map(normalize_keys).collect()),
         other => serde_json::to_value(other).unwrap_or(Value::Null),
     }
 }
@@ -668,7 +682,9 @@ fn denormalize_json(value: &Value) -> serde_yaml::Value {
             }
             serde_yaml::Value::Mapping(yaml_map)
         }
-        Value::Array(arr) => serde_yaml::Value::Sequence(arr.iter().map(denormalize_json).collect()),
+        Value::Array(arr) => {
+            serde_yaml::Value::Sequence(arr.iter().map(denormalize_json).collect())
+        }
         other => serde_yaml::to_value(other).unwrap_or(serde_yaml::Value::Null),
     }
 }
@@ -684,9 +700,8 @@ fn push_channel_parts(channel: &Value) -> Result<(String, serde_yaml::Mapping), 
         return Err("PUSH_CHANNEL_NAME_EMPTY".into());
     }
     let config = channel.get("config").cloned().unwrap_or(channel.clone());
-    let mut section =
-        serde_yaml::from_value::<serde_yaml::Mapping>(denormalize_json(&config))
-            .map_err(|e| format!("渠道配置无效: {e}"))?;
+    let mut section = serde_yaml::from_value::<serde_yaml::Mapping>(denormalize_json(&config))
+        .map_err(|e| format!("渠道配置无效: {e}"))?;
     if let Some(kind) = channel.get("type").and_then(|v| v.as_str()) {
         section.insert(
             serde_yaml::Value::String("type".into()),

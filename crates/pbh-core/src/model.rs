@@ -17,7 +17,11 @@ pub struct PeerAddress {
 
 impl PeerAddress {
     pub fn new(ip: impl Into<String>, port: u16, raw_ip: impl Into<String>) -> Self {
-        Self { ip: ip.into(), port, raw_ip: raw_ip.into() }
+        Self {
+            ip: ip.into(),
+            port,
+            raw_ip: raw_ip.into(),
+        }
     }
     /// 缓存键，对齐上游 Peer.getCacheKey：`ip:port`
     pub fn cache_key(&self) -> String {
@@ -149,7 +153,10 @@ impl PeerData {
         PeerAddress::new(self.ip.clone(), self.port, self.raw_ip.clone())
     }
     pub fn peer_flag(&self) -> Option<PeerFlag> {
-        self.flags.as_deref().filter(|s| !s.is_empty()).map(PeerFlag::parse)
+        self.flags
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(PeerFlag::parse)
     }
     /// 握手中：up_speed<=0 && dl_speed<=0（SPEC 2.3 [GOLDEN]）
     pub fn is_handshaking(&self) -> bool {

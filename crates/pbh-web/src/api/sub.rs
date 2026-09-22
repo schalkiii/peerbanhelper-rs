@@ -14,7 +14,11 @@ use std::collections::HashMap;
 use crate::AppState;
 
 fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, crate::std_resp(false, Some("RULE_SUB_MODULE_DISABLED"), Value::Null)).into_response()
+    (
+        StatusCode::NOT_FOUND,
+        crate::std_resp(false, Some("RULE_SUB_MODULE_DISABLED"), Value::Null),
+    )
+        .into_response()
 }
 
 /// `GET /api/sub/`：订阅规则列表。
@@ -37,7 +41,11 @@ pub async fn add_rule(State(state): State<AppState>, Json(body): Json<Value>) ->
         return not_found();
     };
     match module.add_rule(&body) {
-        Ok(()) => (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({"success": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            crate::std_resp(true, Some("OK"), json!({"success": true})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             crate::std_resp(false, Some(&e), Value::Null),
@@ -56,7 +64,11 @@ pub async fn update_rule(
         return not_found();
     };
     match module.update_rule(&id, &body) {
-        Ok(()) => (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({"success": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            crate::std_resp(true, Some("OK"), json!({"success": true})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             crate::std_resp(false, Some(&e), Value::Null),
@@ -71,7 +83,11 @@ pub async fn remove_rule(State(state): State<AppState>, Path(id): Path<String>) 
         return not_found();
     };
     match module.remove_rule(&id) {
-        Ok(()) => (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({"success": true}))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            crate::std_resp(true, Some("OK"), json!({"success": true})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             crate::std_resp(false, Some(&e), Value::Null),
@@ -86,7 +102,11 @@ pub async fn refresh_rule(State(state): State<AppState>, Path(id): Path<String>)
         return not_found();
     };
     let result = module.refresh_rule(Some(&id));
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({"success": true, "result": result}))).into_response()
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!({"success": true, "result": result})),
+    )
+        .into_response()
 }
 
 /// `POST /api/sub/rules/update`：刷新全部规则。
@@ -95,7 +115,11 @@ pub async fn refresh_all(State(state): State<AppState>) -> Response {
         return not_found();
     };
     let result = module.refresh_rule(None);
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({"success": true, "result": result}))).into_response()
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!({"success": true, "result": result})),
+    )
+        .into_response()
 }
 
 /// `GET /api/sub/logs?page&pageSize`：规则内嵌日志。
@@ -106,7 +130,11 @@ pub async fn logs(
     let Some(module) = state.sub_module.as_ref() else {
         return not_found();
     };
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let size = params
         .get("pageSize")
         .and_then(|v| v.parse::<i64>().ok())
@@ -130,7 +158,11 @@ pub async fn interval_get(State(state): State<AppState>) -> Response {
         return not_found();
     };
     let interval = module.interval();
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({ "interval": interval }))).into_response()
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!({ "interval": interval })),
+    )
+        .into_response()
 }
 
 /// `PATCH /api/sub/interval`：设置轮询间隔（body: `{interval: 毫秒}`）。
@@ -138,9 +170,16 @@ pub async fn interval_patch(State(state): State<AppState>, Json(body): Json<Valu
     let Some(module) = state.sub_module.as_ref() else {
         return not_found();
     };
-    let interval = body.get("interval").and_then(|v| v.as_i64()).unwrap_or_default();
+    let interval = body
+        .get("interval")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_default();
     match module.set_interval(interval) {
-        Ok(()) => (StatusCode::OK, crate::std_resp(true, Some("OK"), json!({ "interval": interval }))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            crate::std_resp(true, Some("OK"), json!({ "interval": interval })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             crate::std_resp(false, Some(&e), Value::Null),

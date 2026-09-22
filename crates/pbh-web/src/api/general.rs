@@ -97,13 +97,25 @@ pub async fn check_module_available(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let module = query.get("module").cloned().unwrap_or_default();
-    let available = state.backend.modules().iter().any(|m| m.config_name == module);
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!(available))).into_response()
+    let available = state
+        .backend
+        .modules()
+        .iter()
+        .any(|m| m.config_name == module);
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!(available)),
+    )
+        .into_response()
 }
 
 /// `GET /api/general/config` / `GET /api/general/profile`：读取配置文件。
 pub async fn config_get(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
-    let name = if uri.path().ends_with("/profile") { "profile" } else { "config" };
+    let name = if uri.path().ends_with("/profile") {
+        "profile"
+    } else {
+        "config"
+    };
     match state.backend.read_config(name) {
         Ok(value) => (StatusCode::OK, crate::std_resp(true, Some("OK"), value)).into_response(),
         Err(e) => (
@@ -120,7 +132,11 @@ pub async fn config_put(
     uri: axum::http::Uri,
     Json(body): Json<Value>,
 ) -> Response {
-    let name = if uri.path().ends_with("/profile") { "profile" } else { "config" };
+    let name = if uri.path().ends_with("/profile") {
+        "profile"
+    } else {
+        "config"
+    };
     match state.backend.write_config(name, &body) {
         Ok(()) => crate::std_resp(true, Some("OK"), Value::Null).into_response(),
         Err(e) => (
@@ -140,7 +156,10 @@ pub async fn heapdump() -> Response {
     );
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         body,
     )
         .into_response()
@@ -153,7 +172,10 @@ pub async fn stacktrace() -> Response {
     let body = format!("{name}: {thread:?}\n");
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         body,
     )
         .into_response()

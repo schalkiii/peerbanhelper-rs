@@ -64,7 +64,10 @@ pub struct MultiDialingBlocker {
 
 impl MultiDialingBlocker {
     pub fn new(settings: MultiDialingSettings) -> Self {
-        Self { settings, state: StdMutex::new(DialState::default()) }
+        Self {
+            settings,
+            state: StdMutex::new(DialState::default()),
+        }
     }
 
     /// 清理过期记录（对齐 guava Cache 的 expireAfterWrite / expireAfterAccess）。

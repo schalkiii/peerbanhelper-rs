@@ -3,9 +3,7 @@
 
 pub mod api;
 pub mod backend;
-pub use backend::{
-    BuildMeta, LogEntry, ModuleRecord, ReloadEntry, RingLog, SubModule, WebBackend,
-};
+pub use backend::{BuildMeta, LogEntry, ModuleRecord, ReloadEntry, RingLog, SubModule, WebBackend};
 
 use axum::{
     body::Body,
@@ -98,8 +96,10 @@ pub(crate) fn std_resp(success: bool, message: Option<&str>, data: Value) -> Jso
 
 pub fn build_router(state: AppState) -> Router {
     // 需要 Token 鉴权的 API（对齐上游 Role.USER_READ / USER_WRITE 分组）
-    let api_authed = api::api_routes()
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+    let api_authed = api::api_routes().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth_middleware,
+    ));
     // 无需鉴权的 API（Role.ANYONE：登录、manifest、初始化状态）
     let api_public = api::public_routes();
 
@@ -142,13 +142,19 @@ fn range_bounds(ip: &str) -> Option<(String, String)> {
             let base = u32::from(v4.network());
             let host_mask = u32::MAX.checked_shr(v4.prefix_len() as u32).unwrap_or(0);
             let broadcast = base | host_mask;
-            (std::net::Ipv4Addr::from(base).to_string(), std::net::Ipv4Addr::from(broadcast).to_string())
+            (
+                std::net::Ipv4Addr::from(base).to_string(),
+                std::net::Ipv4Addr::from(broadcast).to_string(),
+            )
         }
         ipnet::IpNet::V6(v6) => {
             let base = u128::from(v6.network());
             let host_mask = u128::MAX.checked_shr(v6.prefix_len() as u32).unwrap_or(0);
             let last = base | host_mask;
-            (std::net::Ipv6Addr::from(base).to_string(), std::net::Ipv6Addr::from(last).to_string())
+            (
+                std::net::Ipv6Addr::from(base).to_string(),
+                std::net::Ipv6Addr::from(last).to_string(),
+            )
         }
     };
     Some((start, end))
@@ -156,9 +162,7 @@ fn range_bounds(ip: &str) -> Option<(String, String)> {
 
 /// 收集并重映射当前封禁列表（对齐上游 `banList.copyKeySet()` + `remapBanListAddress(ip)`，
 /// 后者默认按「支持范围封禁」处理）。
-fn remapped_bans(
-    state: &AppState,
-) -> Vec<String> {
+fn remapped_bans(state: &AppState) -> Vec<String> {
     let ips = state
         .ban_list
         .lock()
@@ -222,17 +226,35 @@ async fn blocklist_p2p_plain(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let body = build_p2p_plain(&remapped_bans(&state), user_agent.as_deref());
-    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 async fn blocklist_ip(State(state): State<AppState>) -> impl IntoResponse {
     let body = build_ip_list(&remapped_bans(&state));
-    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 async fn blocklist_dat_emule(State(state): State<AppState>) -> impl IntoResponse {
     let body = build_dat_emule(&remapped_bans(&state));
-    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
@@ -316,7 +338,11 @@ async fn auth_middleware(
     if token.is_empty() || header_ok || query_ok {
         next.run(req).await
     } else {
-        (StatusCode::UNAUTHORIZED, std_resp(false, Some("unauthorized"), Value::Null)).into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            std_resp(false, Some("unauthorized"), Value::Null),
+        )
+            .into_response()
     }
 }
 
@@ -333,7 +359,6 @@ struct LogsQuery {
 }
 fn default_page() -> i64 {
     1
-
 }
 fn default_size() -> i64 {
     50
@@ -376,10 +401,11 @@ async fn ban_logs(State(state): State<AppState>, Query(q): Query<LogsQuery>) -> 
             });
             (StatusCode::OK, std_resp(true, None, data)).into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            std_resp(false, Some(&e.to_string()), Value::Null),
+        )
+            .into_response(),
     }
 }
 
@@ -403,7 +429,11 @@ pub(crate) fn render_keyed(
 async fn ban_list(State(state): State<AppState>) -> Response {
     // 旧版路径 `/api/ban/list`：数据源为内存封禁表（含完整 `BanMetadata`）
     let locale = state.locale.clone();
-    let records = state.ban_list.lock().map(|list| list.records_sorted()).unwrap_or_default();
+    let records = state
+        .ban_list
+        .lock()
+        .map(|list| list.records_sorted())
+        .unwrap_or_default();
     let data = json!(records
         .iter()
         .map(|record| crate::api::bans::ban_dto(&state, &locale, &record.ip, &record.metadata))
@@ -426,7 +456,11 @@ async fn general_metrics(State(state): State<AppState>) -> Response {
 }
 
 async fn downloaders(State(state): State<AppState>) -> Response {
-    let list = state.downloaders.lock().map(|d| d.clone()).unwrap_or_default();
+    let list = state
+        .downloaders
+        .lock()
+        .map(|d| d.clone())
+        .unwrap_or_default();
     (StatusCode::OK, std_resp(true, None, json!(list))).into_response()
 }
 
@@ -440,10 +474,11 @@ async fn downloaders(State(state): State<AppState>) -> Response {
 async fn swarm_tracking(State(state): State<AppState>) -> Response {
     match state.db.tracked_swarm_count() {
         Ok(count) => (StatusCode::OK, Json(json!({ "trackedSwarmSize": count }))).into_response(),
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            std_resp(false, Some(&e.to_string()), Value::Null),
+        )
+            .into_response(),
     }
 }
 
@@ -456,7 +491,11 @@ async fn swarm_tracking_details(
     uri: Uri,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     // 上游 `Pageable` 读的是 `pageSize`；这里兼容常见的 `size` 写法
     let size = params
         .get("pageSize")
@@ -478,7 +517,10 @@ async fn swarm_tracking_details(
         }
         Err(e) => {
             warn!("swarm-tracking 分页查询失败: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                std_resp(false, Some(&e.to_string()), Value::Null),
+            )
                 .into_response()
         }
     }
@@ -592,10 +634,11 @@ async fn alerts(State(state): State<AppState>, Query(q): Query<AlertsQuery>) -> 
                 .collect::<Vec<_>>());
             (StatusCode::OK, std_resp(true, None, data)).into_response()
         }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, std_resp(false, Some(&e.to_string()), Value::Null))
-                .into_response()
-        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            std_resp(false, Some(&e.to_string()), Value::Null),
+        )
+            .into_response(),
     }
 }
 
@@ -717,9 +760,14 @@ mod tests {
             .header("Authorization", "Bearer test-token")
             .body(Body::empty())
             .expect("请求构造");
-        let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
         let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("响应体");
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, body)
     }
@@ -801,11 +849,17 @@ mod tests {
         assert_eq!(first["torrentIsPrivate"], json!(false));
         assert_eq!(first["peerProgress"], json!(0.5));
         assert_eq!(first["firstTimeSeen"], json!(1000), "时间戳为 epoch 毫秒");
-        assert!(first.get("dirty").is_none(), "dirty 是 transient 字段，不输出");
+        assert!(
+            first.get("dirty").is_none(),
+            "dirty 是 transient 字段，不输出"
+        );
 
         // 分页：page=2&pageSize=2
-        let (_, body) =
-            get_json(&state, "/api/modules/swarm-tracking/details?page=2&pageSize=2").await;
+        let (_, body) = get_json(
+            &state,
+            "/api/modules/swarm-tracking/details?page=2&pageSize=2",
+        )
+        .await;
         assert_eq!(body["data"]["page"], json!(2));
         assert_eq!(body["data"]["size"], json!(2));
         assert_eq!(body["data"]["total"], json!(5));
@@ -827,8 +881,11 @@ mod tests {
         assert_eq!(seen, vec![1004, 1003, 1002]);
 
         // 非法排序列（对齐 `SQLHelper.checkSafeFieldName`）-> 500
-        let (status, body) =
-            get_json(&state, "/api/modules/swarm-tracking/details?orderBy=id%3Bdrop").await;
+        let (status, body) = get_json(
+            &state,
+            "/api/modules/swarm-tracking/details?orderBy=id%3Bdrop",
+        )
+        .await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(body["success"], json!(false));
     }
@@ -875,7 +932,10 @@ mod tests {
             .uri("/api/alerts")
             .body(Body::empty())
             .expect("请求构造");
-        let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -903,7 +963,10 @@ mod tests {
     #[test]
     fn p2p_plain_format_returns_transmission_workaround_when_empty() {
         let text = build_p2p_plain(&[], Some("Transmission 4.1.0"));
-        assert_eq!(text, "TransmissionWorkaround:127.127.127.127-127.127.127.127");
+        assert_eq!(
+            text,
+            "TransmissionWorkaround:127.127.127.127-127.127.127.127"
+        );
         // 其它客户端返回空
         assert_eq!(build_p2p_plain(&[], Some("qBittorrent/5.0")), "");
         assert_eq!(build_p2p_plain(&[], None), "");
@@ -913,7 +976,10 @@ mod tests {
     fn ip_and_dat_emule_formats() {
         let bans = vec!["1.2.3.4/32".to_string()];
         assert_eq!(build_ip_list(&bans), "1.2.3.4/32\n");
-        assert_eq!(build_dat_emule(&bans), "1.2.3.4 - 1.2.3.4 , 000 , 1.2.3.4/32\n");
+        assert_eq!(
+            build_dat_emule(&bans),
+            "1.2.3.4 - 1.2.3.4 , 000 , 1.2.3.4/32\n"
+        );
     }
 
     #[test]
@@ -935,9 +1001,17 @@ mod tests {
         );
         // 缺 key 或不合法 JSON → 回退到落库已渲染文案
         assert_eq!(render_keyed(&None, "fallback", &t, "zh_cn"), "fallback");
-        assert_eq!(render_keyed(&Some("not-json".to_string()), "fallback", &t, "zh_cn"), "fallback");
+        assert_eq!(
+            render_keyed(&Some("not-json".to_string()), "fallback", &t, "zh_cn"),
+            "fallback"
+        );
         // 归一化：zh-CN → zh_cn
-        let cn = render_keyed(&Some(serde_json::to_string(&TranslationComponent::new("Peer handshaking")).unwrap()), "x", &t, "zh-CN");
+        let cn = render_keyed(
+            &Some(serde_json::to_string(&TranslationComponent::new("Peer handshaking")).unwrap()),
+            "x",
+            &t,
+            "zh-CN",
+        );
         assert_eq!(cn, "Peer handshaking");
     }
 }

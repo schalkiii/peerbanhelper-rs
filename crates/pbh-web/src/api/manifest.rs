@@ -32,7 +32,11 @@ pub async fn manifest(State(state): State<AppState>) -> Response {
 
 /// `GET /api/init/token` / `GET /api/oobe/status`：返回当前是否已初始化。
 pub async fn init_status(State(state): State<AppState>) -> Response {
-    let initialized = !state.token.lock().map(|t| t.trim().is_empty()).unwrap_or(true);
+    let initialized = !state
+        .token
+        .lock()
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true);
     (
         StatusCode::OK,
         crate::std_resp(true, None, json!({ "initialized": initialized })),

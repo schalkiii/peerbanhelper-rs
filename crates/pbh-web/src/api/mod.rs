@@ -55,11 +55,23 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/logs/live", get(logs::live))
         // —— 全局通用（PBHGeneralController）——
         .route("/general/status", get(general::status))
-        .route("/general/global", get(general::global_get).patch(general::global_patch))
-        .route("/general/config", get(general::config_get).put(general::config_put))
-        .route("/general/profile", get(general::config_get).put(general::config_put))
+        .route(
+            "/general/global",
+            get(general::global_get).patch(general::global_patch),
+        )
+        .route(
+            "/general/config",
+            get(general::config_get).put(general::config_put),
+        )
+        .route(
+            "/general/profile",
+            get(general::config_get).put(general::config_put),
+        )
         .route("/general/reload", post(general::reload))
-        .route("/general/checkModuleAvailable", get(general::check_module_available))
+        .route(
+            "/general/checkModuleAvailable",
+            get(general::check_module_available),
+        )
         .route("/general/heapdump", get(general::heapdump))
         .route("/general/stacktrace", get(general::stacktrace))
         // —— 统计（PBHMetricsController）——
@@ -74,12 +86,21 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/chart/traffic", get(charts::traffic))
         .route("/chart/sessionAnalyse", get(charts::session_analyse))
         // —— 下载器管理（PBHDownloaderController）——
-        .route("/downloaders", get(crate::downloaders).put(downloaders::create))
+        .route(
+            "/downloaders",
+            get(crate::downloaders).put(downloaders::create),
+        )
         .route("/downloaders/test", post(downloaders::test))
-        .route("/downloaders/{id}", patch(downloaders::update).delete(downloaders::remove))
+        .route(
+            "/downloaders/{id}",
+            patch(downloaders::update).delete(downloaders::remove),
+        )
         .route("/downloaders/{id}/status", get(downloaders::status))
         .route("/downloaders/{id}/torrents", get(downloaders::torrents))
-        .route("/downloaders/{id}/torrent/{torrent_id}/peers", get(downloaders::peers))
+        .route(
+            "/downloaders/{id}/torrent/{torrent_id}/peers",
+            get(downloaders::peers),
+        )
         // —— peer 与种子信息（PBHPeerController / PBHTorrentController）——
         .route("/peer/{ip}", get(peers::info))
         .route("/peer/{ip}/accessHistory", get(peers::access_history))
@@ -87,8 +108,14 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/peer/{ip}/btnQuery", get(peers::btn_query))
         .route("/torrent/query", get(torrents::query))
         .route("/torrent/{info_hash}", get(torrents::details))
-        .route("/torrent/{info_hash}/accessHistory", get(torrents::access_history))
-        .route("/torrent/{info_hash}/banHistory", get(torrents::ban_history))
+        .route(
+            "/torrent/{info_hash}/accessHistory",
+            get(torrents::access_history),
+        )
+        .route(
+            "/torrent/{info_hash}/banHistory",
+            get(torrents::ban_history),
+        )
         // —— 推送（PBHPushController）——
         .route("/push", get(push::list).put(push::create))
         .route("/push/test", post(push::test))
@@ -98,13 +125,22 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/sub/rules", get(sub::list))
         .route("/sub/rule", put(sub::add_rule))
         .route("/sub/rules/update", post(sub::refresh_all))
-        .route("/sub/rule/{id}", patch(sub::update_rule).delete(sub::remove_rule))
+        .route(
+            "/sub/rule/{id}",
+            patch(sub::update_rule).delete(sub::remove_rule),
+        )
         .route("/sub/rule/{id}/update", post(sub::refresh_rule))
         .route("/sub/logs", get(sub::logs))
-        .route("/sub/interval", get(sub::interval_get).patch(sub::interval_patch))
+        .route(
+            "/sub/interval",
+            get(sub::interval_get).patch(sub::interval_patch),
+        )
         // —— BTN / AutoSTUN 模块状态 ——
         .route("/modules/btn", get(btn::status))
-        .route("/modules/auto-stun-port-forwarding", get(btn::auto_stun_status));
+        .route(
+            "/modules/auto-stun-port-forwarding",
+            get(btn::auto_stun_status),
+        );
 
     // 旧版 `/api/ban/list` 等路径保留兼容（v4 前端）
     router = router
@@ -112,7 +148,10 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/ban/logs", get(crate::ban_logs))
         .route("/metrics/general", get(crate::general_metrics))
         .route("/modules/swarm-tracking", get(crate::swarm_tracking))
-        .route("/modules/swarm-tracking/details", get(crate::swarm_tracking_details))
+        .route(
+            "/modules/swarm-tracking/details",
+            get(crate::swarm_tracking_details),
+        )
         .route("/alerts", get(crate::alerts));
     router
 }
@@ -122,7 +161,11 @@ pub fn api_routes() -> Router<crate::AppState> {
 /// 缺省 `page=1`、`pageSize=50`；`pageSize` 夹到 1..=500（上游 v9 不分页时无上限，
 /// 这里沿用既有实现的上限约定，避免一次拉全表）。
 pub fn pagination(params: &HashMap<String, String>) -> (i64, i64) {
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let size = params
         .get("pageSize")
         .or_else(|| params.get("size"))
@@ -143,8 +186,10 @@ pub fn parse_order_by_params(params: &HashMap<String, String>) -> Vec<(String, b
             let field = parts.next().unwrap_or_default().to_string();
             let asc = match parts.next() {
                 None => true,
-                Some(direction) => !(direction.eq_ignore_ascii_case("desc")
-                    || direction.eq_ignore_ascii_case("descend")),
+                Some(direction) => {
+                    !(direction.eq_ignore_ascii_case("desc")
+                        || direction.eq_ignore_ascii_case("descend"))
+                }
             };
             vec![(field, asc)]
         })

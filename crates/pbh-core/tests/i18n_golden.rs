@@ -53,7 +53,10 @@ fn locale_matching_normalizes_case_and_dashes() {
     let c = TranslationComponent::new("PCB_RULE_REACHED_MAX_DIFFERENCE");
     assert_eq!(t.render(&c, "zh-CN"), "已超过允许的进度差异最大值");
     // 未收录的语言回退到 en_us
-    assert_eq!(t.render(&c, "xx_yy"), "Exceeded maximum allowed progress difference");
+    assert_eq!(
+        t.render(&c, "xx_yy"),
+        "Exceeded maximum allowed progress difference"
+    );
 }
 
 #[test]
@@ -72,9 +75,16 @@ fn fill_args_follows_msg_util_semantics() {
 fn nested_components_are_rendered_recursively() {
     let t = Translator::embedded();
     let inner = TranslationComponent::with_params("MATCH_STRING_STARTS_WITH", vec!["-hp".into()]);
-    let outer = TranslationComponent::with_params("MODULE_CNB_MATCH_CLIENT_NAME", vec![inner.into()]);
-    assert_eq!(t.render(&outer, "en_us"), "Match ClientName (UserAgent): String StartsWith: -hp");
-    assert_eq!(t.render(&outer, "zh_cn"), "匹配 ClientName (UserAgent): 字符串开头: -hp");
+    let outer =
+        TranslationComponent::with_params("MODULE_CNB_MATCH_CLIENT_NAME", vec![inner.into()]);
+    assert_eq!(
+        t.render(&outer, "en_us"),
+        "Match ClientName (UserAgent): String StartsWith: -hp"
+    );
+    assert_eq!(
+        t.render(&outer, "zh_cn"),
+        "匹配 ClientName (UserAgent): 字符串开头: -hp"
+    );
 }
 
 #[test]

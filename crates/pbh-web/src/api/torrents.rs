@@ -14,20 +14,27 @@ pub async fn query(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let keyword = params.get("keyword").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let keyword = params
+        .get("keyword")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let size = params
         .get("pageSize")
         .or_else(|| params.get("size"))
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(30)
         .clamp(1, 500);
-    match state.db.torrent_list(keyword.as_deref(), size, (page - 1) * size) {
+    match state
+        .db
+        .torrent_list(keyword.as_deref(), size, (page - 1) * size)
+    {
         Ok((rows, total)) => {
-            let results = rows
-                .iter()
-                .map(torrent_json)
-                .collect::<Vec<_>>();
+            let results = rows.iter().map(torrent_json).collect::<Vec<_>>();
             let data = json!({ "page": page, "size": size, "total": total, "results": results });
             (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
         }
@@ -52,10 +59,7 @@ fn torrent_json(t: &pbh_db::TorrentRow) -> Value {
 }
 
 /// `GET /api/torrent/{infoHash}`：单种子详情。
-pub async fn details(
-    State(state): State<AppState>,
-    Path(info_hash): Path<String>,
-) -> Response {
+pub async fn details(State(state): State<AppState>, Path(info_hash): Path<String>) -> Response {
     match state.db.torrent_by_hash(&info_hash) {
         Ok(Some(t)) => {
             let data = json!({
@@ -88,7 +92,11 @@ pub async fn access_history(
     Path(info_hash): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let page = params.get("page").and_then(|v| v.parse::<i64>().ok()).unwrap_or(1).max(1);
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1)
+        .max(1);
     let size = params
         .get("pageSize")
         .or_else(|| params.get("size"))
@@ -100,7 +108,10 @@ pub async fn access_history(
         .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
         .flat_map(|(_, value)| crate::parse_order_by(Some(value)))
         .collect();
-    match state.db.query_access_history(None, Some(&info_hash), &order, size, (page - 1) * size) {
+    match state
+        .db
+        .query_access_history(None, Some(&info_hash), &order, size, (page - 1) * size)
+    {
         Ok((rows, total)) => {
             let results = rows
                 .iter()
@@ -143,8 +154,16 @@ pub async fn ban_history(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let (page, size) = crate::api::pagination(&params);
-    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
-    match state.db.history_by_torrent(&info_hash, size, (page - 1) * size) {
+    let locale = normalize_locale(
+        params
+            .get("locale")
+            .map(String::as_str)
+            .unwrap_or(&state.locale),
+    );
+    match state
+        .db
+        .history_by_torrent(&info_hash, size, (page - 1) * size)
+    {
         Ok((rows, total)) => {
             let results = rows
                 .iter()

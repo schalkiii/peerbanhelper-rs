@@ -55,24 +55,27 @@ pub(crate) fn render_component(
 
 /// 下载器信息（对齐 `DownloaderBasicInfo`）：从运行期状态表查名称/类型。
 pub(crate) fn downloader_info(state: &AppState, id: &str) -> DownloaderBasicInfo {
-    let list = state.downloaders.lock().map(|d| d.clone()).unwrap_or_default();
+    let list = state
+        .downloaders
+        .lock()
+        .map(|d| d.clone())
+        .unwrap_or_default();
     match list.iter().find(|d| d.id == id) {
         Some(status) => DownloaderBasicInfo {
             id: id.to_string(),
             name: status.name.clone(),
             kind: status.kind.clone(),
         },
-        None => DownloaderBasicInfo { id: id.to_string(), name: id.to_string(), kind: String::new() },
+        None => DownloaderBasicInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: String::new(),
+        },
     }
 }
 
 /// 把一条内存封禁记录组装为 `BanDTO`（对齐 `new BanDTO(address, new BakedBanMetadata(locale, meta), geoIp)`）。
-pub(crate) fn ban_dto(
-    state: &AppState,
-    locale: &str,
-    ip: &str,
-    metadata: &BanMetadata,
-) -> Value {
+pub(crate) fn ban_dto(state: &AppState, locale: &str, ip: &str, metadata: &BanMetadata) -> Value {
     json!({
         "address": ip,
         "banMetadata": {
@@ -97,7 +100,13 @@ pub(crate) fn ban_dto(
 pub async fn list(State(state): State<AppState>, Query(q): Query<BansQuery>) -> Response {
     let locale = normalize_locale(q.locale.as_deref().unwrap_or(&state.locale));
     let ignore_disconnect = q.ignore_ban_for_disconnect.unwrap_or(true);
-    let keyword = q.search.as_deref().or(q.filter.as_deref()).unwrap_or("").trim().to_string();
+    let keyword = q
+        .search
+        .as_deref()
+        .or(q.filter.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     let records = state
         .ban_list
@@ -182,7 +191,12 @@ pub async fn logs(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let (page, size) = crate::api::pagination(&params);
-    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
+    let locale = normalize_locale(
+        params
+            .get("locale")
+            .map(String::as_str)
+            .unwrap_or(&state.locale),
+    );
     // 排序：DTO 字段名 → `history` 列名（对齐上游 `Orderable.addRemapping`）
     let order: Vec<(String, bool)> = params
         .iter()
@@ -215,11 +229,7 @@ pub(crate) fn order_column(field: &str) -> Option<String> {
 }
 
 /// 一条 `history` 行 → `BanLogDTO`（对齐上游 `PBHBanController.handleLogs` 的输出字段）。
-pub(crate) fn ban_log_json(
-    state: &AppState,
-    locale: &str,
-    row: &pbh_db::HistoryRow,
-) -> Value {
+pub(crate) fn ban_log_json(state: &AppState, locale: &str, row: &pbh_db::HistoryRow) -> Value {
     json!({
         "banAt": row.ban_at,
         "unbanAt": if row.unban_at > 0 { json!(row.unban_at) } else { Value::Null },
@@ -257,7 +267,10 @@ pub async fn ranks(
         .get("filter")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    match state.db.page_history_rank(filter.as_deref(), size, (page - 1) * size) {
+    match state
+        .db
+        .page_history_rank(filter.as_deref(), size, (page - 1) * size)
+    {
         Ok((rankings, total)) => {
             let results = rankings
                 .iter()

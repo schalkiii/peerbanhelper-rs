@@ -54,7 +54,11 @@ pub async fn refresh_all(
     let sub_dir = data_dir.join("sub");
 
     for (rule_id, rule) in &config.rules {
-        let name = if rule.name.trim().is_empty() { rule_id.clone() } else { rule.name.clone() };
+        let name = if rule.name.trim().is_empty() {
+            rule_id.clone()
+        } else {
+            rule.name.clone()
+        };
         let enabled = is_enabled(rule);
         if !enabled {
             module.remove_subscription(rule_id);
@@ -95,7 +99,11 @@ pub async fn refresh_all(
                         warn!("写入规则订阅缓存失败: {e}");
                     }
                 }
-                let key = if added { "IP_BAN_RULE_LOAD_SUCCESS" } else { "IP_BAN_RULE_UPDATE_SUCCESS" };
+                let key = if added {
+                    "IP_BAN_RULE_LOAD_SUCCESS"
+                } else {
+                    "IP_BAN_RULE_UPDATE_SUCCESS"
+                };
                 reports.push(log_line(key, &name, count));
                 record_sub_update(db, rule_id, &name, &rule.url, count, update_type);
             }
@@ -136,7 +144,8 @@ fn record_sub_update(
 ) {
     let Some(db) = db else { return };
     let now = chrono::Utc::now().timestamp_millis();
-    if let Err(e) = db.upsert_rule_sub_info(rule_id, true, name, url, Some(now), Some(count as i64)) {
+    if let Err(e) = db.upsert_rule_sub_info(rule_id, true, name, url, Some(now), Some(count as i64))
+    {
         warn!("规则订阅状态写入失败（{rule_id}）: {e}");
     }
     if let Err(e) = db.insert_rule_sub_log(rule_id, count, update_type, now) {
@@ -163,7 +172,10 @@ async fn fetch_remote(
             let status = resp.status();
             // 上游未检查状态码；这里对非 2xx 视为订阅失败（避免把错误页当作规则解析）
             if !status.is_success() {
-                warn!("{} (HTTP {status})", log_line("IP_BAN_RULE_UPDATE_FAILED", name, 0));
+                warn!(
+                    "{} (HTTP {status})",
+                    log_line("IP_BAN_RULE_UPDATE_FAILED", name, 0)
+                );
                 return None;
             }
             match resp.bytes().await {
@@ -184,8 +196,10 @@ async fn fetch_remote(
 /// 用内嵌文案表渲染一行日志（与上游 `tlUI(Lang...)` 一致）。
 fn log_line(key: &str, name: &str, count: usize) -> String {
     let translator = pbh_core::i18n::Translator::embedded();
-    let mut line =
-        translator.render(&TranslationComponent::with_params(key, vec![name.into()]), "zh_cn");
+    let mut line = translator.render(
+        &TranslationComponent::with_params(key, vec![name.into()]),
+        "zh_cn",
+    );
     if count > 0 && key == "IP_BAN_RULE_UPDATE_SUCCESS" {
         line.push_str(&format!("（{count} 条）"));
     }
@@ -206,7 +220,10 @@ pub fn log_summary(pipeline: &Pipeline) {
     if summary.is_empty() {
         info!("IP 黑名单规则订阅：未加载任何规则");
     } else {
-        let text: Vec<String> = summary.iter().map(|(id, n)| format!("{id}={n} 条")).collect();
+        let text: Vec<String> = summary
+            .iter()
+            .map(|(id, n)| format!("{id}={n} 条"))
+            .collect();
         info!("IP 黑名单规则订阅：{}", text.join(", "));
     }
 }
@@ -272,7 +289,10 @@ mod tests {
                 Some(&db),
                 UPDATE_TYPE_MANUAL,
             ));
-        assert!(reports.iter().any(|r| r.contains("Rules One")), "{reports:?}");
+        assert!(
+            reports.iter().any(|r| r.contains("Rules One")),
+            "{reports:?}"
+        );
 
         // rule_sub_log 记录一条更新历史
         let logs = db.list_rule_sub_log(None, 10, 0).unwrap();
@@ -282,7 +302,10 @@ mod tests {
         assert_eq!(logs[0].update_type, UPDATE_TYPE_MANUAL);
 
         // rule_sub_info 反映当前状态
-        let info = db.get_rule_sub_info("rules-1").unwrap().expect("应写入 rule_sub_info");
+        let info = db
+            .get_rule_sub_info("rules-1")
+            .unwrap()
+            .expect("应写入 rule_sub_info");
         assert!(info.enabled);
         assert_eq!(info.rule_name, "Rules One");
         assert_eq!(info.ent_count, Some(2));

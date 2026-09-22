@@ -205,14 +205,22 @@ impl PushProvider {
     ) -> PushProvider {
         match config {
             // 上游 `loadFromYaml`：token/topic/channel 取默认空串，空白 ⇒ null
-            PushProviderConfig::PushPlus { token, topic, channel } => PushProvider::PushPlus {
+            PushProviderConfig::PushPlus {
+                token,
+                topic,
+                channel,
+            } => PushProvider::PushPlus {
                 name: name.to_string(),
                 fetcher,
                 token: token.clone(),
                 topic: blank_to_none(topic),
                 channel: blank_to_none(channel),
             },
-            PushProviderConfig::ServerChan { sendkey, channel, openid } => PushProvider::ServerChan {
+            PushProviderConfig::ServerChan {
+                sendkey,
+                channel,
+                openid,
+            } => PushProvider::ServerChan {
                 name: name.to_string(),
                 fetcher,
                 send_key: sendkey.clone(),
@@ -226,7 +234,11 @@ impl PushProvider {
                 chat_id: chatid.clone(),
             },
             // 上游 `loadFromYaml` 不对 message_group 做空值归一化（空串照发）
-            PushProviderConfig::Bark { backend_url, device_key, message_group } => PushProvider::Bark {
+            PushProviderConfig::Bark {
+                backend_url,
+                device_key,
+                message_group,
+            } => PushProvider::Bark {
                 name: name.to_string(),
                 fetcher,
                 backend_url: backend_url.clone(),
@@ -245,7 +257,13 @@ impl PushProvider {
                 endpoint: endpoint.clone(),
                 priority: *priority,
             },
-            PushProviderConfig::Ntfy { server_url, topic, token, priority, tags } => PushProvider::Ntfy {
+            PushProviderConfig::Ntfy {
+                server_url,
+                topic,
+                token,
+                priority,
+                tags,
+            } => PushProvider::Ntfy {
                 name: name.to_string(),
                 fetcher,
                 server_url: server_url.clone(),
@@ -254,7 +272,13 @@ impl PushProvider {
                 priority: *priority,
                 tags: tags.clone(),
             },
-            PushProviderConfig::Webhook { url, method, content_type, body_template, headers } => {
+            PushProviderConfig::Webhook {
+                url,
+                method,
+                content_type,
+                body_template,
+                headers,
+            } => {
                 PushProvider::Webhook {
                     name: name.to_string(),
                     fetcher,
@@ -325,11 +349,30 @@ impl PushProvider {
         now_ms: i64,
     ) -> anyhow::Result<bool> {
         match self {
-            PushProvider::PushPlus { fetcher, token, topic, channel, .. } => {
-                pushplus_push(fetcher, token, topic.as_deref(), channel.as_deref(), title, content)
-                    .await
+            PushProvider::PushPlus {
+                fetcher,
+                token,
+                topic,
+                channel,
+                ..
+            } => {
+                pushplus_push(
+                    fetcher,
+                    token,
+                    topic.as_deref(),
+                    channel.as_deref(),
+                    title,
+                    content,
+                )
+                .await
             }
-            PushProvider::ServerChan { fetcher, send_key, channel, open_id, .. } => {
+            PushProvider::ServerChan {
+                fetcher,
+                send_key,
+                channel,
+                open_id,
+                ..
+            } => {
                 serverchan_push(
                     fetcher,
                     send_key,
@@ -340,20 +383,54 @@ impl PushProvider {
                 )
                 .await
             }
-            PushProvider::Telegram { fetcher, token, chat_id, .. } => {
-                telegram_push(fetcher, token, chat_id, title, content).await
+            PushProvider::Telegram {
+                fetcher,
+                token,
+                chat_id,
+                ..
+            } => telegram_push(fetcher, token, chat_id, title, content).await,
+            PushProvider::Bark {
+                fetcher,
+                backend_url,
+                device_key,
+                message_group,
+                ..
+            } => {
+                bark_push(
+                    fetcher,
+                    backend_url,
+                    device_key,
+                    message_group,
+                    title,
+                    content,
+                )
+                .await
             }
-            PushProvider::Bark { fetcher, backend_url, device_key, message_group, .. } => {
-                bark_push(fetcher, backend_url, device_key, message_group, title, content).await
-            }
-            PushProvider::PushDeer { fetcher, endpoint, push_key, .. } => {
-                pushdeer_push(fetcher, endpoint, push_key, title, content).await
-            }
-            PushProvider::Gotify { fetcher, endpoint, priority, .. } => {
-                gotify_push(fetcher, endpoint, *priority, title, content).await
-            }
-            PushProvider::Ntfy { fetcher, server_url, topic, token, priority, tags, .. } => {
-                ntfy_push(fetcher, server_url, topic, token, *priority, tags, title, content).await
+            PushProvider::PushDeer {
+                fetcher,
+                endpoint,
+                push_key,
+                ..
+            } => pushdeer_push(fetcher, endpoint, push_key, title, content).await,
+            PushProvider::Gotify {
+                fetcher,
+                endpoint,
+                priority,
+                ..
+            } => gotify_push(fetcher, endpoint, *priority, title, content).await,
+            PushProvider::Ntfy {
+                fetcher,
+                server_url,
+                topic,
+                token,
+                priority,
+                tags,
+                ..
+            } => {
+                ntfy_push(
+                    fetcher, server_url, topic, token, *priority, tags, title, content,
+                )
+                .await
             }
             PushProvider::Webhook {
                 name,
@@ -364,21 +441,19 @@ impl PushProvider {
                 body_template,
                 headers,
             } => {
-                webhook_push(
-                    WebhookTask {
-                        name,
-                        fetcher,
-                        url,
-                        method,
-                        content_type,
-                        body_template,
-                        headers,
-                        title,
-                        content,
-                        level,
-                        now_ms,
-                    },
-                )
+                webhook_push(WebhookTask {
+                    name,
+                    fetcher,
+                    url,
+                    method,
+                    content_type,
+                    body_template,
+                    headers,
+                    title,
+                    content,
+                    level,
+                    now_ms,
+                })
                 .await
             }
             PushProvider::Smtp { settings, .. } => smtp_push(settings, title, content).await,
@@ -515,7 +590,11 @@ async fn serverchan_push(
     if !is_success(response.status) {
         let message = serde_json::from_str::<JsonValue>(&response.body)
             .ok()
-            .and_then(|v| v.get("message").and_then(JsonValue::as_str).map(str::to_string))
+            .and_then(|v| {
+                v.get("message")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or(response.body);
         return Err(anyhow::anyhow!(
             "HTTP Failed while sending push messages to ServerChan: {message}"
@@ -776,7 +855,11 @@ async fn webhook_push(task: WebhookTask<'_>) -> anyhow::Result<bool> {
     );
 
     // `createRequestBody`：GET 无请求体；POST 恒有请求体（内容可为空串）
-    let body = if method == "GET" { None } else { Some(rendered_body) };
+    let body = if method == "GET" {
+        None
+    } else {
+        Some(rendered_body)
+    };
     let mut request = HttpRequest {
         method: method.clone(),
         url: rendered_url,
@@ -856,10 +939,22 @@ fn render_template(
         .replace("{title}", &transform_value(title, url_encode, json))
         .replace("{content}", &transform_value(content, url_encode, json))
         .replace("{level}", &transform_value(level.name(), url_encode, json))
-        .replace("{date}", &transform_value(&format_date_only(now_ms), url_encode, json))
-        .replace("{time}", &transform_value(&format_time_only(now_ms), url_encode, json))
-        .replace("{datetime}", &transform_value(&format_date_time(now_ms), url_encode, json))
-        .replace("{channelName}", &transform_value(channel_name, url_encode, json))
+        .replace(
+            "{date}",
+            &transform_value(&format_date_only(now_ms), url_encode, json),
+        )
+        .replace(
+            "{time}",
+            &transform_value(&format_time_only(now_ms), url_encode, json),
+        )
+        .replace(
+            "{datetime}",
+            &transform_value(&format_date_time(now_ms), url_encode, json),
+        )
+        .replace(
+            "{channelName}",
+            &transform_value(channel_name, url_encode, json),
+        )
 }
 
 /// 对齐 `WebhookPushProvider.transformValue`（`null` 值在 Rust 侧不存在，故不做空判断）。
@@ -905,7 +1000,11 @@ fn format_date_time(now_ms: i64) -> String {
 
 fn format_local(now_ms: i64, pattern: &str) -> String {
     chrono::DateTime::from_timestamp_millis(now_ms)
-        .map(|utc| utc.with_timezone(&chrono::Local).format(pattern).to_string())
+        .map(|utc| {
+            utc.with_timezone(&chrono::Local)
+                .format(pattern)
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -1101,8 +1200,7 @@ fn smtp_build_message(
 }
 
 fn smtp_tls_parameters(host: &str) -> anyhow::Result<TlsParameters> {
-    TlsParameters::new(host.to_string())
-        .map_err(|e| anyhow::anyhow!("invalid TLS parameters: {e}"))
+    TlsParameters::new(host.to_string()).map_err(|e| anyhow::anyhow!("invalid TLS parameters: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,11 +1309,7 @@ impl AlertManager {
     pub fn identifier_alert_exists(&self, identifier: &str) -> bool {
         self.alerts
             .lock()
-            .map(|alerts| {
-                alerts
-                    .get(identifier)
-                    .is_some_and(|record| !record.read)
-            })
+            .map(|alerts| alerts.get(identifier).is_some_and(|record| !record.read))
             .unwrap_or(false)
     }
 
@@ -1404,7 +1498,10 @@ mod tests {
         let provider = only_provider(&m);
         assert_eq!(provider.name(), "my-plus");
         assert_eq!(provider.config_type(), "pushplus");
-        assert!(provider.push("标题", "正文", AlertLevel::Warn).await.unwrap());
+        assert!(provider
+            .push("标题", "正文", AlertLevel::Warn)
+            .await
+            .unwrap());
 
         let req = fetcher.only_request();
         assert_eq!(req.method, "POST");
@@ -1477,13 +1574,19 @@ mod tests {
     #[tokio::test]
     async fn serverchan_omits_blank_channel_and_openid_and_reports_message() {
         let fetcher = MockFetcher::new(200, r#"{"code":0}"#);
-        let m = manager("sc:\n  type: serverchan\n  sendkey: \"SCT\"\n", fetcher.clone());
+        let m = manager(
+            "sc:\n  type: serverchan\n  sendkey: \"SCT\"\n",
+            fetcher.clone(),
+        );
         assert!(only_provider(&m)
             .push("t", "c", AlertLevel::Info)
             .await
             .unwrap());
         // 空白的 channel/openid 整键不出现
-        assert_json_body(&fetcher.only_request(), r#"{"title":"t","desp":"c","text":"t"}"#);
+        assert_json_body(
+            &fetcher.only_request(),
+            r#"{"title":"t","desp":"c","text":"t"}"#,
+        );
 
         // 非 2xx：错误信息取响应体 message
         let fetcher = MockFetcher::new(400, r#"{"message":"bad sendkey"}"#);
@@ -1520,9 +1623,14 @@ mod tests {
 
     #[tokio::test]
     async fn telegram_reports_description_on_failure() {
-        let fetcher =
-            MockFetcher::new(400, r#"{"ok":false,"error_code":400,"description":"chat not found"}"#);
-        let m = manager("tg:\n  type: telegram\n  token: \"t\"\n  chatid: \"1\"\n", fetcher);
+        let fetcher = MockFetcher::new(
+            400,
+            r#"{"ok":false,"error_code":400,"description":"chat not found"}"#,
+        );
+        let m = manager(
+            "tg:\n  type: telegram\n  token: \"t\"\n  chatid: \"1\"\n",
+            fetcher,
+        );
         let err = only_provider(&m)
             .push("t", "c", AlertLevel::Info)
             .await
@@ -1657,7 +1765,10 @@ mod tests {
         assert_eq!(req.method, "POST");
         assert_eq!(req.url, "https://ntfy.sh/mytopic");
         assert_eq!(req.body.as_deref(), Some("正文"));
-        assert_eq!(req.header("Content-Type"), Some("text/plain; charset=utf-8"));
+        assert_eq!(
+            req.header("Content-Type"),
+            Some("text/plain; charset=utf-8")
+        );
         // Title 为 RFC 2047 编码字（base64(UTF-8)）
         let expected_title = format!(
             "=?UTF-8?B?{}?=",
@@ -1808,7 +1919,10 @@ mod tests {
     #[tokio::test]
     async fn webhook_failure_reports_status_body() {
         let fetcher = MockFetcher::new(502, "gateway down");
-        let m = manager("w:\n  type: webhook\n  url: \"https://hook.example/\"\n", fetcher);
+        let m = manager(
+            "w:\n  type: webhook\n  url: \"https://hook.example/\"\n",
+            fetcher,
+        );
         let err = only_provider(&m)
             .push_at("t", "c", AlertLevel::Info, FIXED_NOW_MS)
             .await
@@ -1820,7 +1934,10 @@ mod tests {
 
     #[test]
     fn smtp_encryption_names_match_upstream_enum() {
-        assert_eq!(parse_smtp_encryption("SSLTLS"), Some(SmtpEncryption::SslTls));
+        assert_eq!(
+            parse_smtp_encryption("SSLTLS"),
+            Some(SmtpEncryption::SslTls)
+        );
         assert_eq!(
             parse_smtp_encryption("STARTTLS"),
             Some(SmtpEncryption::StartTls)
@@ -1871,7 +1988,10 @@ mod tests {
             "{raw}"
         );
         assert!(raw.contains("To: admin@example.com"), "{raw}");
-        assert!(!raw.contains("not-an-address"), "非法收件人不应出现在邮件里");
+        assert!(
+            !raw.contains("not-an-address"),
+            "非法收件人不应出现在邮件里"
+        );
         assert!(
             raw.contains("Content-Type: text/html; charset=utf-8"),
             "{raw}"
@@ -1957,7 +2077,11 @@ mod tests {
             fetcher.clone(),
         );
         assert!(!m.push_message("t", "c", AlertLevel::Warn).await);
-        assert_eq!(fetcher.requests().len(), 2, "前一个渠道失败后仍应尝试后一个");
+        assert_eq!(
+            fetcher.requests().len(),
+            2,
+            "前一个渠道失败后仍应尝试后一个"
+        );
     }
 
     #[tokio::test]
@@ -1989,7 +2113,10 @@ mod tests {
     #[tokio::test]
     async fn alert_title_prefix_and_identifier_dedup() {
         let fetcher = MockFetcher::new(200, "{}");
-        let m = Arc::new(manager("a:\n  type: bark\n  device_key: \"k\"\n", fetcher.clone()));
+        let m = Arc::new(manager(
+            "a:\n  type: bark\n  device_key: \"k\"\n",
+            fetcher.clone(),
+        ));
         let alerts = AlertManager::new(m, translator(), "zh_cn");
         let identifier = "downloader-nat-setup-error@qBittorrent";
         let (title, content) = nat_alert_components();

@@ -62,7 +62,12 @@ impl MockFetcher {
 
     /// 统计对某路径的请求次数
     pub fn call_count(&self, needle: &str) -> usize {
-        self.calls.lock().unwrap().iter().filter(|c| c.url.contains(needle)).count()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.url.contains(needle))
+            .count()
     }
 
     fn fixture(&self, name: &str) -> String {
@@ -171,8 +176,12 @@ pub fn mock_qb_with(fetcher: Arc<MockFetcher>, mut base: QBConfig) -> Arc<QBitto
         base.password = "admin".into();
     }
     Arc::new(
-        QBittorrentDownloader::with_fetcher(base, fetcher.clone() as Arc<dyn HttpFetcher>, Duration::from_secs(3600))
-            .unwrap(),
+        QBittorrentDownloader::with_fetcher(
+            base,
+            fetcher.clone() as Arc<dyn HttpFetcher>,
+            Duration::from_secs(3600),
+        )
+        .unwrap(),
     )
 }
 

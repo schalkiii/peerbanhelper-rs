@@ -21,7 +21,10 @@ pub struct AntiVampireSettings {
 
 impl Default for AntiVampireSettings {
     fn default() -> Self {
-        Self { ban_duration_ms: 14_400_000, xunlei_preset: true }
+        Self {
+            ban_duration_ms: 14_400_000,
+            xunlei_preset: true,
+        }
     }
 }
 

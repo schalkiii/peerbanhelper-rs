@@ -72,7 +72,12 @@ impl RingLog {
 
     /// 当前全量快照（按时间正序）。
     pub fn snapshot(&self) -> Vec<LogEntry> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// 订阅后续新日志。
