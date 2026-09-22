@@ -3,6 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use pbh_core::i18n::{normalize_locale, TranslationComponent};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -162,13 +163,49 @@ pub async fn ban_history(
     }
 }
 
-/// `GET /api/peer/{ip}/btnQuery`：BTN 信誉查询（Rust 版未集成 BTN 库，恒为不可用）。
-pub async fn btn_query(Path(ip): Path<String>) -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        crate::std_resp(false, Some("BTN is not available in this build"), json!({
-            "ip": ip,
-        })),
-    )
-        .into_response()
+/// `GET /api/peer/{ip}/btnQuery`：BTN 信誉查询（对齐上游 `handleBtnQuery`）。
+///
+/// - BTN 未启用（`BtnNetwork == null`）⇒ `success=false` + `BTN_NETWORK_NOT_ENABLED`；
+/// - 服务端未下发 `ip_query` 能力 ⇒ `success=false` + `BTN_ABILITY_IP_QUERY_NOT_PROVIDED`；
+/// - 查询成功 ⇒ `success=true` + `IpQueryResult`（认证与 PoW 在 `query_ip` 内完成）；
+/// - HTTP/认证失败 ⇒ 500（上游此时抛 `IOException`）。
+pub async fn btn_query(
+    State(state): State<AppState>,
+    Path(ip): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let locale = normalize_locale(params.get("locale").map(String::as_str).unwrap_or(&state.locale));
+    let host = parse_ip(&ip);
+    let Some(network) = state.btn_network.get() else {
+        let message = state
+            .translator
+            .render(&TranslationComponent::new("BTN_NETWORK_NOT_ENABLED"), &locale);
+        return (StatusCode::OK, crate::std_resp(false, Some(&message), Value::Null)).into_response();
+    };
+    // `ip_query` 是阻塞 HTTP（含 PoW）：放到阻塞线程池，避免卡住 tokio worker
+    let queried = tokio::task::spawn_blocking(move || network.query_ip(&host)).await;
+    match queried {
+        Ok(Ok(Some(result))) => (
+            StatusCode::OK,
+            crate::std_resp(true, None, serde_json::to_value(result).unwrap_or(Value::Null)),
+        )
+            .into_response(),
+        Ok(Ok(None)) => {
+            let message = state.translator.render(
+                &TranslationComponent::new("BTN_ABILITY_IP_QUERY_NOT_PROVIDED"),
+                &locale,
+            );
+            (StatusCode::OK, crate::std_resp(false, Some(&message), Value::Null)).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::std_resp(false, Some(&e.to_string()), Value::Null),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::std_resp(false, Some(&format!("btn query task failed: {e}")), Value::Null),
+        )
+            .into_response(),
+    }
 }

@@ -228,3 +228,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tracked_swarm_unique
     ON tracked_swarm (ip, port, info_hash, downloader);
 CREATE INDEX IF NOT EXISTS idx_tracked_swarm_last_seen_time
     ON tracked_swarm (last_time_seen DESC);
+
+-- 对齐 `HistoryEntity`（表 `history`）：`PersistMetrics.recordPeerBan` 的落点，
+-- BTN `submit_bans` 的上报源（`BtnAbilitySubmitBans` 按 id 升序分页，每页 100）。
+-- `rule_name` / `description` 存 `TranslationComponent` 的 JSON
+-- （对齐 `TranslationComponentTypeHandler`）；`structured_data` / `peer_geoip` 为 JSON 文本。
+-- 索引对齐上游 V1_1（idx_history_view 等）与 V1_2（peer_uploaded / peer_downloaded）。
+CREATE TABLE IF NOT EXISTS history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    ban_at             INTEGER   NOT NULL,
+    unban_at           INTEGER   NOT NULL,
+    ip                 TEXT      NOT NULL,
+    port               INTEGER   NOT NULL,
+    peer_id            TEXT      NULL,
+    peer_client_name   TEXT      NULL,
+    peer_uploaded      INTEGER   NULL,
+    peer_downloaded    INTEGER   NULL,
+    peer_progress      REAL      NOT NULL,
+    downloader_progress REAL     NOT NULL,
+    torrent_id         INTEGER   NOT NULL,
+    module_name        TEXT      NOT NULL,
+    rule_name          TEXT      NOT NULL,
+    description        TEXT      NOT NULL,
+    flags              TEXT      NULL,
+    downloader         TEXT      NOT NULL,
+    structured_data    TEXT      NULL,
+    peer_geoip         TEXT      NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_downloader ON history (downloader);
+CREATE INDEX IF NOT EXISTS idx_history_ip ON history (ip);
+CREATE INDEX IF NOT EXISTS idx_history_module_name ON history (module_name);
+CREATE INDEX IF NOT EXISTS idx_history_peer_id ON history (peer_id);
+CREATE INDEX IF NOT EXISTS idx_history_torrent_id ON history (torrent_id);
+CREATE INDEX IF NOT EXISTS idx_history_view ON history (ban_at);
+CREATE INDEX IF NOT EXISTS idx_history_uploaded ON history (peer_uploaded DESC);
+CREATE INDEX IF NOT EXISTS idx_history_downloaded ON history (peer_downloaded DESC);

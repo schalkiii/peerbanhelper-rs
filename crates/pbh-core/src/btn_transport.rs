@@ -1406,6 +1406,45 @@ impl std::fmt::Debug for BtnNetwork {
     }
 }
 
+/// 跨线程共享的 [`BtnNetwork`] 句柄（BTN 未启用时为 `None`）。
+///
+/// `BtnNetwork` 在 BTN 工作线程内构造（阻塞式 HTTP 客户端要求），
+/// Web 层的 `GET /api/peer/{ip}/btnQuery` 通过该句柄拿到只读入口
+/// （对齐上游 `PBHPeerController` 的 `@Autowired BtnNetwork`）。
+#[derive(Clone, Default)]
+pub struct SharedBtnNetwork(Arc<StdMutex<Option<Arc<BtnNetwork>>>>);
+
+impl SharedBtnNetwork {
+    /// 供 BTN 工作线程在构造完成后写入（重复写入覆盖，便于线程重启）。
+    pub fn set(&self, network: Arc<BtnNetwork>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(network);
+        }
+    }
+
+    /// 当前句柄（未启用 / 未完成握手时为 `None`）。
+    pub fn get(&self) -> Option<Arc<BtnNetwork>> {
+        self.0.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// `BtnAbilityIpQuery.query` 的只读入口（阻塞调用，调用方自行 `spawn_blocking`）。
+    ///
+    /// 返回 `None` = BTN 未启用；`Some(Ok(None))` = 未注册 `ip_query` 能力；
+    /// `Some(Ok(Some(_)))` = 查询结果；`Some(Err(_))` = HTTP/认证失败。
+    pub fn query_ip(&self, address: &str) -> Option<anyhow::Result<Option<IpQueryResult>>> {
+        self.get().map(|network| network.query_ip(address))
+    }
+}
+
+impl std::fmt::Debug for SharedBtnNetwork {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedBtnNetwork")
+            .field("attached", &self.get().is_some())
+            .finish()
+    }
+}
+
 impl BtnNetwork {
     pub fn new(
         config: BtnNetworkConfig,

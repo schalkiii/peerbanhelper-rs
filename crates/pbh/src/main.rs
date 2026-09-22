@@ -10,14 +10,14 @@ use clap::Parser;
 use pbh_core::auto_stun::{AutoStunRefresher, DEFAULT_REFRESH_INTERVAL, DEFAULT_STUN_TIMEOUT};
 use pbh_core::banlist::BannedRecord;
 use pbh_core::btn_transport::{
-    now_millis, BtnHttpClient, BtnMetadataStore, BtnNetwork, BtnNetworkConfig,
-    ReqwestBlockingHttpClient,
+    now_millis, BtnHttpClient, BtnMetadataStore, BtnNetwork, BtnNetworkConfig, BtnSubmitSource,
+    ReqwestBlockingHttpClient, SharedBtnNetwork,
 };
 use pbh_core::geoip::{geoip_force_disabled, GeoIpDb, GeoIpProvider};
 use pbh_core::modules::progress_cheat::PcbEntityKind;
 use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
 use pbh_core::Pipeline;
-use pbh_db::{Database, DbMetadataStore, DbMonitorSink};
+use pbh_db::{Database, DbBtnSubmitSource, DbMetadataStore, DbMonitorSink};
 use pbh_downloader::http::ReqwestFetcher;
 use pbh_web::{build_router, AppState, DownloaderStatus, Metrics, RingLog};
 use ring::RingLayer;
@@ -187,17 +187,32 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 文案表：内嵌上游 lang 资源，允许 data/lang 覆盖（与 wave / BTN 上报共用，统一 locale 渲染）
+    let translator = Arc::new(pbh_core::i18n::Translator::with_overrides(Some(
+        &data_dir.join("lang"),
+    )));
+
     // BTN 传输层（对齐上游 `btn/BtnNetwork`）：规则集 / IP 白黑名单全部由 BTN 服务器下发。
     // `btn.enabled: true` 且 `config-url` 非空（[`BtnNetworkConfig::is_active`]）时才构造客户端
     // 并起后台线程：握手 → abilities 到期调度（含 PoW captcha）→ 注入 `btn` 模块。
     // 否则（出厂默认）**不构造客户端、不发请求、不起线程**，模块保持
     // 「未注入规则 ⇒ 恒 `pass()`、绝不封禁」。
+    //
+    // 上报类能力（submit_bans / submit_swarm / submit_histories）的数据源是 SQLite
+    // （[`DbBtnSubmitSource`]）：`history` / `tracked_swarm` / `peer_records` 表。
+    // `rule_name` / `description` 按服务端语言渲染（对齐上游 `tlUI(component)`）。
+    let btn_network_slot: pbh_core::btn_transport::SharedBtnNetwork = Default::default();
     let _btn_transport: Option<std::thread::JoinHandle<()>> = if cfg.btn.is_active() {
         // 阻塞式 HTTP 客户端自带 tokio 运行时，**必须**在工作线程内部构造
         // （在 async 上下文里构造/析构会 panic：`Cannot drop a runtime in a context
         // where blocking is not allowed`），因此这里只传入构造函数。
         // 规则缓存落 SQLite 的 `meta` 表（对齐上游 `metadataDao`；重启后回灌、不重拉）
         let metadata = Arc::new(DbMetadataStore::new(db.clone()));
+        let submit_source: Arc<dyn BtnSubmitSource> = Arc::new(DbBtnSubmitSource::new(
+            db.clone(),
+            translator.clone(),
+            cfg.language.locale.clone(),
+        ));
         let handle = spawn_btn_transport(
             &cfg.btn,
             &pipeline,
@@ -206,6 +221,8 @@ async fn main() -> anyhow::Result<()> {
                     .map(|client| Arc::new(client) as Arc<dyn BtnHttpClient>)
             },
             metadata,
+            submit_source,
+            btn_network_slot.clone(),
         );
         if handle.is_none() {
             warn!(
@@ -221,11 +238,6 @@ async fn main() -> anyhow::Result<()> {
         );
         None
     };
-
-    // 文案表：内嵌上游 lang 资源，允许 data/lang 覆盖（与 wave 共用，统一 locale 渲染）
-    let translator = Arc::new(pbh_core::i18n::Translator::with_overrides(Some(
-        &data_dir.join("lang"),
-    )));
 
     // 告警推送：渠道全部来自 `push:` 段（键 = 渠道名，段内 `type` 决定类型）；
     // 段为空 ⇒ 空渠道列表（不产生任何网络流量、不报错）。
@@ -256,7 +268,7 @@ async fn main() -> anyhow::Result<()> {
     // `alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` / `peer_records` /
     // `tracked_swarm`；`peer_records.peer_geoip` 由 sink 内的 IP 库查询填充（对齐上游在 DAO 内查询）。
     // 单元测试仍可用 pbh-core 的内存实现 `InMemoryMonitorSink`。
-    let monitor_sink: Arc<dyn MonitorSink> = Arc::new(DbMonitorSink::with_geo(db.clone(), geo));
+    let monitor_sink: Arc<dyn MonitorSink> = Arc::new(DbMonitorSink::with_geo(db.clone(), geo.clone()));
     // `tracked_swarm` 是「本次运行会话」的临时表：启动时清空一次
     //（对齐上游 `SwarmTrackingModule.onEnable` 的 `TrackedSwarmService.resetTable()`）。
     monitor_sink.reset_tracked_swarm();
@@ -340,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
         log_ring: ring_log.clone(),
         global_pause: global_pause.clone(),
         sub_module: None,
+        btn_network: btn_network_slot.clone(),
     };
     let app = build_router(state);
     let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;
@@ -395,6 +408,7 @@ async fn main() -> anyhow::Result<()> {
         max_concurrent: 128,
         alert_manager,
         monitor,
+        geo,
     };
 
     let period = Duration::from_millis(cfg.profile.check_interval.max(500));
@@ -501,11 +515,16 @@ const BTN_SYNC_TICK: Duration = Duration::from_secs(5);
 /// 用 `std::thread` + 阻塞式 HTTP 客户端（而非 tokio task）：`reqwest::blocking` 自带运行时、
 /// 不能在 async 上下文构造/析构，故 `http_factory` 也只在线程内被调用一次。
 /// 独立线程同样不会拖慢/阻塞 ban wave。
+///
+/// 构造完成的 [`BtnNetwork`] 会写入 `network_slot`，供 Web 层的 `btnQuery` 端点复用
+/// （对齐上游注入 `PBHPeerController` 的 `BtnNetwork` 单例）。
 fn spawn_btn_transport<F>(
     config: &BtnNetworkConfig,
     pipeline: &Arc<Pipeline>,
     http_factory: F,
     metadata: Arc<dyn BtnMetadataStore>,
+    submit_source: Arc<dyn BtnSubmitSource>,
+    network_slot: SharedBtnNetwork,
 ) -> Option<std::thread::JoinHandle<()>>
 where
     F: Fn() -> anyhow::Result<Arc<dyn BtnHttpClient>> + Send + 'static,
@@ -528,8 +547,12 @@ where
             }
         };
         // 允许列表更新后需要解封（上游 `DownloaderServer.getBanList()`）
-        let network =
-            BtnNetwork::new(config, http, metadata).with_ban_list(pipeline.ban_list.clone());
+        let network = Arc::new(
+            BtnNetwork::new(config, http, metadata)
+                .with_ban_list(pipeline.ban_list.clone())
+                .with_submit_source(submit_source),
+        );
+        network_slot.set(network.clone());
         info!("BTN 传输层已启动：config-url={config_url}, tick={BTN_SYNC_TICK:?}");
         loop {
             // 对齐上游 `scheduleWithFixedDelay(this::updateRule, 0, interval, MS)`：先跑再等
@@ -587,6 +610,11 @@ mod tests {
         Arc::new(pipeline)
     }
 
+    /// 测试用空数据源：trait 默认实现即「没有任何待提交数据」。
+    #[derive(Debug)]
+    struct EmptySubmitSource;
+    impl BtnSubmitSource for EmptySubmitSource {}
+
     fn peer() -> PeerData {
         PeerData {
             client_name: Some("Xunlei".to_string()),
@@ -636,8 +664,15 @@ mod tests {
         ] {
             let http = http.clone();
             assert!(
-                spawn_btn_transport(&config, &pipeline, move || Ok(http.clone()), metadata.clone())
-                    .is_none(),
+                spawn_btn_transport(
+                    &config,
+                    &pipeline,
+                    move || Ok(http.clone()),
+                    metadata.clone(),
+                    Arc::new(EmptySubmitSource),
+                    SharedBtnNetwork::default(),
+                )
+                .is_none(),
                 "未启用时不得构造客户端/起线程"
             );
         }
@@ -665,7 +700,9 @@ mod tests {
             &config,
             &pipeline,
             move || Ok(http.clone()),
-            Arc::new(InMemoryMetadataStore::new())
+            Arc::new(InMemoryMetadataStore::new()),
+            Arc::new(EmptySubmitSource),
+            SharedBtnNetwork::default(),
         )
         .is_none());
         assert_eq!(calls.load(Ordering::Relaxed), 0);

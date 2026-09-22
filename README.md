@@ -58,7 +58,8 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
         默认空目录 → 不产生任何封禁，返回值语义对齐上游 `ScriptEngineManager.handleResult`）
   - [x] BTN 网络在线规则（`btn`，五类规则 + 现代协议 IP 白/黑名单；按上游 `registerModules()`
         顺序位于 `auto-range-ban` 之后；传输层含规则拉取与 `submit_*` / 心跳等全部上报能力，
-        未注入规则/数据源时恒 pass、不发任何请求）
+        上报数据源为 `history` / `tracked_swarm` / `peer_records` 表；
+        未注入规则时恒 pass，`btn.enabled=false` 时不发任何请求）
 - [x] **GeoIP 四维度**：`ip-address-blocker` 的 ASN / 国家地区 ISO / 城市 / 网络类型，
       对齐 `IPDB` + `GeoCN1|2`（逐字段覆盖式合并、CN/TW/HK/MO 回填、行政区划表前缀查询）；
       应用层按 `config.yml` 的 `ip-database` 段加载 `<data>/ipdb/geoip/*.mmdb`，
@@ -159,11 +160,14 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
 > 均已实现；告警读写端点 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
 > `DELETE /api/alert/{id}` 也已移植（`read_at` 正常落库），阈值告警的 `push:` 渠道推送已接线。
 
-> **BTN 上报能力（已实现）**：`submit_bans` / `submit_swarm` / `submit_histories` /
+> **BTN 上报能力（已接线）**：`submit_bans` / `submit_swarm` / `submit_histories` /
 > `heartbeat`（含 `multi_if` 多网卡）/ `ip_query` / `reconfigure`（服务端版本变更自动重新握手）
-> 与遗留协议（`min < 20`）的 `submit_peers` / `submit_bans` 均已按上游 wire contract 移植，
-> 数据经 `BtnSubmitSource` trait 注入（缺省空源 ⇒ 等价上游「无数据」语义，不发请求）。
-> 本轮落地：BTN 传输层（握手/abilities/PoW/缓存 + 脚本规则 + 全部上报能力）、
+> 与遗留协议（`min < 20`）的 `submit_peers` / `submit_bans` 均已按上游 wire contract 移植。
+> 现代协议上报数据由 `pbh-db::DbBtnSubmitSource` 注入（`history` / `tracked_swarm` /
+> `peer_records` 表，分页游标与上游一致）；`GET /api/peer/{ip}/btnQuery` 经 `SharedBtnNetwork`
+> 调 `BtnNetwork::query_ip`。`ban-for-disconnect` 不落 `history`（对齐 `PersistMetrics.recordPeerBan`）。
+> 遗留协议快照依赖 `DownloaderServer` 内存数据（live peers / ban list），DB 数据源保持空实现。
+> 本轮落地：BTN 上报数据源接线（`history` 表 + `DbBtnSubmitSource` + `btnQuery`）、
 > GeoIP 数据库自动更新、AutoSTUN 的 UDP NAT 探测与 TCP 转发器、上传限速下发、
 > 阈值告警的 `push:` 渠道推送。
 

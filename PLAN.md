@@ -158,7 +158,7 @@
 - [x] Web API 按请求 locale 渲染 + `rule`/`reason` 结构化存储（`ban_logs` 接受 `?locale=`，落库 `TranslationComponent` 按需本地化）
 - [x] `btn`：判定模块 `BtnNetworkOnline` 已实现（五类规则 + 现代协议 IP 白/黑名单能力）并按上游
       `registerModules()` 顺序（`AutoRangeBan → BtnNetworkOnline → IPBlackRuleList`）接入流水线，
-      `module.btn` 默认启用；**BTN 传输层未移植**（见 Phase 1.7）
+      `module.btn` 默认启用；传输层（握手 / abilities / PoW / 上报 / 心跳）已移植并接线（见 Phase 1.7 与 Phase 3.1）
 - [x] `ip-address-blocker` 的 GeoIP 维度：ASN / 国家地区 ISO / 城市（GeoCN 中文写法）/ 网络类型四个维度，
       对齐 `IPBlackList#reloadConfig` + `IPDB`/`GeoCN1|2`；应用层按 `ip-database` 段加载
       `<data>/ipdb/geoip/{GeoIP-City,GeoIP-ASN,GeoCN}.mmdb`，失败时不注入 provider（四维度全不命中）
@@ -195,14 +195,15 @@
       `/api/modules/swarm-tracking/details`（`page` / `pageSize` + `orderBy=字段|asc|desc`，
       返回 `{page, size, total, results}`）、`/api/alerts`（对齐 `PBHAlertController.handleListing`：
       未读告警、`title`/`content` 按请求 locale 渲染）；三者都在 Token 鉴权之后（上游 `Role.USER_READ`）。
-      未移植（非静默省略）：`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
-      `DELETE /api/alert/{id}`，故 `read_at` 恒为 NULL、告警恒未读。
+      告警读写端点 `PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、`DELETE /api/alert/{id}`
+      也已移植（`read_at` 正常落库）。
 - [x] **BTN 网络传输**：`pbh-core::btn_transport`（≈ `BtnNetwork` + `AbstractBtnAbility`）已实现配置端点握手、
       协议版本校验（实现版本 20，遗留/现代 abilities 分支）、`X-BTN-ContentVersion` + 本地缓存、
       PoW captcha（Base64 challenge → 递增 nonce → 摘要前置零位）、按 `interval`/`random_initial_delay`
       的到期调度与 600s 重试节流；已在 `pbh/src/main.rs` 接线（`std::thread` + 阻塞客户端，5s tick，
       默认禁用 ⇒ 不构造客户端/不起线程/零请求）。缓存落 `pbh-db` 既有 `meta` 键值表（对齐上游 `metadataDao`）。
-      未实现的 abilities（submit_* / heartbeat / ip-query / reconfigure）仅解析不构造、不调度。
+      abilities（submit_* / heartbeat / ip-query / reconfigure）全部构造并调度，上报数据源为
+      `pbh-db::DbBtnSubmitSource`（`history` / `tracked_swarm` / `peer_records` 表；见 Phase 3.1）。
       未注入规则时模块恒 `pass()`、绝不封禁
 - [x] **BTN 脚本规则**：`btn.allow-script-execute` 为 true 时会编译并执行 BTN 规则集里的
       `scriptRules`（上游 AviatorScript ⇒ 本移植 rhai，与 `expression_engine` 同一套注入变量与返回值语义）；
@@ -270,15 +271,16 @@
 ### Phase 3 — 生态能力（部分完成）
 
 - [x] GeoIP/ASN（maxminddb，GeoLite2/GeoCN），四维度接入 `ip-address-blocker`
-- [ ] **BTN 上报类能力（submit_* / heartbeat / ip_query / reconfigure）**：拉取类（rules /
-      ip_allowlist / ip_denylist + PoW + 配置握手）已实现；上报类未构造（部署 config 默认
-      `btn.submit: true`），规格见「Phase 3.1」
+- [x] **BTN 上报类能力（submit_* / heartbeat / ip_query / reconfigure）**：拉取类（rules /
+      ip_allowlist / ip_denylist + PoW + 配置握手）与上报类全部实现；上报数据源由
+      `pbh-db::DbBtnSubmitSource` 注入（`history` / `tracked_swarm` / `peer_records`），
+      `GET /api/peer/{ip}/btnQuery` 已接 `BtnNetwork::query_ip`（规格见「Phase 3.1」）
 - [x] 表达式规则（rhai 替代 AviatorScript，附语法翻译表与对照测试）— 引擎已实现，默认 空目录无封禁
 - [x] 告警推送：Webhook / Telegram / 邮件（lettre）/ 及其余 6 个渠道 —— 见 Phase 1.6
 - [x] 实时日志推送（Java v9.5.1 **已弃用 WebSocket**，实际用 SSE `/api/logs/live`；Rust 以 SSE 对齐）
 - [ ] MySQL/PostgreSQL（sqlx）—— Java 默认 sqlite/h2，与对跑及默认路径无关，属扩展项
 
-### Phase 3.1 — BTN 上报能力移植规格（`btn.submit: true` 时生效）
+### Phase 3.1 — BTN 上报能力移植（已实现，`btn.submit: true` 时生效）
 
 > 背景（2026-09-22 调研）：部署 config 默认 `btn.submit: true`，Java 端 submit_* 上报能力
 > 会被构造。已对照上游完整核对请求/调度语义，作为实现蓝图，如下。
@@ -293,26 +295,28 @@
 - 认证：`BTN-AppID/Secret`、`X-BTN-AppID/Secret`、`Authentication: Bearer <id>@<secret>`；匿名补
   `X-BTN-InstallationID`（`BtnNetwork::request` 已实现）。
 
-| 能力（JSON key） | HTTP | 载荷 | Java 数据源 | Rust 数据源现状 |
+| 能力（JSON key） | HTTP | 载荷 | Java 数据源 | Rust 数据源现状（已落地） |
 |---|---|---|---|---|
-| `submit_bans` | POST+gzip | `BtnBanPing{bans:[BtnBan…]}` | `history` 表 `id>cursor` 分页 100（游标 `BtnAbilitySubmitBans.cursor`）join `torrent` | `ban_logs` 表**缺** `peer_uploaded/downloaded/progress/downloader_progress/flags` ⇒ 需补列或新建 `history` 表 |
-| `submit_swarm` | POST+gzip | `BtnSwarmPing{swarms:[BtnSwarm…]}` | `tracked_swarm` 表 `last_seen+id` 游标、`flushAll` 前置 | `TrackedSwarmRow` 字段齐全，`MonitorHost::tracked_swarm()` 全量可读 ⇒ 直接支撑 |
-| `submit_history` | POST+gzip | `LegacyBtnPeerHistoryPing{populate_time,peers:[…]}` | `peer_records` `getPendingSubmitPeerRecords(lastSubmitAt)` 分页 5000、游标 `btn.submithistory.timestamp` | `PeerRecordRow` 字段齐全，`peer_records()` 全量可读，需按时间游标过滤 ⇒ 基本支撑 |
+| `submit_bans` | POST+gzip | `BtnBanPing{bans:[BtnBan…]}` | `history` 表 `id>cursor` 分页 100（游标 `BtnAbilitySubmitBans.cursor`）join `torrent` | 新增 `history` 表（对齐 V1_1 + V1_2 索引），`record_bans` 同步落库（`ban-for-disconnect` 跳过），`DbBtnSubmitSource` 按 `id > cursor` 分页 |
+| `submit_swarm` | POST+gzip | `BtnSwarmPing{swarms:[BtnSwarm…]}` | `tracked_swarm` 表 `last_seen+id` 游标、`flushAll` 前置 | `DbBtnSubmitSource` 直读 `tracked_swarm`（二元游标 `last_time_seen >= x AND id > y`） |
+| `submit_history` | POST+gzip | `LegacyBtnPeerHistoryPing{populate_time,peers:[…]}` | `peer_records` `getPendingSubmitPeerRecords(lastSubmitAt)` 分页 5000、游标 `btn.submithistory.timestamp` | `DbBtnSubmitSource` 直读 `peer_records` JOIN `torrents`（时间游标 + 30 天饱和） |
 | `reconfigure` | GET configUrl | 无 | 解析 `ability.reconfigure.version` 差异 → 重新握手 | 纯 HTTP，零新数据依赖 |
 | `heartbeat` | POST | `{"ifaddr":"default"}`（multi_if 多网卡） | 无 | 纯 HTTP，零新数据依赖 |
-| `ip_query` | GET `endpoint?ip=` | 响应 `{color,labels,bans,swarms,traffic,torrents}` | 其他模块按需 `query(address)` | 纯 HTTP，零新数据依赖 |
+| `ip_query` | GET `endpoint?ip=` | 响应 `{color,labels,bans,swarms,traffic,torrents}` | 其他模块按需 `query(address)` | 纯 HTTP；`GET /api/peer/{ip}/btnQuery` 经 `SharedBtnNetwork` 调 `query_ip` |
 
-**Rust 移植最小改动**：
+**Rust 移植最小改动**（全部完成）：
 1. `btn_transport.rs`：`BtnAbilityKind` 增 `SubmitBans/SubmitSwarm/SubmitHistory/Heartbeat/IpQuery/Reconfigure`；
    `apply_config_response` 按 `config.submit` 与 `is_implemented` 决定注册；`sync_due` 加分支。
-2. 新增 `BtnSubmitSource` trait（自 `MonitorHost` 借 `peer_records()`/`tracked_swarm()`），注入 `BtnNetwork`；
-   每能力构建 HTTP+gzip 请求与游标（存 `BtnMetadataStore`）。
+2. 新增 `BtnSubmitSource` trait，注入 `BtnNetwork`；每能力构建 HTTP+gzip 请求与游标（存 `BtnMetadataStore`）。
+   实现方 `pbh-db::DbBtnSubmitSource`（`history` / `tracked_swarm` / `peer_records` 三表），
+   在 `pbh/src/main.rs` 接线（`with_submit_source`）；`rule_name` / `description` 按服务端语言渲染
+   （对齐上游 `tlUI(component)`）。
 3. `InfoHashUtil.getHashedIdentifier`：`sha256(lowercase + crc32(lowercase))`（新增 `crc32fast` 依赖）。
-4. `submit_bans` 需新 `history` 数据（历史上 trace）或扩 `ban_logs`；游标键取自 metadata。
-5. 用内存 HTTP client（`ClosureHttpClient`）+ 注入时钟做**协议 golden 测试**，锁定请求体/空响应对齐 Java DTO。
+4. 遗留协议（`min < 20`）的 `legacy_peer_snapshot` / `legacy_ban_snapshot` 依赖 `DownloaderServer`
+   内存快照，DB 数据源保持 trait 默认空实现（等价上游「无待提交数据」）。
 
 > 验证口径：BTN 上报面向外部 `sparkle.pbh-btn.com`，无法本地对真实实例跑，故以**协议 golden 测试**
->（捕获请求体/头对齐 Java DTO 字段）+ 注入时钟驱动游标推进断言为主；不影响封禁决策，可后置。
+>（捕获请求体/头对齐 Java DTO 字段）+ 注入时钟驱动游标推进断言为主；不影响封禁决策。
 
 ### Phase 4 — 分发与打磨（待办）
 

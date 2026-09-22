@@ -243,35 +243,10 @@ impl DbMonitorSink {
     }
 
     /// `TorrentService.createIfNotExists`：返回 `torrents` 表主键（十进制字符串）。
+    ///
+    /// SQL 与 `history` 落库共用（[`crate::Database::ensure_torrent_id`]）。
     fn ensure_torrent_id(&self, torrent: &TorrentData) -> anyhow::Result<String> {
-        let conn = self.conn();
-        if let Some(existing) = select_torrent(&conn, &torrent.hash)? {
-            // 已存在且（记录完整 或 传入数据更差）-> 直接复用，不回写
-            let existing_is_complete = existing.size > 0 && existing.private_torrent.is_some();
-            let incoming_is_poor = torrent.total_size <= 0 && torrent.is_private.is_none();
-            if existing_is_complete || incoming_is_poor {
-                return Ok(existing.id.to_string());
-            }
-        }
-        // 对齐 `TorrentMapper.upsert`：只有 size / private_torrent 会被条件式回填，name 不回写
-        conn.execute(
-            "INSERT INTO torrents (info_hash, name, size, private_torrent)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(info_hash) DO UPDATE SET
-               size = CASE WHEN torrents.size <= 0 THEN excluded.size ELSE torrents.size END,
-               private_torrent = CASE
-                 WHEN torrents.private_torrent IS NULL THEN excluded.private_torrent
-                 ELSE torrents.private_torrent END",
-            params![
-                torrent.hash,
-                torrent.name,
-                torrent.total_size,
-                torrent.is_private.map(i64::from),
-            ],
-        )?;
-        select_torrent(&conn, &torrent.hash)?
-            .map(|row| row.id.to_string())
-            .ok_or_else(|| anyhow::anyhow!("torrents upsert 后取不到行: {}", torrent.hash))
+        Ok(self.db.ensure_torrent_id(torrent)?.to_string())
     }
 
     /// `TrafficJournalService.updateData`。
@@ -1009,7 +984,7 @@ fn alert_level_name(level: AlertLevel) -> &'static str {
 /// `peer_geoip` 的 JSON：对齐 `BasicJsonTypeHandler`（`JsonUtil.standard()` = Gson +
 /// `@JsonUtil.Hidden` 字段排除 + `serializeNulls`），只保留未标注 `@JsonUtil.Hidden` 的字段：
 /// `city.name` / `country.iso` / `as.number` / `network.isp` / `network.netType`，null 也输出。
-fn peer_geoip_json(geo: &IpGeoData) -> String {
+pub fn peer_geoip_json(geo: &IpGeoData) -> String {
     json!({
         "city": geo.city.as_ref().map(|city| json!({ "name": city.name })),
         "country": geo.country.as_ref().map(|country| json!({ "iso": country.iso })),
@@ -1020,28 +995,6 @@ fn peer_geoip_json(geo: &IpGeoData) -> String {
             .map(|network| json!({ "isp": network.isp, "netType": network.net_type })),
     })
     .to_string()
-}
-
-/// `torrents` 表按 info_hash 取一行（`TorrentServiceImpl.queryByInfoHash`）。
-struct TorrentLookup {
-    id: i64,
-    size: i64,
-    private_torrent: Option<bool>,
-}
-
-fn select_torrent(conn: &Connection, info_hash: &str) -> anyhow::Result<Option<TorrentLookup>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, size, private_torrent FROM torrents WHERE info_hash = ?1 ORDER BY id LIMIT 1",
-    )?;
-    Ok(stmt
-        .query_row(params![info_hash], |row| {
-            Ok(TorrentLookup {
-                id: row.get(0)?,
-                size: row.get(1)?,
-                private_torrent: row.get::<_, Option<i64>>(2)?.map(|v| v != 0),
-            })
-        })
-        .optional()?)
 }
 
 fn map_traffic_data(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrafficDataComputed> {

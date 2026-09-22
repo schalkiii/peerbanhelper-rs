@@ -8,13 +8,14 @@
 
 use crate::push::{AlertLevel, AlertManager};
 use pbh_core::banlist::{needs_full_ban_list, BanList, BannedRecord};
+use pbh_core::geoip::GeoIpProvider;
 use pbh_core::i18n::{Param, TranslationComponent, Translator};
-use pbh_core::model::PeerData;
+use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::{CheckContext, CheckResult};
 use pbh_core::modules::ProgressCheatBlocker;
 use pbh_core::pipeline::Decision;
 use pbh_core::Pipeline;
-use pbh_db::{BanLog, Database};
+use pbh_db::{peer_geoip_json, BanLog, Database, HistoryRecord};
 use pbh_downloader::{BanEntry, Downloader};
 use pbh_web::{DownloaderStatus, Metrics};
 use std::net::IpAddr;
@@ -55,6 +56,16 @@ struct BanRecord {
     client_name: String,
     torrent_hash: String,
     torrent_name: String,
+    // `history` 表落库所需的 peer / torrent 观测（对齐 `PersistMetrics.recordPeerBan`）
+    peer_uploaded: i64,
+    peer_downloaded: i64,
+    peer_progress: f64,
+    /// 对方 torrent 进度（`downloader_progress` 列）
+    torrent_progress: f64,
+    torrent_size: i64,
+    torrent_is_private: Option<bool>,
+    flags: Option<String>,
+    structured_data: serde_json::Value,
 }
 
 pub struct WaveEngine {
@@ -78,6 +89,11 @@ pub struct WaveEngine {
     /// 这些模块不参与 peer 判定，只消费「拉取到的 peers」与定时任务，因此挂在 wave 上：
     /// 每拉到一份 peers 就派发一次 `onPeersRetrieved`（对齐上游回调时机）。
     pub monitor: Arc<crate::monitor::MonitorHost>,
+    /// IP 库（`history.peer_geoip` 落库用；缺省 = 未装 IP 库，落 NULL）。
+    ///
+    /// 与 [`crate::monitor::MonitorHost`] 的落库 sink 共用同一份 provider（对齐上游
+    /// `PersistMetrics` 注入的 `IPDBManager`）。
+    pub geo: Option<Arc<dyn GeoIpProvider>>,
 }
 
 impl WaveEngine {
@@ -213,6 +229,13 @@ impl WaveEngine {
         }
     }
 
+    /// 查询 IP 库并转成 `peer_geoip` 的 JSON（缺省 = 未装 IP 库，落 NULL）。
+    fn query_peer_geoip(&self, ip: &str) -> Option<String> {
+        let provider = self.geo.as_ref()?;
+        let address = pbh_core::iputil::parse_addr(ip)?;
+        provider.query(address).as_ref().map(peer_geoip_json)
+    }
+
     /// 记录新封禁：落库 + 写入内存封禁表。
     fn record_bans(&self, entry: &DownloaderEntry, bans: &[BanRecord], now_ms: i64) {
         for b in bans {
@@ -238,6 +261,46 @@ impl WaveEngine {
             };
             if let Err(e) = self.db.insert_ban_log(&log) {
                 warn!("insert ban log failed: {e}");
+            }
+            // 封禁历史（`PersistMetrics.recordPeerBan`）：`ban-for-disconnect` 不落 history
+            if !b.ban_for_disconnect {
+                let history = HistoryRecord {
+                    ban_at_ms: now_ms,
+                    unban_at_ms,
+                    ip: b.entry.ip.clone(),
+                    port: b.entry.port,
+                    peer_id: Some(b.peer_id.clone()),
+                    peer_client_name: Some(b.client_name.clone()),
+                    peer_uploaded: Some(b.peer_uploaded),
+                    peer_downloaded: Some(b.peer_downloaded),
+                    peer_progress: b.peer_progress,
+                    downloader_progress: b.torrent_progress,
+                    torrent: TorrentData {
+                        hash: b.torrent_hash.clone(),
+                        name: b.torrent_name.clone(),
+                        progress: b.torrent_progress,
+                        total_size: b.torrent_size,
+                        piece_size: 0,
+                        pieces_have: 0,
+                        completed_override: None,
+                        dlspeed: 0,
+                        upspeed: 0,
+                        is_private: b.torrent_is_private,
+                    },
+                    module_name: b.module.clone(),
+                    // `rule_name` / `description` 落 `TranslationComponent` 的 JSON（对齐上游
+                    // `TranslationComponentTypeHandler`）；缺 key 时把渲染文本包成组件，
+                    // `Translator` 查不到模板会原样返回，与直接落文本等价
+                    rule_name: rule_component_json(&b.rule_key, &b.rule),
+                    description: rule_component_json(&b.reason_key, &b.reason),
+                    flags: b.flags.clone(),
+                    downloader: entry.downloader.id().to_string(),
+                    structured_data: Some(b.structured_data.to_string()),
+                    peer_geoip: self.query_peer_geoip(&b.entry.ip),
+                };
+                if let Err(e) = self.db.insert_history(&history) {
+                    warn!("insert history failed: {e}");
+                }
             }
             if self.persist_banlist {
                 if let Err(e) = self.db.upsert_banned_ip(&b.entry.ip, &b.module, b.duration) {
@@ -366,6 +429,14 @@ impl WaveEngine {
                             client_name: peer.client_name.clone().unwrap_or_default(),
                             torrent_hash: torrent.hash.clone(),
                             torrent_name: torrent.name.clone(),
+                            peer_uploaded: peer.uploaded,
+                            peer_downloaded: peer.downloaded,
+                            peer_progress: peer.progress,
+                            torrent_progress: torrent.progress,
+                            torrent_size: torrent.total_size,
+                            torrent_is_private: torrent.is_private,
+                            flags: peer.flags.clone(),
+                            structured_data: result.data.clone(),
                         }),
                     }
                 }
@@ -398,6 +469,19 @@ struct DownloaderOutput {
     peers: usize,
     skipped: usize,
     bans: Vec<BanRecord>,
+}
+
+/// `history.rule_name` / `description` 的落库值：`TranslationComponent` 的 JSON
+/// （对齐上游 `TranslationComponentTypeHandler`）。
+///
+/// 缺 key 时把渲染文本包成组件：`Translator` 查不到模板会原样返回 key，
+/// 与直接落文本等价，且保证列内容始终是合法 JSON。
+fn rule_component_json(key: &Option<TranslationComponent>, fallback: &str) -> String {
+    let component = match key {
+        Some(component) => component.clone(),
+        None => TranslationComponent::new(fallback),
+    };
+    serde_json::to_string(&component).unwrap_or_else(|_| fallback.to_string())
 }
 
 /// 该 SKIP 是否来自 bypass 分支（`ignore-peers-from-addresses`）。
@@ -496,4 +580,171 @@ struct TorrentOutput {
     peer_count: usize,
     skipped: usize,
     bans: Vec<BanRecord>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pbh_core::btn_transport::BtnSubmitSource;
+    use pbh_core::modules::{InMemoryMonitorSink, MonitorSink};
+    use pbh_db::DbBtnSubmitSource;
+    use pbh_downloader::http::{BoxFuture, HttpFetcher, HttpRequest, HttpResponse};
+    use pbh_downloader::{DownloaderStatistics, LoginResult};
+
+    /// 测试用空 HTTP 客户端（测试不配置推送渠道，实际不会被调用）。
+    struct NoopFetcher;
+
+    impl HttpFetcher for NoopFetcher {
+        fn execute<'a>(
+            &'a self,
+            _request: HttpRequest,
+        ) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
+            Box::pin(async { Ok(HttpResponse::new(200, "{}".to_string())) })
+        }
+    }
+
+    /// 测试用下载器：`record_bans` 只用到 `id()`，其余能力不会被触发。
+    struct StubDownloader;
+
+    impl Downloader for StubDownloader {
+        fn id(&self) -> &str {
+            "qb"
+        }
+        fn name(&self) -> &str {
+            "qBittorrent"
+        }
+        fn downloader_type(&self) -> &'static str {
+            "qbittorrent"
+        }
+        fn feature_flags(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
+            Box::pin(async {
+                Ok(LoginResult {
+                    success: true,
+                    message: String::new(),
+                    version: "5.0.0".to_string(),
+                })
+            })
+        }
+        fn fetch_torrents<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Vec<TorrentData>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn fetch_peers<'a>(
+            &'a self,
+            _torrent: &'a TorrentData,
+        ) -> BoxFuture<'a, anyhow::Result<Vec<PeerData>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn ban_peers<'a>(&'a self, _peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn replace_banned_ips<'a>(
+            &'a self,
+            _ips: &'a [String],
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
+            Box::pin(async { Ok(DownloaderStatistics::default()) })
+        }
+        fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+            Box::pin(async { Ok((0, 0)) })
+        }
+        fn set_speed_limiter<'a>(
+            &'a self,
+            _upload: i64,
+            _download: i64,
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn engine(db: Arc<Database>) -> WaveEngine {
+        let translator = Arc::new(Translator::embedded());
+        let push_manager =
+            crate::push::PushManager::from_config(&Default::default(), Arc::new(NoopFetcher));
+        let alert_manager = Arc::new(AlertManager::new(
+            Arc::new(push_manager),
+            translator.clone(),
+            "zh_cn",
+        ));
+        let sink: Arc<dyn MonitorSink> = Arc::new(InMemoryMonitorSink::new());
+        let monitor = Arc::new(crate::monitor::MonitorHost::new(
+            &pbh_core::config::ProfileConfig::default(),
+            sink,
+        ));
+        WaveEngine {
+            entries: Arc::new(StdMutex::new(Vec::new())),
+            pipeline: Arc::new(Pipeline::default()),
+            db,
+            metrics: Arc::new(StdMutex::new(Metrics::default())),
+            statuses: Arc::new(StdMutex::new(Vec::new())),
+            translator,
+            locale: "zh_cn".to_string(),
+            persist_banlist: false,
+            max_concurrent: 1,
+            alert_manager,
+            monitor,
+            geo: None,
+        }
+    }
+
+    fn ban(ip: &str, ban_for_disconnect: bool) -> BanRecord {
+        BanRecord {
+            entry: BanEntry { ip: ip.to_string(), port: 6881, raw_ip: format!("{ip}:6881") },
+            module: "peer-analyse-service".to_string(),
+            rule: "测试规则".to_string(),
+            reason: "测试原因".to_string(),
+            rule_key: Some(TranslationComponent::new("BTN_NETWORK_NOT_ENABLED")),
+            reason_key: None,
+            duration: 3_600_000,
+            ban_for_disconnect,
+            peer_id: "peer-1".to_string(),
+            client_name: "qBittorrent".to_string(),
+            torrent_hash: "hash-a".to_string(),
+            torrent_name: "示例种子".to_string(),
+            peer_uploaded: 1000,
+            peer_downloaded: 2000,
+            peer_progress: 0.25,
+            torrent_progress: 0.75,
+            torrent_size: 2048,
+            torrent_is_private: Some(true),
+            flags: Some("U".to_string()),
+            structured_data: serde_json::json!({ "type": "test" }),
+        }
+    }
+
+    /// `record_bans` 写 `history`（对齐 `PersistMetrics.recordPeerBan`），
+    /// `ban-for-disconnect` 不落 history。
+    #[test]
+    fn record_bans_writes_history_and_skips_disconnect() {
+        let db = Arc::new(Database::open_in_memory().expect("内存库"));
+        let engine = engine(db.clone());
+        let entry = DownloaderEntry { downloader: Arc::new(StubDownloader), increment_ban: true };
+
+        engine.record_bans(&entry, &[ban("1.1.1.1", false), ban("1.1.1.2", true)], 1_700_000_000_000);
+
+        // ban_logs 记录全部封禁；history 只记录非 disconnect
+        let source =
+            DbBtnSubmitSource::new(db.clone(), Arc::new(Translator::embedded()), "zh_cn");
+        let rows = source.batch_ban_history(0, 100);
+        assert_eq!(rows.len(), 1, "ban-for-disconnect 不落 history");
+        let row = &rows[0];
+        assert_eq!(row.peer_ip, "1.1.1.1");
+        assert_eq!(row.ban_at_ms, 1_700_000_000_000);
+        assert_eq!(row.torrent_hash, "hash-a");
+        assert!(row.torrent_is_private);
+        assert_eq!(row.torrent_size, 2048);
+        // 上游映射方向：`fromPeerTraffic ← peerDownloaded`、`toPeerTraffic ← peerUploaded`
+        assert_eq!(row.from_peer_traffic, 2000);
+        assert_eq!(row.to_peer_traffic, 1000);
+        assert_eq!(row.downloader_progress, 0.75);
+        // `rule_key` 落 `TranslationComponent` JSON 后按服务端语言渲染；
+        // 缺失 key 的 reason 退化为把文本包成组件，渲染结果即原文
+        assert!(row.rule.contains("未启用"), "rule={}", row.rule);
+        assert_eq!(row.description, "测试原因");
+        assert_eq!(row.structured_data.as_deref(), Some(r#"{"type":"test"}"#));
+    }
 }

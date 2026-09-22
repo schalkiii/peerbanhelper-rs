@@ -67,6 +67,11 @@ pub struct AppState {
     pub global_pause: Arc<AtomicBool>,
     /// 规则订阅模块（未启用为 `None`，`/api/sub/*` 返回 404）
     pub sub_module: Option<Arc<dyn SubModule>>,
+    /// BTN 传输层句柄（`GET /api/peer/{ip}/btnQuery`；未启用时为空）。
+    ///
+    /// `BtnNetwork` 由 BTN 工作线程构造，这里只持有跨线程句柄
+    /// （对齐上游 `PBHPeerController` 注入的 `BtnNetwork` 单例）。
+    pub btn_network: pbh_core::btn_transport::SharedBtnNetwork,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -580,8 +585,8 @@ struct AlertsQuery {
 /// `/api/alerts`：对齐 `PBHAlertController.handleListing` —— 未读告警列表，
 /// `title` / `content` 按请求 locale 渲染（上游 `tl(locale(ctx), ...)`）。
 ///
-/// 与上游的差异（未移植）：`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、
-/// `DELETE /api/alert/{id}` 三个读写端点未实现，故 `read_at` 恒为 NULL、告警保持未读。
+/// 本端点只返回**未读**告警；读状态的三个写端点见 `api::alerts`
+/// （`PATCH /api/alert/{id}/dismiss`、`POST /api/alert/dismissAll`、`DELETE /api/alert/{id}`）。
 async fn alerts(State(state): State<AppState>, Query(q): Query<AlertsQuery>) -> Response {
     let locale = normalize_locale(q.locale.as_deref().unwrap_or(&state.locale));
     match state.db.list_unread_alerts() {
@@ -643,6 +648,7 @@ mod tests {
             log_ring: Arc::new(RingLog::new(16)),
             global_pause: Arc::new(AtomicBool::new(false)),
             sub_module: None,
+            btn_network: Default::default(),
         }
     }
 
