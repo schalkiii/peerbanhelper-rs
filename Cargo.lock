@@ -1355,6 +1355,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbh-mockqb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "pbh-web"
 version = "0.1.0"
 dependencies = [

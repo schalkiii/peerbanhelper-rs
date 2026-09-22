@@ -1,0 +1,113 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "AA11AA11AA11AA11AA11AA11AA11AA11AA11AA11",
+      "name": "Ubuntu 24.04 LTS Desktop amd64 ISO",
+      "progress": 1.0,
+      "total_size": 4876000000,
+      "piece_size": 16384,
+      "pieces_have": 297241,
+      "dlspeed": 0,
+      "upspeed": 0,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "AA11AA11AA11AA11AA11AA11AA11AA11AA11AA11": [
+      {
+        "ip": "203.0.113.10",
+        "port": 6881,
+        "client": "BitComet 2.0",
+        "peer_id_client": "-HP001-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 0,
+        "uploaded": 0,
+        "connection": "µTP"
+      },
+      {
+        "ip": "198.51.100.5",
+        "port": 51413,
+        "client": "qBittorrent/4.5.2",
+        "peer_id_client": "-qB455-abcdefghijkl",
+        "progress": 0.3,
+        "flags": "",
+        "dl_speed": 1000,
+        "downloaded": 100000,
+        "up_speed": 2000,
+        "uploaded": 200000,
+        "connection": "µTP"
+      },
+      {
+        "ip": "198.18.0.11",
+        "port": 6881,
+        "client": "Transmission 3.0",
+        "peer_id_client": "-TR300-abcdefghijkl",
+        "progress": 0.2,
+        "flags": "",
+        "dl_speed": 500,
+        "downloaded": 50000,
+        "up_speed": 500,
+        "uploaded": 50000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.18.0.12",
+        "port": 6881,
+        "client": "Transmission 3.0",
+        "peer_id_client": "-TR300-abcdefghijkl",
+        "progress": 0.2,
+        "flags": "",
+        "dl_speed": 500,
+        "downloaded": 50000,
+        "up_speed": 500,
+        "uploaded": 50000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.18.0.13",
+        "port": 6881,
+        "client": "Transmission 3.0",
+        "peer_id_client": "-TR300-abcdefghijkl",
+        "progress": 0.2,
+        "flags": "",
+        "dl_speed": 500,
+        "downloaded": 50000,
+        "up_speed": 500,
+        "uploaded": 50000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "192.0.2.50",
+        "port": 6881,
+        "client": "µTorrent 3.5",
+        "peer_id_client": "-UT35-abcdefghijkl",
+        "progress": 0.0,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 5000000000,
+        "up_speed": 0,
+        "uploaded": 0,
+        "connection": "µTP"
+      },
+      {
+        "ip": "192.0.2.51",
+        "port": 6881,
+        "client": "libtorrent 1.2",
+        "peer_id_client": "-DE13F-abcdefghijkl",
+        "progress": 0.4,
+        "flags": "",
+        "dl_speed": 100,
+        "downloaded": 100000,
+        "up_speed": 100,
+        "uploaded": 100000,
+        "connection": "TCP"
+      }
+    ]
+  }
+}

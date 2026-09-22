@@ -7,6 +7,7 @@ members = [
     "crates/pbh-web",
     "crates/pbh-golden",
     "crates/pbh",
+    "crates/pbh-mockqb",
 ]
 
 [workspace.package]

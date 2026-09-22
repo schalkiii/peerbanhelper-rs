@@ -1,0 +1,18 @@
+[package]
+name = "pbh-mockqb"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Mock qBittorrent WebUI 服务，用于 PeerBanHelper Rust/Java 双版本对跑与性能基准"
+
+[[bin]]
+name = "mockqb"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
