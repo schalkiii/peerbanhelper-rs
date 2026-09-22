@@ -7,7 +7,7 @@
 //!
 //! fixture 字段对齐 `crates/pbh-downloader/src/qbittorrent/dto.rs` 的 DTO。
 
-use axum::extract::{Query, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -16,8 +16,9 @@ use clap::Parser;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// qB `/api/v2/torrents/info` 与 `/torrents/properties` 的 torrent 视图。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -109,6 +110,9 @@ fn default_version() -> String {
 #[derive(Clone)]
 struct AppState {
     fixture: Arc<Fixture>,
+    /// 对跑录制文件：把收到的封禁下发（增量 `banPeers` 与全量 `banned_IPs`）
+    /// 逐 IP 追加写入，使 Java 与 Rust 两版的封禁集合可直接做跨版本 diff。
+    record: Option<Arc<Mutex<std::fs::File>>>,
 }
 
 #[derive(Parser, Debug)]
@@ -120,6 +124,9 @@ struct Args {
     /// fixture JSON 路径
     #[arg(long, default_value = "fixtures/sample.json")]
     fixture: String,
+    /// 封禁下发录制文件路径（逐 IP 追加）；指定后用于跨版本封禁集合 diff
+    #[arg(long)]
+    record: Option<String>,
 }
 
 fn text(body: &'static str) -> Response {
@@ -173,14 +180,48 @@ async fn preferences(State(state): State<AppState>) -> Response {
     }))
 }
 
-async fn set_preferences() -> Response {
+/// 全量下发：`json={"banned_IPs":"a\nb\nc"}`，按行拆分后逐条录制。
+async fn set_preferences(
+    State(state): State<AppState>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
+    if let Some(raw) = form.get("json") {
+        if let Ok(value) = serde_json::from_str::<Value>(raw) {
+            if let Some(list) = value.get("banned_IPs").and_then(|v| v.as_str()) {
+                for ip in list.lines() {
+                    record_ip(&state, ip);
+                }
+            }
+        }
+    }
     (StatusCode::OK, text("Ok.")).into_response()
 }
 
-// 封禁/限速下发端点：dry-run 模式下 Rust 不会调用，但作为完整 qB v2 契约的留白存根，
-// 避免将来非 dry-run 对跑时因缺路由而 500。
-async fn ban_peers_stub() -> Response {
+/// 增量下发：`peers=a|b|c`，按 `|` 拆分后逐条录制。
+async fn ban_peers(
+    State(state): State<AppState>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
+    if let Some(joined) = form.get("peers") {
+        for ip in joined.split('|') {
+            record_ip(&state, ip);
+        }
+    }
     text("Ok.")
+}
+
+/// 把一条封禁地址追加到录制文件（去重交给后续 diff 阶段处理）。
+fn record_ip(state: &AppState, ip: &str) {
+    let ip = ip.trim();
+    if ip.is_empty() {
+        return;
+    }
+    if let Some(file) = &state.record {
+        if let Ok(mut guard) = file.lock() {
+            let _ = writeln!(guard, "{ip}");
+            let _ = guard.flush();
+        }
+    }
 }
 
 async fn torrents_info(State(state): State<AppState>) -> Response {
@@ -286,8 +327,20 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("读取 fixture 失败 {}: {e}", args.fixture))?;
     let fixture: Fixture =
         serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("解析 fixture 失败: {e}"))?;
+    let record = match args.record.as_deref() {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| anyhow::anyhow!("打开录制文件失败 {path}: {e}"))?;
+            Some(Arc::new(Mutex::new(file)))
+        }
+        None => None,
+    };
     let state = AppState {
         fixture: Arc::new(fixture),
+        record,
     };
     println!(
         "[mockqb] 载入 fixture: {} 个 torrent, {} 个有 peers 的 torrent",
@@ -302,7 +355,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v2/app/version", get(version))
         .route("/api/v2/app/preferences", get(preferences))
         .route("/api/v2/app/setPreferences", post(set_preferences))
-        .route("/api/v2/transfer/banPeers", post(ban_peers_stub))
+        .route("/api/v2/transfer/banPeers", post(ban_peers))
         .route("/api/v2/torrents/info", get(torrents_info))
         .route("/api/v2/torrents/properties", get(torrent_properties))
         .route("/api/v2/sync/maindata", get(maindata))
