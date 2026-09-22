@@ -493,12 +493,14 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
                 let now = chrono::Utc::now().timestamp_millis();
+                let wave_started = std::time::Instant::now();
                 let report = engine.run_once(now).await;
                 wave_count += 1;
                 info!(
-                    "wave#{}: 在线下载器={} torrents={} peers={} 封禁={} 解封={} 跳过={} 错误={}",
+                    "wave#{}: 在线下载器={} torrents={} peers={} 封禁={} 解封={} 跳过={} 错误={} 耗时={}ms",
                     wave_count, report.online_downloaders, report.torrents, report.peers,
-                    report.banned, report.unbanned, report.skipped, report.errors.len()
+                    report.banned, report.unbanned, report.skipped, report.errors.len(),
+                    wave_started.elapsed().as_millis()
                 );
                 for e in &report.errors {
                     warn!("wave error: {e}");

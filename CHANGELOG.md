@@ -5,6 +5,36 @@
 
 ## 未发布（working tree）
 
+### perf/观测: 与实机部署 Java PBH 的 dry-run 并行对跑
+
+直接在用户实机部署的 Java PBH（同配置、同下载器、同 GeoIP 库）旁边并行跑 Rust `--dry-run`
+（只读接入，不向任何真实下载器下发封禁），实测一轮 10 分钟、5 个 wave 样本：
+
+| 指标 | Rust | Java(实机 v9.5.1) | 结论 |
+|---|---|---|---|
+| 稳态 RSS | **102 MB** | 851 MB | 内存约为 Java 的 **1/8** |
+| 单轮 wave 中位 | 2116 ms | 87 ms | **Rust 明显偏慢，待定位** |
+
+- wave 耗时口径已核对可比：Java 的 `startTimer`（`DownloaderServerImpl.java:190`）设在
+  ban wave 最开头，覆盖「计划任务 + 解封过期 + 登录 + 拉取 + 判定 + 下发」；
+  Rust 的 `耗时` 为 `engine.run_once` 全程，两者一致。
+- 慢的主因**初步怀疑**是环境里那个连不上的下载器（`127.0.0.1:9093`）：Java 表现为快速失败
+  （仅 1/5 轮出现 2631ms 尖峰），Rust 则几乎每轮都付 ~2s 代价，疑似 HTTP 客户端对不可达
+  地址的超时/重试策略差异。**需专项 profiling 确认，尚未修复。**
+- 行为侧：该窗口内真实流量无可封禁 peer，两版封禁数均为 0（平凡一致）；
+  判定等价性此前已由 mock 对跑证明（同 4 个 IP、同规则）。
+
+### 新增观测：wave 单轮耗时
+
+- `crates/pbh/src/main.rs`：wave 日志增加 `耗时={}ms`（Java 侧日志自带 `(Nms)`，
+  Rust 此前没有，无法与实机/对跑对等测量）。
+
+### 待办（实机对跑暴露的忠实度缺口）
+
+- **表达式脚本不兼容**：用户实机的 `expression-engine` 脚本（`gopeed-random-peerid.av`、
+  `name-id-verify.av`）在 Rust 的 rhai 下编译失败被跳过（上游为 AviatorScript 语法），
+  导致这些自定义规则在 Rust 侧不生效。
+
 ### fix(remap): 封禁列表补齐 IPv4 的 IPv4-mapped IPv6 变体
 
 由 L5 双跑（Java v9.5.1 与 Rust 连同一个 mock 下载器、同一份 fixture）发现的忠实度缺口：
