@@ -86,7 +86,7 @@ use crate::iputil::parse_addr;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
 use crate::rule::{Matcher, RuleSet};
-use rhai::CustomType;
+use crate::avscript::ScriptDownloader;
 use rhai::Engine;
 use rhai::Scope;
 use serde::{Deserialize, Serialize};
@@ -324,16 +324,6 @@ struct BtnScriptEngine {
     start: Arc<AtomicI64>,
 }
 
-/// 上游 `ExpressionRule.maxScriptExecuteTime = 1500`（毫秒）。
-const MAX_SCRIPT_EXECUTE_MS: i64 = 1500;
-
-/// 脚本执行期注入的 `downloader` 变量（与 [`crate::modules::expression_engine`] 一致）。
-#[derive(Debug, Clone, CustomType)]
-struct BtnDownloaderInfo {
-    id: String,
-    name: String,
-}
-
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -341,61 +331,32 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// 构造 rhai 引擎：注册 `peer` / `torrent` / `downloader` 等自定义类型与超时回调
-/// （逐项对齐 [`crate::modules::expression_engine::build_engine`]）。
+/// 构造 rhai 引擎：注册 `peer` / `torrent` / `downloader` 等自定义类型与超时回调。
+///
+/// 类型注册与属性暴露统一在 [`crate::avscript::build_script_env`]（与
+/// [`crate::modules::expression_engine`] 完全同一套，含上游驼峰 getter 与
+/// `peer.peerAddress.{ip,port,address}`）。
 fn build_script_engine() -> BtnScriptEngine {
-    let start = Arc::new(AtomicI64::new(0));
-    let mut engine = Engine::new();
-
-    engine.register_type_with_name::<PeerData>("Peer");
-    engine.register_get("ip", |o: &mut PeerData| o.ip.clone());
-    engine.register_get("port", |o: &mut PeerData| o.port as i64);
-    engine.register_get("peer_id", |o: &mut PeerData| o.peer_id.clone().unwrap_or_default());
-    engine.register_get("client_name", |o: &mut PeerData| o.client_name.clone().unwrap_or_default());
-    engine.register_get("download_speed", |o: &mut PeerData| o.dl_speed);
-    engine.register_get("upload_speed", |o: &mut PeerData| o.up_speed);
-    engine.register_get("downloaded", |o: &mut PeerData| o.downloaded);
-    engine.register_get("uploaded", |o: &mut PeerData| o.uploaded);
-    engine.register_get("progress", |o: &mut PeerData| o.progress);
-    engine.register_get("flags", |o: &mut PeerData| o.flags.clone().unwrap_or_default());
-
-    engine.register_type_with_name::<TorrentData>("Torrent");
-    engine.register_get("id", |o: &mut TorrentData| o.hash.clone());
-    engine.register_get("name", |o: &mut TorrentData| o.name.clone());
-    engine.register_get("hash", |o: &mut TorrentData| o.hash.clone());
-    engine.register_get("progress", |o: &mut TorrentData| o.progress);
-    engine.register_get("size", |o: &mut TorrentData| o.total_size);
-    engine.register_get("rt_upload_speed", |o: &mut TorrentData| o.upspeed);
-    engine.register_get("rt_download_speed", |o: &mut TorrentData| o.dlspeed);
-
-    engine.register_type_with_name::<BtnDownloaderInfo>("Downloader");
-    engine.register_get("id", |o: &mut BtnDownloaderInfo| o.id.clone());
-    engine.register_get("name", |o: &mut BtnDownloaderInfo| o.name.clone());
-
-    let start_for_cb = start.clone();
-    engine.on_progress(move |_progress: u64| {
-        let s = start_for_cb.load(Ordering::Relaxed);
-        if s == 0 {
-            return None;
-        }
-        if now_millis() - s > MAX_SCRIPT_EXECUTE_MS {
-            // 超时：中止脚本执行，返回值 0（上游语义：pass）
-            Some(rhai::Dynamic::from(0))
-        } else {
-            None
-        }
-    });
-
-    BtnScriptEngine { engine, start }
+    let env = crate::avscript::build_script_env();
+    BtnScriptEngine { engine: env.engine, start: env.start }
 }
 
 impl BtnScriptEngine {
     /// 对齐上游 `BtnRulesetParsed.compileScripts`：逐条编译，失败的记录日志并跳过。
+    ///
+    /// 上游脚本为 AviatorScript，先经 [`crate::avscript::transpile`] 翻译为 rhai。
     fn compile(&self, scripts: &BTreeMap<String, String>) -> Vec<BtnScript> {
         let mut compiled = Vec::new();
         tracing::info!("BTN 脚本规则编译开始，共 {} 条", scripts.len());
         for (name, content) in scripts {
-            match self.engine.compile(content) {
+            let translated = match crate::avscript::transpile(content) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Unable to load BTN script {name}: AviatorScript 含暂不支持的语法（{e}）");
+                    continue;
+                }
+            };
+            match self.engine.compile(&translated) {
                 Ok(ast) => compiled.push(BtnScript { name: name.clone(), ast }),
                 Err(e) => tracing::error!("Unable to load BTN script {name}: {e}"),
             }
@@ -421,7 +382,7 @@ impl BtnScriptEngine {
         scope.push_constant("torrent", torrent.clone());
         scope.push_constant(
             "downloader",
-            BtnDownloaderInfo { id: downloader_id.to_string(), name: downloader_id.to_string() },
+            ScriptDownloader { id: downloader_id.to_string(), name: downloader_id.to_string() },
         );
         scope.push_constant("banDuration", ban_duration_ms);
         scope.push_constant("cacheable", true);

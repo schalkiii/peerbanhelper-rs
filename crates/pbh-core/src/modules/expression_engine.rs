@@ -9,13 +9,15 @@
 //! - 多条脚本聚合（对齐上游 `shouldBanPeer`）：`SKIP` 优先级最高（命中即短路），
 //!   其次 `BAN`，否则 `pass()`。
 //!
-//! 注：上游使用 AviatorScript（JVM），本忠实重写以 `rhai` 作为等价脚本引擎。
-//! 由于脚本语言不同，用户自写的 AviatorScript 脚本需改写为 rhai 语法；默认空目录的无脚本行为完全一致。
+//! 注：上游使用 AviatorScript（JVM），本忠实重写以 `rhai` 作为等价脚本引擎，
+//! 并在加载时经 [`crate::avscript::transpile`] 把 AviatorScript **自动翻译**为 rhai——
+//! 上游社区脚本（`.av`）可原样使用；仅翻译不了的构造（三元、`=~`、`string.split` 等）
+//! 会被跳过并记日志。默认空目录的无脚本行为与上游一致。
 
+use crate::avscript::{build_script_env, transpile, ScriptDownloader};
 use crate::i18n::TranslationComponent;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
-use rhai::CustomType;
 use rhai::Engine;
 use rhai::Scope;
 use std::path::PathBuf;
@@ -23,8 +25,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 上游 `ExpressionRule.maxScriptExecuteTime = 1500`（毫秒）。
-const MAX_SCRIPT_EXECUTE_MS: i64 = 1500;
 /// 注入脚本的环境变量名。
 const MODULE_NAME: &str = "expression-engine";
 
@@ -65,63 +65,26 @@ fn now_millis() -> i64 {
 
 /// 构造 rhai 引擎：注册 `peer` / `torrent` / `downloader` 等自定义类型与超时回调。
 ///
-/// 字段以 snake_case 暴露（rhai 的 `CustomType` 派生自动生成 getter），例如
-/// `peer.ip` / `peer.client_name` / `peer.peer_id` / `torrent.hash` / `torrent.total_size`。
-/// 上游 AviatorScript 使用驼峰（`peer.clientName` 等），由于脚本语言不同，用户脚本需改写为 rhai 语法。
+/// 类型注册与属性暴露统一在 [`crate::avscript::build_script_env`]：同时提供上游驼峰
+/// （`peer.clientName` / `peer.peerAddress.address` / `torrent.completedSize` 等）
+/// 与 snake_case（`peer.client_name` 等）两套 getter，`#[derive(CustomType)]` 的
+/// 自动 getter 对普通字段照常生效（如 `peer.raw_ip`）。
 fn build_engine() -> (Engine, Arc<AtomicI64>) {
-    let start = Arc::new(AtomicI64::new(0));
-    let mut engine = Engine::new();
-
-    // 注册自定义类型并显式暴露 snake_case 字段 getter（rhai 不会自动注册 derive 的 getter）
-    engine.register_type_with_name::<PeerData>("Peer");
-    engine.register_get("ip", |o: &mut PeerData| o.ip.clone());
-    engine.register_get("port", |o: &mut PeerData| o.port as i64);
-    engine.register_get("peer_id", |o: &mut PeerData| o.peer_id.clone().unwrap_or_default());
-    engine.register_get("client_name", |o: &mut PeerData| o.client_name.clone().unwrap_or_default());
-    engine.register_get("download_speed", |o: &mut PeerData| o.dl_speed);
-    engine.register_get("upload_speed", |o: &mut PeerData| o.up_speed);
-    engine.register_get("downloaded", |o: &mut PeerData| o.downloaded);
-    engine.register_get("uploaded", |o: &mut PeerData| o.uploaded);
-    engine.register_get("progress", |o: &mut PeerData| o.progress);
-    engine.register_get("flags", |o: &mut PeerData| o.flags.clone().unwrap_or_default());
-
-    engine.register_type_with_name::<TorrentData>("Torrent");
-    engine.register_get("id", |o: &mut TorrentData| o.hash.clone());
-    engine.register_get("name", |o: &mut TorrentData| o.name.clone());
-    engine.register_get("hash", |o: &mut TorrentData| o.hash.clone());
-    engine.register_get("progress", |o: &mut TorrentData| o.progress);
-    engine.register_get("size", |o: &mut TorrentData| o.total_size);
-    engine.register_get("rt_upload_speed", |o: &mut TorrentData| o.upspeed);
-    engine.register_get("rt_download_speed", |o: &mut TorrentData| o.dlspeed);
-
-    engine.register_type_with_name::<DownloaderInfo>("Downloader");
-    engine.register_get("id", |o: &mut DownloaderInfo| o.id.clone());
-    engine.register_get("name", |o: &mut DownloaderInfo| o.name.clone());
-
-    let start_for_cb = start.clone();
-    engine.on_progress(move |_progress: u64| {
-        let s = start_for_cb.load(Ordering::Relaxed);
-        if s == 0 {
-            return None;
-        }
-        if now_millis() - s > MAX_SCRIPT_EXECUTE_MS {
-            // 超时：中止脚本执行，返回值 0（上游语义：pass）
-            Some(rhai::Dynamic::from(0))
-        } else {
-            None
-        }
-    });
-
-    (engine, start)
+    let env = build_script_env();
+    (env.engine, env.start)
 }
 
-/// 解析脚本头部元数据（`# @NAME` / `@AUTHOR` / `@CACHEABLE` / `@VERSION` / `@THREADSAFE`）。
+/// 解析脚本头部元数据（`## @NAME` / `@AUTHOR` / `@CACHEABLE` / `@VERSION` / `@THREADSAFE`）。
+///
+/// 对齐上游 `AVScriptEngine.compileScript`：`#` 开头的行剥去井号后识别 `@NAME` 等
+/// （上游按 `substring(2)` 处理，即社区脚本惯用的 `##` 双井号；这里对 1 个或多个 `#` 都兼容）。
 fn parse_metadata(source: &str) -> (String, bool) {
     let mut name = String::new();
     let mut cacheable = true;
     for line in source.lines() {
-        let Some(rest) = line.strip_prefix('#') else { continue };
-        let Some(body) = rest.trim_start().strip_prefix('@') else { continue };
+        let Some(rest) = line.trim_start().strip_prefix('#') else { continue };
+        let rest = rest.trim_start_matches('#').trim();
+        let Some(body) = rest.strip_prefix('@') else { continue };
         let body = body.trim();
         if let Some(v) = body.strip_prefix("NAME") {
             name = v.trim().to_string();
@@ -138,6 +101,9 @@ fn parse_metadata(source: &str) -> (String, bool) {
 }
 
 /// 从目录加载所有 `.av` 脚本（对齐 AviatorScript 文件类型）。
+///
+/// 源码先经 [`crate::avscript::transpile`] 从 AviatorScript 翻译为 rhai 再编译——
+/// 上游社区脚本（PBH-BTN 规则）可原样放入目录，无需手写 rhai。
 fn load_scripts(engine: &Engine, dir: &std::path::Path) -> Vec<LoadedScript> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -158,7 +124,14 @@ fn load_scripts(engine: &Engine, dir: &std::path::Path) -> Vec<LoadedScript> {
                         .unwrap_or("unknown")
                         .to_string();
                 }
-                match engine.compile(&source) {
+                let translated = match transpile(&source) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!("表达式脚本 {name} 的 AviatorScript 含暂不支持的语法（{e}），已跳过");
+                        continue;
+                    }
+                };
+                match engine.compile(&translated) {
                     Ok(ast) => out.push(LoadedScript { name, ast }),
                     Err(e) => tracing::warn!("表达式脚本 {name} 编译失败，已跳过: {e}"),
                 }
@@ -271,7 +244,7 @@ impl ExpressionEngine {
         scope.push_constant("torrent", torrent.clone());
         scope.push_constant(
             "downloader",
-            DownloaderInfo {
+            ScriptDownloader {
                 id: downloader_id.to_string(),
                 name: downloader_id.to_string(),
             },
@@ -297,12 +270,6 @@ impl ExpressionEngine {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, CustomType)]
-struct DownloaderInfo {
-    id: String,
-    name: String,
 }
 
 impl RuleModule for ExpressionEngine {

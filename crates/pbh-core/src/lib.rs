@@ -6,6 +6,8 @@
 pub mod auto_stun;
 pub mod auto_stun_forwarder;
 pub mod auto_stun_probe;
+/// AviatorScript 兼容层（翻译器 + 共享脚本引擎），供 expression-engine 与 BTN 脚本规则使用
+pub mod avscript;
 pub mod banlist;
 /// BTN 网络传输层（对齐上游 `btn/BtnNetwork` 与 `btn/ability/impl/*` 的联网部分）
 pub mod btn_transport;

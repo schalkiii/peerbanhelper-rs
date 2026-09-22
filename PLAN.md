@@ -153,7 +153,8 @@
 
 ### Phase 1.6 — 保真差距收口（已完成）
 
-- [x] `expression-engine`（rhai 替代 AviatorScript，默认空脚本目录无封禁；AviatorScript→rhai 语法翻译表见 `docs/expression-engine-migration.md`）
+- [x] `expression-engine`（rhai 替代 AviatorScript，默认空脚本目录无封禁；自 2026-09-23 起加载时
+      经 `avscript::transpile` 自动翻译，上游社区 `.av` 脚本原样运行，实机脚本已固化为黄金测试）
 - [x] `ptr-blacklist`、`idle-connection-dos-protection`（两者上游默认关闭，已实现并接入流水线）
 - [x] Web API 按请求 locale 渲染 + `rule`/`reason` 结构化存储（`ban_logs` 接受 `?locale=`，落库 `TranslationComponent` 按需本地化）
 - [x] `btn`：判定模块 `BtnNetworkOnline` 已实现（五类规则 + 现代协议 IP 白/黑名单能力）并按上游
@@ -280,7 +281,8 @@
       ip_allowlist / ip_denylist + PoW + 配置握手）与上报类全部实现；上报数据源由
       `pbh-db::DbBtnSubmitSource` 注入（`history` / `tracked_swarm` / `peer_records`），
       `GET /api/peer/{ip}/btnQuery` 已接 `BtnNetwork::query_ip`（规格见「Phase 3.1」）
-- [x] 表达式规则（rhai 替代 AviatorScript，附语法翻译表与对照测试）— 引擎已实现，默认 空目录无封禁
+- [x] 表达式规则（rhai 替代 AviatorScript + `avscript` 自动翻译层，上游社区脚本原样运行；
+      黄金测试锁定实机脚本判定与 reason）— 引擎已实现，默认空目录无封禁
 - [x] 告警推送：Webhook / Telegram / 邮件（lettre）/ 及其余 6 个渠道 —— 见 Phase 1.6
 - [x] 实时日志推送（Java v9.5.1 **已弃用 WebSocket**，实际用 SSE `/api/logs/live`；Rust 以 SSE 对齐）
 - [ ] MySQL/PostgreSQL（sqlx）—— Java 默认 sqlite/h2，与对跑及默认路径无关，属扩展项
@@ -326,7 +328,9 @@
 ### Phase 4 — 分发与打磨（待办）
 
 - [ ] 插件系统评估（WASM/wasmtime）
-- [ ] 性能基准：Java/RSS 同机对照（RSS、CPU、单轮耗时、启动），更新 README 实测表
+- [~] 性能基准：Java/RSS 同机对照（RSS、单轮耗时、启动）——**已实测**（2026-09-22/23 实机 dry-run
+      对跑：稳态 RSS 102MB vs 851MB≈1/8；单轮 wave 中位 2116ms vs 87ms，慢因已定位为不可达下载器
+      的每轮重连并已修复对齐上游冷却策略）；剩余：CPU/启动耗时对照与 README 实测表回填
 - [ ] 跨平台打包（Windows/macOS/Linux 单二进制、Docker scratch/Alpine 镜像）
 - [ ] 与 Java 版并行灰度（L5 双跑 diff）
 

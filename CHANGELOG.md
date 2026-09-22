@@ -59,11 +59,39 @@
 - `crates/pbh/src/main.rs`：wave 日志增加 `耗时={}ms`（Java 侧日志自带 `(Nms)`，
   Rust 此前没有，无法与实机/对跑对等测量）。
 
+### feat(script): AviatorScript 兼容层——社区 `.av` 脚本原样运行（补齐实机对跑暴露的忠实度缺口）
+
+上游 `expression-engine` 与 BTN 脚本规则均为 **AviatorScript**；本移植此前要求用户把脚本
+手写改写成 rhai，导致实机部署的 PBH-BTN 社区脚本（`gopeed-random-peerid.av`、
+`name-id-verify.av`、`2e0-61ff-fe.av`、`dot-1-ipv6-tr296.av`）在 Rust 侧编译失败被跳过、
+自定义规则不生效。现新增 `crates/pbh-core/src/avscript.rs` 兼容层：
+
+- **翻译器 `transpile`**（词法级扫描，字符串/注释/嵌套括号感知）：`##` 注释、单引号字符串、
+  `string.*` / `seq.*` / `isBlank` / `toLowerCase` / `toString` 等内建、语句级裸赋值、`nil`
+  全部自动翻译为 rhai；无法翻译的构造（三目、`=~`、`string.split` 等）显式报错跳过（对齐上游
+  「编译失败 → 跳过该脚本」）。
+- **保序 map（正确性关键）**：`seq.map(...)` 翻译为扁平数组 + `av_keys`/`av_get` 保序访问函数，
+  而非 rhai 的 `#{}` map——rhai 的 Map 按键排序（BTreeMap），而 Aviator 保持**插入序**；
+  `name-id-verify.av` 依赖 `'aria2explorer'` 先于 `'aria2'` 被前缀匹配，否则
+  `aria2explorer` 客户端会被误判为伪装封禁。
+- **共享引擎 `build_script_env`**：expression-engine 与 BTN 脚本规则统一走同一构造；
+  同时注册上游驼峰 + snake_case 两套 getter，并按上游 `Peer`/`Torrent` 接口补齐
+  `peer.peerAddress.{ip,port,address}`（`address` 对齐 `IPAddressUtil.getIPAddress(ip)
+  .toPrefixBlock().toString()`——无前缀单地址返回规范化地址串，社区脚本据此做
+  `endsWith("::1")`/`contains(":2e0:61ff:fe")` 判定）、`torrent.completedSize`/`private`/
+  `seeding`/`hashedIdentifier`。
+- **语义实证**（部署 JRE + aviator 5.4.4 / ipaddress 5.6.2 jar 探针）：`isBlank`/`toLowerCase`/
+  `toString`/`string.*`/`seq.*` 行为、`indexOf` 未命中返回 -1、整数除法截断均与 rhai 一致或已对齐；
+  此前迁移文档「rhai `3/2 == 1.5`」的记载有误，已更正（两语言整数除法都截断）。
+- **黄金测试**：4 个实机社区脚本原样固化为夹具（`tests/fixtures/scripts/`），
+  `tests/av_script_golden.rs` 锁定每个脚本的 BAN/pass 判定与 **reason 原文**（含伪装检测的
+  拼接消息、插入序敏感的 `aria2explorer` 用例、`peer.peerAddress.address` 的 IPv6 特征段用例）；
+  另有 16 个翻译器/引擎单测。
+- 全量 `cargo test --workspace` 523 个测试通过，clippy 零警告。
+
 ### 待办（实机对跑暴露的忠实度缺口）
 
-- **表达式脚本不兼容**：用户实机的 `expression-engine` 脚本（`gopeed-random-peerid.av`、
-  `name-id-verify.av`）在 Rust 的 rhai 下编译失败被跳过（上游为 AviatorScript 语法），
-  导致这些自定义规则在 Rust 侧不生效。
+（无——表达式脚本缺口已由本条关闭。）
 
 ### fix(remap): 封禁列表补齐 IPv4 的 IPv4-mapped IPv6 变体
 

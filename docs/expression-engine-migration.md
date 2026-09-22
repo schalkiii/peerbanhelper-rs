@@ -4,13 +4,22 @@ PeerBanHelper 上游（Java 版）的表达式规则引擎使用 **AviatorScript
 本 Rust 忠实重写用 **rhai** 作为等价脚本引擎，外部行为（变量注入、返回值语义、超时、聚合规则、
 默认空脚本目录无封禁）与上游逐一对齐。
 
+> **2026-09-23 起无需手动改写脚本**：引擎加载 `.av` 时会先经 `crates/pbh-core/src/avscript.rs`
+> 的 `transpile` 把 AviatorScript **自动翻译**为 rhai，上游社区脚本（PBH-BTN 规则）可原样放入
+> `<data>/scripts/` 直接生效。已实测兼容的构造见文末 §10；翻译不了的构造会记日志并跳过该脚本
+> （对齐上游「编译失败 → 跳过」）。
+>
+> 实机社区脚本（`gopeed-random-peerid.av`、`name-id-verify.av`、`2e0-61ff-fe.av`、
+> `dot-1-ipv6-tr296.av`）已作为黄金测试固化在 `crates/pbh-core/tests/fixtures/scripts/`，
+> 判定结果与 reason 原文由 `tests/av_script_golden.rs` 锁定。
+
 > 结论先行：**默认配置下本仓库行为与上游完全一致** —— `expression-engine` 默认启用，但 `<data>/scripts/`
 > 目录默认没有任何 `.av` 脚本，因此模块恒返回 `pass()`，不产生任何封禁。
-> 只有当用户把自写的脚本放进该目录时，才需要把 AviatorScript 改写为 rhai 语法（见下文）。
+> 只有当用户把自写的脚本放进该目录时，才涉及脚本语言问题（现已自动翻译，见上）。
 
 本文给出从上游 AviatorScript 脚本迁移到本仓库 rhai 脚本的字段映射表与语法对照。
-引擎实现见 `crates/pbh-core/src/modules/expression_engine.rs`，对照上游
-`ExpressionRule.java` / `util/scriptengine/AVScriptEngine.java`（`handleResult`）。
+引擎实现见 `crates/pbh-core/src/modules/expression_engine.rs` 与 `crates/pbh-core/src/avscript.rs`，
+对照上游 `ExpressionRule.java` / `util/scriptengine/AVScriptEngine.java`（`handleResult`）。
 
 ---
 
@@ -51,6 +60,10 @@ PeerBanHelper 上游（Java 版）的表达式规则引擎使用 **AviatorScript
 
 AviatorScript 通过 JavaBean getter 访问属性（如 `peer.getClientName()` → `peer.clientName`）。
 rhai 用 snake_case 字段（由 `engine.register_get` 显式暴露）：
+
+> 注：自 2026-09-23 起引擎**同时注册了上游驼峰名**（`peer.clientName` / `peer.peerId` /
+> `peer.downloadSpeed` / `peer.uploadSpeed` / `peer.peerAddress`），上游脚本写法可直接使用，
+> 下表的 snake_case 列仅作为等价写法参考。
 
 | AviatorScript 写法（上游） | rhai 写法（本仓库） | 类型 | 备注 |
 | --- | --- | --- | --- |
@@ -139,10 +152,9 @@ rhai 用 snake_case 字段（由 `engine.register_get` 显式暴露）：
 | 循环 | `for ... in` / `while` | `for ... in` / `while` / `loop` | |
 | Map 读写 | `m.key` / `m["key"]` | `m.key` / `m["key"]` | `ramStorage` 为 rhai Map |
 
-> ⚠️ **整数除法差异**：AviatorScript 中两个整数相除得到整数（截断），如 `3 / 2 == 1`；
-> rhai 中 `3 / 2 == 1.5`（浮点）。若需「按 KB/MB 换算后比较阈值」，建议改写阈值方向，
-> 例如把 `peer.uploadSpeed / 1024 > 1000` 改为 `peer.upload_speed > 1024 * 1000`，
-> 或对结果 `peer.upload_speed.to_int() / 1024`（显式取整后再比）。
+> ✅ **整数除法**：AviatorScript 与 rhai 的两个整数相除**都得到截断整数**（`3 / 2 == 1`，
+> 已在单测 `avscript::tests::rhai_int_division_is_truncating_like_aviator` 中锁定）。
+> 此前文档误记 rhai 为浮点除法，特此更正——除法语义无需改写。
 
 ---
 
@@ -223,8 +235,36 @@ let done = torrent.size * torrent.progress;
 
 1. **直接返回 `PeerAction` / `CheckResult` 对象**：上游 `handleResult` 会直接使用；rhai 实现将其视为 `pass()`。
    实践中用户脚本均返回 bool / 数字 / 字符串，故无实际差异。
-2. **未暴露的 getter**（见 §3–§4）：`peer.handshaking`、`torrent.completedSize` / `private` / `seeding` /
-   `hashedIdentifier` 在 rhai 未直接映射，需按文中近似写法改写。
-3. **整数除法**：见 §7 ⚠️。
-4. **注释符号**：见 §1 ⚠️。
-5. **运算符/正则**：Aviator 的 `..` 拼接、`=~` 正则、`and`/`or` 函数需改写为 rhai 等价写法（见 §7）。
+2. **`peer.handshaking` 未暴露**（`PeerData` 无对应字段）；其余 §3–§4 标注「未暴露」的字段
+   （`torrent.completedSize` / `private` / `seeding` / `hashedIdentifier`）自 2026-09-23 起已按上游
+   `Torrent` 接口语义补齐，可直接使用。
+3. **整数除法**：见 §7 ✅（两语言一致，无差异）。
+4. **`isBlank(nil)`**：上游对 null 实参抛异常 → 整脚本按 pass 兜底；本移植把 null 字段暴露为空串、
+   `isBlank("")` 为 true —— 对使用 `if(isBlank(x)) return false;` 守卫的社区脚本，最终判定结果一致。
+5. **运算符/正则**：Aviator 的 `=~` 正则、`and`/`or` 函数暂不支持（编译报错跳过，见 §10）。
+
+---
+
+## 10. AviatorScript → rhai 自动翻译兼容清单（`avscript::transpile`）
+
+加载 `.av` 时自动应用；以下构造**无需改写**：
+
+| 构造 | 翻译结果 | 备注 |
+| --- | --- | --- |
+| `##` 行注释（含 `## @NAME` 元数据头） | `//` | 元数据 `@NAME` 仍解析为展示名 |
+| 单引号字符串 `'…'` | 双引号 `"…"`（转义改写） | |
+| `isBlank(x)` / `isNotBlank(x)` | `is_blank(x)` / `is_not_blank(x)` | 注册的自定义函数；null 视为空白 |
+| `toLowerCase(x)` / `toUpperCase(x)` / `toString(x)` | `(x).to_lower()` 等 | |
+| `string.contains/startsWith/endsWith/indexOf(s,…)` | `(s).contains(...)` 等 | `indexOf` 未命中返回 `-1`，与 Java 一致 |
+| `string.length(s)` / `string.trim(s)` | `(s).len()` / `(s).trim()` | `len` 按 Unicode 字符计（Java 为 UTF-16 码元） |
+| `string.substring(s, b[, e])` | `(s).sub_string(b[, e-b])` | Java 左闭右开 → rhai 长度语义 |
+| `seq.map(k1,v1,…)` | 扁平数组 `[…]` | **保插入序**（rhai 的 `#{}` 按键排序会改变 `name-id-verify` 的匹配优先级） |
+| `seq.keys(m)` / `seq.get(m,k)` | `av_keys(m)` / `av_get(m,k)` | 保序访问函数 |
+| `seq.list(a,b,…)` | 数组字面量 `[a,b,…]` | |
+| 语句级裸赋值 `x = …` | `let x = …` | rhai 允许 `let` 重声明遮蔽 |
+| `nil` | `()` | |
+| 属性访问 `peer.clientName` / `peer.peerAddress.address` / `torrent.completedSize` 等 | 原样 | 引擎同时注册驼峰 + snake_case getter，`peerAddress.address` 为规范化地址串 |
+
+**暂不支持**（显式报错跳过，日志注明原因）：`string.split` / `string.join` / `string.replace_first` /
+`string.replace_all`、`seq.size`、三目 `?:`、正则 `=~`、`math.*`、`for (x : list)` 旧循环语法。
+如需这些构造，请把脚本改写为 rhai 等价写法（本文 §7 的对照表仍然适用）。
