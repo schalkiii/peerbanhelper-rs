@@ -18,7 +18,7 @@
 - wave 耗时口径已核对可比：Java 的 `startTimer`（`DownloaderServerImpl.java:190`）设在
   ban wave 最开头，覆盖「计划任务 + 解封过期 + 登录 + 拉取 + 判定 + 下发」；
   Rust 的 `耗时` 为 `engine.run_once` 全程，两者一致。
-- **慢因已定位（隔离实验，未修复）**：差距全部来自环境里那个连不上的下载器
+- **慢因已定位并修复（隔离实验）**：差距全部来自环境里那个连不上的下载器
   `127.0.0.1:9093`。单一下载器对照（`check-interval` 临时调到 10s 取样）：
 
   | 只保留的下载器 | 单轮 wave 中位 |
@@ -35,9 +35,24 @@
   - 真正的差异是**重试策略**：Java 五轮里只有一轮是 2631ms（≈2s，即那一轮才真正去连），
     其余 76–188ms —— 说明上游**不会每轮都去连持续失败的下载器**；
     而 Rust 每轮都重试登录，于是每轮固定付 ~2s。
-  - ⇒ 需要在 Rust 侧对齐上游的「失败下载器跳过/退避」策略，方能消除该差距。
+  - ⇒ 已在 Rust 侧对齐上游的失败退避策略，见「fix(wave)」条目。
 - 行为侧：该窗口内真实流量无可封禁 peer，两版封禁数均为 0（平凡一致）；
   判定等价性此前已由 mock 对跑证明（同 4 个 IP、同规则）。
+
+### fix(wave): 连续登录失败的下载器进入冷却（对齐上游 AbstractDownloader）
+
+上游 `AbstractDownloader.login()` 在 `failedLoginAttempts >= 15` 后把 `nextLoginTry`
+推到 `now + 30min`，此后 `login()` **立即返回、完全不发网络请求**（并发布一条 WARN 告警）。
+本移植此前缺这一层，于是每个不可达的下载器都会让每一轮 ban wave 白付一次连接超时。
+
+- 新增 `wave::LoginGate`（挂在 `WaveEngine.login_gates`，按下载器 ID 存放）：
+  `MAX_ATTEMPTS = 15`、`COOLDOWN_MS = 30min`；冷却期内 `login()` 直接返回失败。
+- 计数口径：上游对 `IOException`/`Throwable` 递增，返回的 `LoginResult` 仅
+  `INCORRECT_CREDENTIAL` 递增；本移植的 `LoginResult` 无状态码，故**只在 `Err`
+  （网络/IO 异常）时递增**，避免把版本不兼容等非凭据原因也计入冷却。
+- **实测验证**（只挂 `127.0.0.1:9093` 这个不可达下载器，`check-interval=10s`）：
+  wave#1–15 每轮 2003–2060 ms，第 15 次触发冷却，wave#16–24 **全部 0 ms**。
+- 单测：`wave::tests::login_gate_cools_down_after_max_attempts`（冷却边界与到期恢复）。
 
 ### 新增观测：wave 单轮耗时
 

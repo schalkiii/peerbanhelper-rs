@@ -19,9 +19,11 @@ use pbh_core::modules::ProgressCheatBlocker;
 use pbh_core::pipeline::Decision;
 use pbh_core::Pipeline;
 use pbh_db::{peer_geoip_json, Database, HistoryRecord};
-use pbh_downloader::{BanEntry, Downloader};
+use pbh_downloader::{BanEntry, Downloader, LoginResult};
 use pbh_web::{DownloaderStatus, Metrics};
+use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Semaphore;
@@ -32,6 +34,84 @@ use tracing::{info, warn};
 pub struct DownloaderEntry {
     pub downloader: Arc<dyn Downloader>,
     pub increment_ban: bool,
+}
+
+/// 登录闸门，对齐上游 `AbstractDownloader.login()` 的失败退避。
+///
+/// 上游在连续 `failedLoginAttempts >= 15` 次登录后把 `nextLoginTry` 推到
+/// `now + 30min`，此后 `login()` **立即返回、完全不发网络请求**。缺了这层之后，
+/// 每个不可达的下载器都会让每一轮 ban wave 白付一次连接超时代价
+/// （实机实测：只挂一个连不上的下载器时 2003ms/轮，而 Java 侧同一场景仅 87ms/轮）。
+#[derive(Clone, Debug, Default)]
+pub struct LoginGate {
+    failed_attempts: Arc<AtomicU32>,
+    next_login_try_ms: Arc<AtomicI64>,
+}
+
+impl LoginGate {
+    /// 上游 `failedLoginAttempts >= 15`
+    pub const MAX_ATTEMPTS: u32 = 15;
+    /// 上游 `1000 * 60 * 30`
+    pub const COOLDOWN_MS: i64 = 30 * 60 * 1000;
+
+    /// 冷却期内为 true，此时不应发起任何登录请求。
+    pub fn is_cooling(&self, now_ms: i64) -> bool {
+        now_ms < self.next_login_try_ms.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub fn attempts(&self) -> u32 {
+        self.failed_attempts.load(Ordering::Relaxed)
+    }
+
+    fn record_success(&self) {
+        self.failed_attempts.store(0, Ordering::Relaxed);
+    }
+
+    /// 记录一次失败；达到上限时进入冷却并返回 true。
+    fn record_failure(&self, now_ms: i64) -> bool {
+        let attempts = self.failed_attempts.fetch_add(1, Ordering::Relaxed) + 1;
+        if attempts < Self::MAX_ATTEMPTS {
+            return false;
+        }
+        self.failed_attempts.store(0, Ordering::Relaxed);
+        self.next_login_try_ms
+            .store(now_ms + Self::COOLDOWN_MS, Ordering::Relaxed);
+        true
+    }
+
+    pub async fn login(&self, dl: &Arc<dyn Downloader>, now_ms: i64) -> anyhow::Result<LoginResult> {
+        if self.is_cooling(now_ms) {
+            let cooling_until = self.next_login_try_ms.load(Ordering::Relaxed);
+            return Ok(LoginResult {
+                success: false,
+                message: format!("too many failed login attempts, retry after {cooling_until}"),
+                version: String::new(),
+            });
+        }
+        match dl.login().await {
+            Ok(result) => {
+                if result.success {
+                    self.record_success();
+                }
+                Ok(result)
+            }
+            Err(e) => {
+                // 上游对 IOException / Throwable 递增计数；返回的 LoginResult 只有
+                // INCORRECT_CREDENTIAL 才递增，本移植的 LoginResult 没有状态码，
+                // 故仅在 Err（网络/IO 异常）时递增，避免把版本不兼容等非凭据原因也计入冷却。
+                if self.record_failure(now_ms) {
+                    warn!(
+                        "下载器 {} 连续登录失败达 {} 次，按上游语义冷却至 {}（期间不再发起登录请求）",
+                        dl.id(),
+                        Self::MAX_ATTEMPTS,
+                        now_ms + Self::COOLDOWN_MS
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -103,6 +183,8 @@ pub struct WaveEngine {
     /// 与 [`crate::monitor::MonitorHost`] 的落库 sink 共用同一份 provider（对齐上游
     /// `PersistMetrics` 注入的 `IPDBManager`）。
     pub geo: Option<Arc<dyn GeoIpProvider>>,
+    /// 下载器 ID → 登录闸门（对齐上游挂在 `AbstractDownloader` 上的失败计数与冷却）
+    pub login_gates: StdMutex<HashMap<String, LoginGate>>,
 }
 
 impl WaveEngine {
@@ -418,7 +500,17 @@ impl WaveEngine {
         now_ms: i64,
     ) -> Result<DownloaderOutput, String> {
         let dl = entry.downloader.clone();
-        let login = dl.login().await.map_err(|e| format!("{} login error: {e}", dl.id()))?;
+        let gate = self
+            .login_gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(dl.id().to_string())
+            .or_default()
+            .clone();
+        let login = gate
+            .login(&dl, now_ms)
+            .await
+            .map_err(|e| format!("{} login error: {e}", dl.id()))?;
         let mut status = DownloaderStatus {
             id: dl.id().to_string(),
             name: dl.name().to_string(),
@@ -720,6 +812,24 @@ mod tests {
         }
     }
 
+    /// 对齐上游 `AbstractDownloader.login()`：连续失败达上限后进入冷却，
+    /// 冷却期内不再发起登录请求（否则每个不可达下载器每轮都要白付一次连接超时）。
+    #[test]
+    fn login_gate_cools_down_after_max_attempts() {
+        let gate = LoginGate::default();
+        let now = 1_700_000_000_000;
+        for _ in 0..(LoginGate::MAX_ATTEMPTS - 1) {
+            assert!(!gate.record_failure(now));
+        }
+        assert_eq!(gate.attempts(), LoginGate::MAX_ATTEMPTS - 1);
+        assert!(!gate.is_cooling(now), "未达上限时不应冷却");
+
+        assert!(gate.record_failure(now), "达到上限应进入冷却");
+        assert!(gate.is_cooling(now));
+        assert!(gate.is_cooling(now + LoginGate::COOLDOWN_MS - 1));
+        assert!(!gate.is_cooling(now + LoginGate::COOLDOWN_MS), "冷却到期后应恢复");
+    }
+
     fn engine(db: Arc<Database>) -> WaveEngine {
         let translator = Arc::new(pbh_core::i18n::Translator::embedded());
         let push_manager =
@@ -743,6 +853,7 @@ mod tests {
             persist_banlist: false,
             dry_run: false,
             max_concurrent: 1,
+            login_gates: Default::default(),
             alert_manager,
             monitor,
             geo: None,

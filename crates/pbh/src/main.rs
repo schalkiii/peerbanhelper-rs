@@ -467,6 +467,7 @@ async fn main() -> anyhow::Result<()> {
         alert_manager,
         monitor,
         geo,
+        login_gates: Default::default(),
     };
 
     let period = Duration::from_millis(cfg.profile.check_interval.max(500));
