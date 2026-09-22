@@ -206,7 +206,7 @@ pub struct ExpressionEngineConfig {
 }
 
 /// `module.ip-address-blocker-rules`（默认值对齐上游 `profile.yml`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IpRuleListConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -219,6 +219,13 @@ pub struct IpRuleListConfig {
     pub preload_banlist: bool,
     #[serde(default)]
     pub rules: std::collections::BTreeMap<String, IpRuleSubscriptionConfig>,
+}
+
+impl IpRuleListConfig {
+    /// 是否启用规则订阅（缺省 `false`，对齐上游 `getBoolean` 缺省语义）。
+    pub fn enabled(&self) -> bool {
+        enabled_or_disabled(&self.enabled)
+    }
 }
 
 /// 单条订阅配置（键为 ruleId）。

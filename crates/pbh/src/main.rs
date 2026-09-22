@@ -4,6 +4,7 @@ mod monitor;
 mod push;
 mod ring;
 mod rulesub;
+mod submodule;
 mod wave;
 
 use clap::Parser;
@@ -13,6 +14,7 @@ use pbh_core::btn_transport::{
     now_millis, BtnHttpClient, BtnMetadataStore, BtnNetwork, BtnNetworkConfig, BtnSubmitSource,
     ReqwestBlockingHttpClient, SharedBtnNetwork,
 };
+use pbh_core::config::IpRuleListConfig;
 use pbh_core::geoip::{geoip_force_disabled, GeoIpDb, GeoIpProvider};
 use pbh_core::modules::progress_cheat::PcbEntityKind;
 use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
@@ -23,7 +25,7 @@ use pbh_web::{build_router, AppState, DownloaderStatus, Metrics, RingLog};
 use ring::RingLayer;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -63,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = args.data.clone();
     std::fs::create_dir_all(&data_dir)?;
 
-    let (mut cfg, _cfg_path) = config::AppConfig::load_or_create(&data_dir)?;
+    let (mut cfg, cfg_path) = config::AppConfig::load_or_create(&data_dir)?;
     if let Some(port) = args.port {
         cfg.server.http = port;
     }
@@ -365,6 +367,10 @@ async fn main() -> anyhow::Result<()> {
         alert_manager.clone(),
         wave_trigger.clone(),
     ));
+    // 规则订阅：与 Web 后端（`/api/sub/*`）共享同一份运行时配置
+    let rulesub_shared: Arc<RwLock<IpRuleListConfig>> = Arc::new(RwLock::new(
+        cfg.profile.module.ip_rule_list.clone().unwrap_or_default(),
+    ));
     let state = AppState {
         db: db.clone(),
         token: Arc::new(Mutex::new(cfg.server.token.clone())),
@@ -379,7 +385,25 @@ async fn main() -> anyhow::Result<()> {
         backend: backend.clone(),
         log_ring: ring_log.clone(),
         global_pause: global_pause.clone(),
-        sub_module: None,
+        sub_module: {
+            // 规则订阅 Web 后端：共享运行时规则配置，增删改即时回写 config 文件
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .user_agent("PeerBanHelper-RS")
+                .build()
+                .ok();
+            http.map(|http| {
+                let backend: Arc<dyn pbh_web::SubModule> = submodule::RuleSubBackend::new(
+                    pipeline.clone(),
+                    db.clone(),
+                    data_dir.clone(),
+                    Arc::new(http),
+                    cfg_path.clone(),
+                    rulesub_shared.read().unwrap().clone(),
+                );
+                backend
+            })
+        },
         btn_network: btn_network_slot.clone(),
     };
     let app = build_router(state);
@@ -396,9 +420,12 @@ async fn main() -> anyhow::Result<()> {
 
     // IP 黑名单规则订阅：启动立即拉取一次，之后按 check-interval 刷新
     // （对齐上游 `registerScheduledTask(this::reloadConfig, 0, checkInterval)`）
-    if let Some(rulesub_cfg) = cfg.profile.module.ip_rule_list.clone() {
+    // `rulesub_shared` 与 Web 后端（`/api/sub/*`）共享同一份配置：Web 增删改会即时反映到刷新。
+    if rulesub_shared.read().unwrap().enabled() {
         let pipeline = pipeline.clone();
         let data_dir = data_dir.clone();
+        let db = db.clone();
+        let rulesub_shared = rulesub_shared.clone();
         tokio::spawn(async move {
             let http = match reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
@@ -411,14 +438,18 @@ async fn main() -> anyhow::Result<()> {
                     return;
                 }
             };
-            let interval = Duration::from_millis(rulesub_cfg.check_interval_ms.max(60_000) as u64);
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now(), interval);
             loop {
-                ticker.tick().await;
-                for line in rulesub::refresh_all(&pipeline, &rulesub_cfg, &data_dir, &http).await {
+                let cfg = rulesub_shared.read().unwrap().clone();
+                let interval =
+                    Duration::from_millis(cfg.check_interval_ms.max(60_000) as u64);
+                // 启动立即拉取一次（首次不等待 interval，对齐上游 initialDelay=0）
+                for line in
+                    rulesub::refresh_all(&pipeline, &cfg, &data_dir, &http, Some(&db), rulesub::UPDATE_TYPE_AUTO).await
+                {
                     info!("{line}");
                 }
                 rulesub::log_summary(&pipeline);
+                tokio::time::sleep(interval).await;
             }
         });
     }

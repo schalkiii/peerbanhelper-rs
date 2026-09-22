@@ -59,6 +59,17 @@ pub struct RuleSubLogRow {
     pub update_type: String,
 }
 
+/// `rule_sub_info` 的一行（规则订阅当前状态）。
+#[derive(Clone, Debug)]
+pub struct RuleSubInfoRow {
+    pub rule_id: String,
+    pub enabled: bool,
+    pub rule_name: String,
+    pub sub_url: String,
+    pub last_update: Option<i64>,
+    pub ent_count: Option<i64>,
+}
+
 /// `history` 的读取列（含 `torrents` LEFT JOIN；顺序与 [`map_history_row`] 一致）。
 const HISTORY_SELECT_SQL: &str = "SELECT h.id, h.ban_at, h.unban_at, h.ip, h.port, h.peer_id, \
      h.peer_client_name, h.peer_uploaded, h.peer_downloaded, h.peer_progress, \
@@ -550,24 +561,26 @@ impl Database {
         &self,
         rule_id: Option<&str>,
         limit: i64,
+        offset: i64,
     ) -> anyhow::Result<Vec<RuleSubLogRow>> {
         let conn = self.conn.lock().unwrap();
         let mut rows: Vec<RuleSubLogRow> = Vec::new();
+        let offset = offset.max(0);
         if let Some(id) = rule_id {
             let mut stmt = conn.prepare(
                 "SELECT id, rule_id, update_time, count, update_type FROM rule_sub_log
-                 WHERE rule_id = ?1 ORDER BY update_time DESC LIMIT ?2",
+                 WHERE rule_id = ?1 ORDER BY update_time DESC LIMIT ?2 OFFSET ?3",
             )?;
-            let iter = stmt.query_map(rusqlite::params![id, limit], map_rule_sub_log)?;
+            let iter = stmt.query_map(rusqlite::params![id, limit, offset], map_rule_sub_log)?;
             for row in iter {
                 rows.push(row?);
             }
         } else {
             let mut stmt = conn.prepare(
                 "SELECT id, rule_id, update_time, count, update_type FROM rule_sub_log
-                 ORDER BY update_time DESC LIMIT ?1",
+                 ORDER BY update_time DESC LIMIT ?1 OFFSET ?2",
             )?;
-            let iter = stmt.query_map(rusqlite::params![limit], map_rule_sub_log)?;
+            let iter = stmt.query_map(rusqlite::params![limit, offset], map_rule_sub_log)?;
             for row in iter {
                 rows.push(row?);
             }
@@ -598,6 +611,40 @@ impl Database {
             rusqlite::params![rule_id, enabled as i64, rule_name, sub_url, last_update, ent_count],
         )?;
         Ok(())
+    }
+
+    /// 规则订阅日志总数（供 WebUI 分页）。
+    pub fn count_rule_sub_log(&self, rule_id: Option<&str>) -> anyhow::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = match rule_id {
+            Some(id) => conn.query_row(
+                "SELECT COUNT(*) FROM rule_sub_log WHERE rule_id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )?,
+            None => conn.query_row("SELECT COUNT(*) FROM rule_sub_log", [], |r| r.get(0))?,
+        };
+        Ok(count)
+    }
+
+    /// 读取单条规则订阅的当前状态（对齐上游 `RuleSubInfoService.get`）。
+    pub fn get_rule_sub_info(&self, rule_id: &str) -> anyhow::Result<Option<RuleSubInfoRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT rule_id, enabled, rule_name, sub_url, last_update, ent_count \
+             FROM rule_sub_info WHERE rule_id = ?1",
+        )?;
+        let mut iter = stmt.query_map(rusqlite::params![rule_id], |r| {
+            Ok(RuleSubInfoRow {
+                rule_id: r.get(0)?,
+                enabled: r.get::<_, i64>(1)? != 0,
+                rule_name: r.get(2)?,
+                sub_url: r.get(3)?,
+                last_update: r.get(4)?,
+                ent_count: r.get(5)?,
+            })
+        })?;
+        Ok(iter.next().transpose()?)
     }
 
     // ---------- PCB 历史 ----------
@@ -1452,12 +1499,12 @@ mod tests {
 
         db.insert_rule_sub_log("all-in-one", 42, "AUTO", 1000).unwrap();
         db.insert_rule_sub_log("all-in-one", 43, "MANUAL", 2000).unwrap();
-        let logs = db.list_rule_sub_log(Some("all-in-one"), 10).unwrap();
+        let logs = db.list_rule_sub_log(Some("all-in-one"), 10, 0).unwrap();
         assert_eq!(logs.len(), 2);
         assert_eq!(logs[0].count, 43, "按 update_time 倒序");
         assert_eq!(logs[0].update_type, "MANUAL");
-        assert_eq!(db.list_rule_sub_log(None, 10).unwrap().len(), 2);
-        assert!(db.list_rule_sub_log(Some("other"), 10).unwrap().is_empty());
+        assert_eq!(db.list_rule_sub_log(None, 10, 0).unwrap().len(), 2);
+        assert!(db.list_rule_sub_log(Some("other"), 10, 0).unwrap().is_empty());
     }
 
     #[test]
