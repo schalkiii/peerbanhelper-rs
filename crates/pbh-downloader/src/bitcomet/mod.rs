@@ -1946,7 +1946,7 @@ mod tests {
         // remapBanListAddress(addr) → supportRangeBan = true：去重 + IPv6 /52 网段
         assert_eq!(
             String::from_utf8(content).unwrap(),
-            "1.2.3.4\n2001:db8::1\n2001:db8::/52"
+            "1.2.3.4\n::ffff:1.2.3.4\n2001:db8::1\n2001:db8::/52"
         );
     }
 
@@ -1969,7 +1969,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8(content).unwrap(),
-            "1.2.3.4\n2001:db8::1\n2001:db8::/52"
+            "1.2.3.4\n::ffff:1.2.3.4\n2001:db8::1\n2001:db8::/52"
         );
     }
 

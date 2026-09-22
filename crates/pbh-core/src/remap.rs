@@ -165,12 +165,18 @@ fn prefix_of_v6(addr: Ipv6Addr, len: u8) -> Option<String> {
     Ipv6Net::new(addr, len.min(128)).ok().map(|n| n.trunc().to_string())
 }
 
-/// 生成某个地址的「等价写法」集合（`generateRemappedPairIfPossible`）：
-/// - IPv4 → 附带其 IPv4-mapped IPv6 写法（本实现按空操作处理，不生成）
+/// 生成某个地址的「等价写法」集合，对齐上游 `generateRemappedPairIfPossible`
+///（分支顺序与上游一致，IPv4 分支优先）：
+/// - IPv4 → 附带 IPv4-mapped IPv6 写法（`::ffff:a.b.c.d`）。qB 的封禁名单按地址族匹配，
+///   缺少该变体时，同一主机改走 IPv6 栈连入将不会被阻断。
 /// - NAT64 → 附带内嵌 IPv4
 /// - Teredo → 附带内嵌客户端 IPv4（上游此处**不检查** `ip-remapping.teredo` 开关）
 fn equivalent_forms(addr: IpAddr, nat64: Option<Ipv4Addr>) -> Vec<IpAddr> {
     let mut out = Vec::new();
+    if let IpAddr::V4(v4) = addr {
+        out.push(IpAddr::V6(v4.to_ipv6_mapped()));
+        return out;
+    }
     if let Some(v4) = nat64 {
         out.push(IpAddr::V4(v4));
     } else if let IpAddr::V6(v6) = addr {

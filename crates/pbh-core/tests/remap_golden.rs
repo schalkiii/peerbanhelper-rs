@@ -15,14 +15,19 @@ fn cfg() -> RemapConfig {
 }
 
 #[test]
-fn ipv4_stays_untouched_while_ipv4_remapping_is_disabled() {
-    assert_eq!(remap_ban_list_address("1.2.3.4", true, &cfg()), vec!["1.2.3.4"]);
-    // 即使关闭 IPv4 重映射，显式开启后才生成 /30 网段
+fn ipv4_always_pairs_with_its_ipv4_mapped_ipv6_form() {
+    // 上游 `generateRemappedPairIfPossible` 对 IPv4 恒附带 IPv6 映射写法，
+    // 使下载器在 IPv6 栈上也能阻断同一主机；与是否开启网段重映射无关
+    assert_eq!(
+        remap_ban_list_address("1.2.3.4", true, &cfg()),
+        vec!["1.2.3.4", "::ffff:1.2.3.4"]
+    );
+    // 显式开启 IPv4 重映射后额外生成 /30 网段
     let mut c = cfg();
     c.banlist_remapping.ipv4.enabled = true;
     assert_eq!(
         remap_ban_list_address("1.2.3.4", true, &c),
-        vec!["1.2.3.4", "1.2.3.4/30"]
+        vec!["1.2.3.4", "1.2.3.4/30", "::ffff:1.2.3.4"]
     );
 }
 
@@ -44,9 +49,13 @@ fn remote_downloader_without_range_ban_capability_gets_single_addresses() {
 }
 
 #[test]
-fn ipv4_mapped_ipv6_is_normalized_to_ipv4() {
-    // `getIPAddress` 会把 IPv4-mapped IPv6 归一为 IPv4
-    assert_eq!(remap_ban_list_address("::ffff:1.2.3.4", true, &cfg()), vec!["1.2.3.4"]);
+fn ipv4_mapped_ipv6_is_normalized_to_ipv4_then_paired_back() {
+    // `getIPAddress` 先把 IPv4-mapped IPv6 归一为 IPv4，
+    // 再由 `generateRemappedPairIfPossible` 把映射写法补回来
+    assert_eq!(
+        remap_ban_list_address("::ffff:1.2.3.4", true, &cfg()),
+        vec!["1.2.3.4", "::ffff:1.2.3.4"]
+    );
 }
 
 #[test]
