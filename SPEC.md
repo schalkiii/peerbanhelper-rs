@@ -443,6 +443,18 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 - `GET /api/ban/logs`：封禁历史（分页）。
 - `GET /api/metrics/general`：概要统计（下载器数、torrent 数、peer 数、封禁数）。
 - `GET /api/downloaders`：下载器列表与状态。
+- **规则订阅管理（`/api/sub/*`，仅 `module.ip-address-blocker-rules` 启用时挂载；
+  未启用 `sub_module=None` → 404 `RULE_SUB_MODULE_DISABLED`，状态码对齐上游）**：
+  - `GET /api/sub/`、`GET /api/sub/rules`：订阅规则列表（含运行时条目数）。
+  - `PUT /api/sub/rule`：新增规则（body：`id`/`name`/`url`/`enabled`）。
+  - `PATCH /api/sub/rule/{id}`：更新规则（`name`/`url`/`enabled` 可选）。
+  - `DELETE /api/sub/rule/{id}`：删除规则（同时从模块移除订阅）。
+  - `POST /api/sub/rules/update`：刷新全部规则；
+    `POST /api/sub/rule/{id}/update`：刷新单条规则（手动触发，`update_type=MANUAL`）。
+  - `GET /api/sub/logs?page&pageSize`：更新历史（来自 `rule_sub_log`，倒序分页）。
+  - `GET /api/sub/interval`、`PATCH /api/sub/interval`：刷新间隔（`check-interval-ms`，下限 60000）。
+  - 增删改即时回写 `config.yml` 的 `module.ip-address-blocker-rules` 段，并触发一次刷新；
+    刷新成功落 `rule_sub_log`（历史）与 `rule_sub_info`（当前状态）。
 - 静态资源：`/` 托管 WebUI（`data/static`，缺失时返回占位页）。
 - 统一响应体 `{success, message, data}`。
 

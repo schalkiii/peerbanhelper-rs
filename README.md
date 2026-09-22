@@ -52,7 +52,7 @@ Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反�
   - [x] 虚假进度检查器（`progress-cheat-blocker`，含进度倒退与快速测试）
   - [x] 范围自动封禁（`auto-range-ban`，与已封禁地址同前缀连锁封禁）
   - [x] 多拨封禁（`multi-dialing-blocker`，子网 IP 数超限 + 追猎窗口）
-  - [x] IP 规则订阅（`ip-address-blocker-rules`，远程规则文件 + sha256 缓存 + 周期刷新）
+  - [x] IP 规则订阅（`ip-address-blocker-rules`，远程规则文件 + sha256 缓存 + 周期刷新；含 `/api/sub/*` Web 管理、更新历史落库）
   - [x] 反吸血（`anti-vampire`，迅雷预设）
   - [x] 表达式规则（`expression-engine`，rhai 等价 AviatorScript；脚本取自 `<data>/scripts/*.av`，
         默认空目录 → 不产生任何封禁，返回值语义对齐上游 `ScriptEngineManager.handleResult`）

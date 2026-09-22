@@ -271,6 +271,11 @@
 ### Phase 3 — 生态能力（部分完成）
 
 - [x] GeoIP/ASN（maxminddb，GeoLite2/GeoCN），四维度接入 `ip-address-blocker`
+- [x] **规则订阅 Web 后端（`/api/sub/*`）**：`SubModule` 实现（`RuleSubBackend`）已挂载到 `AppState.sub_module`，
+      `GET/PUT/PATCH/DELETE /api/sub/rule[s]`、`/api/sub/rules/update`、`/api/sub/rule/{id}/update`、
+      `/api/sub/logs`（分页）、`/api/sub/interval` 全部可用；增删改即时回写 `config.yml` 的
+      `module.ip-address-blocker-rules` 段，`refresh_all` 成功落 `rule_sub_log` / `rule_sub_info`
+      （对齐上游 `RuleSub*Service`）；未启用时 404 `RULE_SUB_MODULE_DISABLED`
 - [x] **BTN 上报类能力（submit_* / heartbeat / ip_query / reconfigure）**：拉取类（rules /
       ip_allowlist / ip_denylist + PoW + 配置握手）与上报类全部实现；上报数据源由
       `pbh-db::DbBtnSubmitSource` 注入（`history` / `tracked_swarm` / `peer_records`），
