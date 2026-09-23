@@ -17,3 +17,4 @@ Thumbs.db
 # 本地参考/会话数据（不入库）
 /.reference/
 /.codebuddy/
+crates/pbh-gui/target/

@@ -5,6 +5,16 @@
 
 ## 未发布（working tree）
 
+### feat(gui,dualrun): Tauri 原生 GUI 壳（M1 托盘）+ 长时对跑基建（采样脚本 + DB 对账工具）
+
+- 新增 `crates/pbh-gui`（**独立 crate，不在 workspace members**）：tauri v2 托盘壳——子进程拉起
+  `pbh`（崩溃 5 秒自动重启）、系统托盘（显示/浏览器打开/退出）、WebView 指向 `http://127.0.0.1:<port>`
+  复用上游 WebUI、关窗=隐藏到托盘、附加模式（服务已在运行则不重复拉起）；
+  Windows 侧 `cargo check` 通过（构建要求与里程碑见 PLAN「原生 GUI」）；
+- 新增 `longrun_sample.ps1`：天级对跑健康采样（两侧 RSS/CPU/DB 大小/health → JSONL，Rust 崩溃自动拉起）；
+- `pbh-db` 新增 `compare_dualrun` bin：长跑结束后的离线对账（`history` 按 IP+端口+小时桶匹配、
+  列名容错探测、差异输出 CSV；在线逐条比对决策记录见 PLAN「长时对跑基建」）。
+
 ### feat(web,ptr): 后台任务 SSE 端点（GeoIP 进度上屏）+ PTR 解析所有权移入模块
 
 - 对齐上游 `PBHBackgroundTaskController`：新增 `BackgroundTaskRegistry` 与 SSE `GET /api/tasks/live`

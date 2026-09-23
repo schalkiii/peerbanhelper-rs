@@ -75,6 +75,8 @@
 - [x] 自动更新：三镜像轮换（GitHub Releases → pbh-static.paulzzh.com → pbh-static.ghostchu.com）、
       `.mmdb.xz` + 纯 Rust XZ 解压、45 天 mtime 周期、校验后原子替换；在 `GeoIpDb::load` 之前接线；
       `auto-update: false` 时已存在的库不覆盖、本地缺失的库补下一次（对齐上游 `needUpdateMMDB`）
+- [x] 更新进度上屏：`BackgroundTaskRegistry` + SSE `GET /api/tasks/live`（逐字段对齐上游
+      `PBHBackgroundTaskController` 的 DTO 与状态机），更新器经进度 sink 上报各阶段
 - [x] 加载失败/`forceDisableIPDB` ⇒ 不注入 provider，四维度全不命中
 
 ### 3.6 AutoSTUN
@@ -118,13 +120,7 @@
 
 ### 4.1 与上游差异的对齐项
 > 原则：有差异就写在这里，说明现状与上游行为，按影响排序逐项关闭。
-
-- [x] **GeoIP 更新进度展示**：已实现 `BackgroundTaskRegistry` + SSE `GET /api/tasks/live`
-      （逐字段对齐上游 `PBHBackgroundTaskController` 的 DTO 与状态机：QUEUED/PREPARING/RUNNING/
-      COMPLETED/FAILED、barType、locale 渲染），GeoIP 更新器经进度 sink 上报下载/校验/写盘各阶段。
-- [x] **PTR 解析架构**：解析所有权已移入 `PtrBlacklist` 模块（`observe()` 入口 + 注入式
-      `PtrResolver`、3 秒超时、负缓存 TTL 与容量对齐上游 `ModuleMatchCache`），wave 逐 peer 通知；
-      `check()` 保持只读，首轮 pass、下一轮判定的时序与原设计一致。
+> 当前**无未关闭项**（GeoIP 进度 UI 与 PTR 架构已对齐并移入 §3.5/§3.6）。
 
 ### 4.2 已知且保留的行为差异（说明，不计划「修复」）
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），
@@ -137,7 +133,30 @@
   一律保留原文件（不复刻该缺陷）。
 - 每日流量阈值告警等上游默认关闭的功能：默认配置下无行为差异，仅 `enabled: true` 时生效。
 
-### 4.3 扩展项（超出 v9.5.1 对等范围）
+### 4.3 原生 GUI（Tauri 托盘壳）——方案规划
+- [ ] **架构**：新增独立 crate `crates/pbh-gui`（**不加入 workspace members**——Tauri 在 Linux 需要
+      webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建；Windows 侧单独构建）。
+      职责：① 以子进程拉起 `pbh --data <dir>`（保留窗口关闭=隐藏到托盘、崩溃自动重启、日志重定向到文件）；
+      ② 系统托盘（显示主窗口 / 打开数据目录 / 退出=结束子进程）；③ WebView 加载 `http://127.0.0.1:9898`
+      （**复用上游 WebUI dist**，不在 Tauri 内重写前端，与「前端原样复用」原则一致）。
+- [ ] **技术选型**：tauri v2（`tray-icon` feature，WebView2 系统组件）+ 单实例互斥（命名 Mutex +
+      端口探测）；托盘图标内嵌（构建脚本生成 32×32 PNG/ICO）。
+- [ ] **里程碑**：M1 托盘壳 + 子进程管理 + WebView 指向本地服务（Windows 先行）；
+      M2 单实例与开机自启、托盘菜单完善；M3 Linux（libwebkit2gtk-4.1）/macOS 适配与打包。
+- [ ] **验收**：关闭窗口仅隐藏；退出托盘菜单结束子进程并退出；`pbh.exe` 未就绪时窗口显示连接中提示并自动重载。
+
+### 4.4 长时对跑基建（数十小时 ~ 数天）
+- [x] **采样脚本 `longrun_sample.ps1`**：周期（默认 5 分钟）采样两侧进程 RSS/私有内存/CPU、
+      SQLite 文件大小、`/health` 状态，追加 JSONL；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
+- [x] **对账工具 `compare_dualrun`**（`pbh-db` 新增 bin）：读两侧 SQLite，比对 `history`
+      （封禁历史：IP+端口+ban_at 时间窗匹配）、`alert` 数量与共享表行数摘要，差异输出 CSV + 控制台报告；
+      容忍两侧表结构差异（先 PRAGMA 探测列）。
+- [ ] **在线比对不采用**（决策记录）：时钟漂移 + 重试时序差异会在天级产生大量假阳性；
+      以离线 DB 对账为准，运行期只做健康采样。
+- [ ] **待补**：Java 侧 H2 导出（若部署用 H2 需先转 SQLite）；磁盘水位告警（天级 `history` 增长）；
+      `--dualrun-tag` 身份标记（便于区分两侧记录）。
+
+### 4.5 扩展项（超出 v9.5.1 对等范围）
 - [ ] MySQL / PostgreSQL 支持（sqlx）——上游默认 sqlite/h2，属部署扩展
 - [ ] 插件系统评估（WASM / wasmtime）
 - [ ] 跨平台打包与发布：Windows/macOS 产物、Docker（scratch/Alpine）镜像、CI 自动发布

@@ -1,0 +1,25 @@
+# 独立 crate（不在 workspace members 内）：显式声明自身为 workspace 根，
+# 避免被上层 workspace 排除规则拦截（见 PLAN「原生 GUI」）
+[workspace]
+
+[package]
+name = "pbh-gui"
+version = "0.1.0"
+edition = "2021"
+description = "PeerBanHelper-RS 原生 GUI 壳（Tauri：托盘 + WebView 指向内嵌 axum 服务）"
+publish = false
+
+# 注意：本 crate **不加入 workspace members**（见 PLAN「原生 GUI」）——
+# Tauri 在 Linux 需要 webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建。
+# 构建方式：cd crates/pbh-gui && cargo build --release
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
