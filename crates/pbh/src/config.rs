@@ -56,6 +56,18 @@ pub struct AppConfig {
     /// 上游 `push-notification:` 段（渠道名 → 渠道配置）；加载时并入 [`AppConfig::push`]。
     #[serde(rename = "push-notification", default)]
     pub push_notification: Option<PushSection>,
+    /// `logger:` 段（对齐上游 `config.yml` 的 `logger`）
+    #[serde(default)]
+    pub logger: LoggerConfig,
+}
+
+/// `logger:` 段：目前仅覆盖 ban wave 完成日志的隐藏开关
+/// （上游 `DownloaderServerImpl.hideFinishLogs`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LoggerConfig {
+    /// 上游 `logger.hide-finish-log`：为 true 时不打印 ban wave 完成日志（默认 false）
+    #[serde(rename = "hide-finish-log", default)]
+    pub hide_finish_log: bool,
 }
 
 /// `push:` 段：渠道名 → 渠道配置（段内 `type` 决定渠道类型）。
@@ -527,6 +539,7 @@ impl Default for AppConfig {
             downloaders: vec![],
             clients: None,
             push_notification: None,
+            logger: LoggerConfig::default(),
             analytics: true,
         }
     }

@@ -555,11 +555,39 @@ async fn main() -> anyhow::Result<()> {
                 let wave_started = std::time::Instant::now();
                 let report = engine.run_once(now).await;
                 wave_count += 1;
-                info!(
-                    "wave#{}: 在线下载器={} torrents={} peers={} 封禁={} 解封={} 跳过={} 错误={} 耗时={}ms",
-                    wave_count, report.online_downloaders, report.torrents, report.peers,
-                    report.banned, report.unbanned, report.skipped, report.errors.len(),
-                    wave_started.elapsed().as_millis()
+                // 完成日志与上游 `Lang.BAN_WAVE_CHECK_COMPLETED` 逐字一致（含参数顺序），
+                // 计数为上游 `ProcessingStatistics` 口径（只统计有检查结果的下载器/种子/peer），
+                // 便于长时对跑直接把两侧日志逐行 diff。附加诊断降级到 DEBUG。
+                let finish_line = translator.render(
+                    &pbh_core::i18n::TranslationComponent::with_params(
+                        "BAN_WAVE_CHECK_COMPLETED",
+                        vec![
+                            report.checked_downloaders.to_string().into(),
+                            report.torrents.to_string().into(),
+                            report.peers.to_string().into(),
+                            report.banned.to_string().into(),
+                            report.unbanned.to_string().into(),
+                            (wave_started.elapsed().as_millis() as i64)
+                                .to_string()
+                                .into(),
+                        ],
+                    ),
+                    &cfg.language.locale,
+                );
+                // 上游：`if (!hideFinishLogs && !downloaderManager.isEmpty())`
+                let has_downloaders = !engine
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_empty();
+                if !cfg.logger.hide_finish_log && has_downloaders {
+                    info!("{finish_line}");
+                }
+                debug!(
+                    "wave#{wave_count}: 在线下载器={} 跳过={} 错误={}",
+                    report.online_downloaders,
+                    report.skipped,
+                    report.errors.len()
                 );
                 for e in &report.errors {
                     warn!("wave error: {e}");

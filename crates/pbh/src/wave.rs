@@ -117,8 +117,13 @@ impl LoginGate {
 
 #[derive(Default, Debug, Clone)]
 pub struct WaveReport {
+    /// 登录成功的下载器数（供状态/指标展示；**不是**上游日志里的 `downloaders` 口径）
     pub online_downloaders: usize,
+    /// 至少有一个 peer 进入检查的下载器数（对齐上游 `ProcessingStatistics.downloaders`）
+    pub checked_downloaders: usize,
+    /// 至少有一个 peer 进入检查的种子数（对齐上游 `ProcessingStatistics.torrents`）
     pub torrents: usize,
+    /// 进入检查的 peer 数（对齐上游 `ProcessingStatistics.peers`）
     pub peers: usize,
     pub banned: usize,
     pub unbanned: usize,
@@ -228,6 +233,12 @@ impl WaveEngine {
                 Ok(out) => {
                     if out.status.online {
                         report.online_downloaders += 1;
+                    }
+                    // 上游 `ProcessingStatistics` 只统计「产生了 CheckResult」的条目：
+                    // 下载器进入计数的前提是至少有一个 peer 通过了判定（登录成功但 0 peer
+                    // 的下载器不计入，日志与上游逐字可比）
+                    if out.peers > 0 {
+                        report.checked_downloaders += 1;
                     }
                     report.torrents += out.torrents;
                     report.peers += out.peers;
@@ -722,7 +733,10 @@ impl WaveEngine {
         };
         for j in joins {
             if let Ok(o) = j.await {
-                agg.torrents += 1;
+                // 上游 `ProcessingStatistics.torrents` 只统计「有 peer 通过判定」的种子
+                if o.peer_count > 0 {
+                    agg.torrents += 1;
+                }
                 agg.peers += o.peer_count;
                 agg.skipped += o.skipped;
                 agg.bans.extend(o.bans);
@@ -933,6 +947,128 @@ mod tests {
             !gate.is_cooling(now + LoginGate::COOLDOWN_MS),
             "冷却到期后应恢复"
         );
+    }
+
+    /// 计数口径测试用下载器：可配置种子清单与各种子下的 peer。
+    struct CounterMock {
+        id: String,
+        torrents: Vec<pbh_core::model::TorrentData>,
+        peers: HashMap<String, Vec<pbh_core::model::PeerData>>,
+    }
+
+    impl Downloader for CounterMock {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn name(&self) -> &str {
+            "CounterMock"
+        }
+        fn downloader_type(&self) -> &'static str {
+            "qbittorrent"
+        }
+        fn feature_flags(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
+            Box::pin(async { Ok(LoginResult::success(String::new(), "5.0.0")) })
+        }
+        fn fetch_torrents<'a>(
+            &'a self,
+        ) -> BoxFuture<'a, anyhow::Result<Vec<pbh_core::model::TorrentData>>> {
+            let torrents = self.torrents.clone();
+            Box::pin(async move { Ok(torrents) })
+        }
+        fn fetch_peers<'a>(
+            &'a self,
+            torrent: &'a pbh_core::model::TorrentData,
+        ) -> BoxFuture<'a, anyhow::Result<Vec<pbh_core::model::PeerData>>> {
+            let peers = self.peers.get(&torrent.hash).cloned().unwrap_or_default();
+            Box::pin(async move { Ok(peers) })
+        }
+        fn ban_peers<'a>(&'a self, _peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn replace_banned_ips<'a>(
+            &'a self,
+            _ips: &'a [String],
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
+            Box::pin(async { Ok(DownloaderStatistics::default()) })
+        }
+        fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+            Box::pin(async { Ok((0, 0)) })
+        }
+        fn set_speed_limiter<'a>(
+            &'a self,
+            _upload: i64,
+            _download: i64,
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// 计数对齐上游 `ProcessingStatistics`：只统计「有 peer 通过判定」的下载器/种子。
+    #[tokio::test]
+    async fn wave_report_counts_follow_upstream_processing_statistics() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let engine = engine(db);
+        let torrent = |hash: &str| pbh_core::model::TorrentData {
+            hash: hash.to_string(),
+            name: hash.to_string(),
+            progress: 1.0,
+            total_size: 1024,
+            piece_size: 0,
+            pieces_have: 0,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        };
+        let peer = pbh_core::model::PeerData {
+            client_name: Some("qBittorrent".to_string()),
+            peer_id: Some("-qB5230-abcdefghijkl".to_string()),
+            dl_speed: 0,
+            downloaded: 0,
+            up_speed: 0,
+            uploaded: 0,
+            progress: 0.1,
+            flags: Some("U".to_string()),
+            ip: "198.51.100.7".to_string(),
+            port: 6881,
+            raw_ip: "198.51.100.7:6881".to_string(),
+            connection: None,
+        };
+        let mut peers = HashMap::new();
+        peers.insert("hash-a".to_string(), vec![peer]);
+        // 下载器 1：两个种子，只有一个有 peer
+        engine.entries.lock().unwrap().push(DownloaderEntry {
+            downloader: Arc::new(CounterMock {
+                id: "counter-1".to_string(),
+                torrents: vec![torrent("hash-a"), torrent("hash-b")],
+                peers,
+            }),
+            increment_ban: true,
+        });
+        // 下载器 2：登录成功但没有任何种子/peer（上游不计入 downloaders）
+        engine.entries.lock().unwrap().push(DownloaderEntry {
+            downloader: Arc::new(CounterMock {
+                id: "counter-2".to_string(),
+                torrents: Vec::new(),
+                peers: HashMap::new(),
+            }),
+            increment_ban: true,
+        });
+
+        let report = engine.run_once(1_700_000_000_000).await;
+        assert_eq!(report.online_downloaders, 2, "两个下载器均登录成功");
+        assert_eq!(
+            report.checked_downloaders, 1,
+            "上游口径：0 peer 的下载器不计入 downloaders"
+        );
+        assert_eq!(report.torrents, 1, "上游口径：0 peer 的种子不计入 torrents");
+        assert_eq!(report.peers, 1);
     }
 
     /// 可配置登录结果的测试下载器（验证 LoginGate 的计数口径）。
