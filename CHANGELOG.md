@@ -5,6 +5,45 @@
 
 ## 未发布（working tree）
 
+### fix(script): 忠实性审查修复（表达式引擎 + 登录冷却计数口径）
+
+对本轮新增的 AviatorScript 兼容层与登录冷却机制做全面源码级审查（对照上游
+`AbstractDownloader` / `DownloaderLoginResult` / `AVScriptEngine` / `BtnNetworkOnline` 等），
+修复以下真实缺陷：
+
+**表达式引擎 / 翻译器**
+- 浮点返回值改为向零截断（对齐上游 `number.intValue()`）：此前 `round()` 会把
+  `return 0.9` 误判为 BAN、`return 1.5` 误判为 SKIP；
+- 裸赋值 `x = …` **一律**改写为 `let x = …`：Aviator 语句分隔符可省略（换行即分隔），
+  按「语句起始位置」判定会漏 `let` → rhai 运行期未声明变量 → 整脚本静默 pass（漏封）；
+- 注册跨类型 `+`（String+任意值 / 任意值+String）：Aviator `'下载=' + downloaded` 是合法拼接，
+  rhai 缺省报运行期错 → 整脚本 pass（漏封）；
+- 补齐类型转换内建 `double()` / `long()` / `int()` / `str()`（对齐上游
+  `upload_ratio_check.av` 的 `double(uploaded) / double(downloaded)`）；
+- BTN 脚本注入变量对齐 `BtnNetworkOnline`：`ramStorage` → `kvStorage`；脚本展示名改为
+  解析内容里的 `## @NAME`（缺省回退规则集 key）；`parse_metadata` 移入 avscript 共享。
+
+**登录冷却（LoginGate）计数口径——重写**
+- `LoginResult` 新增 `status` 枚举（对齐上游 `DownloaderLoginResult.Status`）；
+- 计数口径与上游 `AbstractDownloader.login()` 逐分支对齐：**只有 `INCORRECT_CREDENTIAL`
+  与 `login0` 外抛异常（如 Transmission 无 try/catch）才计数**；qB / BitComet / Deluge /
+  BiglyBT / Aria2 的 `login0` 内部 catch 异常返回 EXCEPTION / NETWORK_ERROR，**不计数**——
+  此前 Rust 对 qB 的传输错误计数，会导致上游没有的「下载器短暂宕机恢复后仍被冷却
+  最长 30 分钟（期间不拉取、不封禁）」盲区；
+- 各适配器按上游 `login0` 语义标注状态（qB 会话校验自捕获 / API Key 与口令失败 →
+  INCORRECT_CREDENTIAL；BitComet 版本不达标 → MISSING_COMPONENTS；BiglyBT 传输错误 →
+  NETWORK_ERROR 等）；
+- 冷却期内每次登录尝试发布 WARN 告警（identifier `downloader-too-many-failed-attempt-<id>`，
+  push=true，按 identifier 去重），对齐上游 `publishAlert`；
+- `login_gates` 改为 wave 与 Web 后端共享，下载器更新/删除时移除对应闸门（对齐上游
+  `unregisterDownloader + registerDownloader` 使失败计数随实例重建清零——用户改对密码后
+  立即恢复，不再受旧冷却影响）；
+- `pbh` 主程序把数据目录暴露为 `PBH_DATA_DIR`：修复 `--data` 模式下 expression-engine
+  脚本目录（`<data>/scripts`）解析不到的问题（此前只有 CWD 相对路径回退）。
+
+> 注：上游 `ExpressionRule.maxScriptExecuteTime = 1500` 是死字段（声明后全文件无引用），
+> 本移植保留 1500ms 兜底属**更严格**的防御性行为（方向安全：只会把超时脚本判为 pass）。
+
 ### perf/观测: 与实机部署 Java PBH 的 dry-run 并行对跑
 
 直接在用户实机部署的 Java PBH（同配置、同下载器、同 GeoIP 库）旁边并行跑 Rust `--dry-run`

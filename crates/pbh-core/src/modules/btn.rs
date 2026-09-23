@@ -382,11 +382,16 @@ impl BtnScriptEngine {
                     continue;
                 }
             };
+            // 展示名对齐上游 `AVScriptEngine.compileScript`：解析内容里的 `## @NAME`，
+            // 缺省回退规则集 key
+            let (meta_name, _) = crate::avscript::parse_metadata(content);
+            let display = if meta_name.is_empty() {
+                name.clone()
+            } else {
+                meta_name
+            };
             match self.engine.compile(&translated) {
-                Ok(ast) => compiled.push(BtnScript {
-                    name: name.clone(),
-                    ast,
-                }),
+                Ok(ast) => compiled.push(BtnScript { name: display, ast }),
                 Err(e) => tracing::error!("Unable to load BTN script {name}: {e}"),
             }
         }
@@ -418,7 +423,8 @@ impl BtnScriptEngine {
         );
         scope.push_constant("banDuration", ban_duration_ms);
         scope.push_constant("cacheable", true);
-        scope.push_constant("ramStorage", rhai::Dynamic::from(rhai::Map::new()));
+        // 上游 BtnNetworkOnline 注入的是 `kvStorage`（非 expression-engine 的 ramStorage）
+        scope.push_constant("kvStorage", rhai::Dynamic::from(rhai::Map::new()));
         scope.push_constant("moduleInstance", "btn".to_string());
         scope.push_constant("server", true);
 
@@ -463,7 +469,8 @@ fn handle_script_return(ret: &rhai::Dynamic) -> Option<(PeerAction, String)> {
         };
     }
     if ret.is_float() {
-        let v = ret.as_float().unwrap_or(0.0).round() as i64;
+        // 上游 `number.intValue()` 为向零截断
+        let v = ret.as_float().unwrap_or(0.0) as i64;
         return match v {
             0 => None,
             1 => Some((PeerAction::Ban, v.to_string())),

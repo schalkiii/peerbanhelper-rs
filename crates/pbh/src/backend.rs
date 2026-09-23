@@ -22,6 +22,7 @@ use pbh_web::{ModuleRecord, ReloadEntry, WebBackend};
 use rand::distributions::Alphanumeric;
 use rand::Rng as _;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -59,6 +60,9 @@ pub struct PbhBackend {
     /// 手动封禁/解封后唤醒 ban wave 循环立即跑一轮
     /// （对齐上游 web 手动操作后 `DownloaderServerImpl.banWave()` 的立即触发语义）。
     wave_trigger: Arc<tokio::sync::Notify>,
+    /// 登录闸门（与 [`crate::wave::WaveEngine`] 共享）：下载器更新/删除时移除对应条目，
+    /// 对齐上游「重建下载器实例 ⇒ 失败计数与冷却清零」。
+    login_gates: Arc<StdMutex<HashMap<String, crate::wave::LoginGate>>>,
 }
 
 impl PbhBackend {
@@ -73,6 +77,7 @@ impl PbhBackend {
         statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
         alert_manager: Arc<AlertManager>,
         wave_trigger: Arc<tokio::sync::Notify>,
+        login_gates: Arc<StdMutex<HashMap<String, crate::wave::LoginGate>>>,
     ) -> Self {
         let install_id = read_installation_id(&data_dir);
         // 推送渠道重建复用的 HTTP 客户端（对齐 `HTTPUtil.newBuilder()`：校验 TLS、超时 15s/60s）
@@ -96,6 +101,7 @@ impl PbhBackend {
             install_id,
             global_pause: Arc::new(AtomicBool::new(false)),
             wave_trigger,
+            login_gates,
         }
     }
 
@@ -365,6 +371,10 @@ impl WebBackend for PbhBackend {
                 });
             }
         }
+        // 重建实例 ⇒ 失败计数与冷却清零（对齐上游 unregister + register）
+        if let Ok(mut gates) = self.login_gates.lock() {
+            gates.remove(id);
+        }
         Ok(())
     }
 
@@ -377,6 +387,9 @@ impl WebBackend for PbhBackend {
         }
         if let Ok(mut statuses) = self.statuses.lock() {
             statuses.retain(|s| s.id != id);
+        }
+        if let Ok(mut gates) = self.login_gates.lock() {
+            gates.remove(id);
         }
         Ok(())
     }

@@ -14,7 +14,7 @@
 //! 上游社区脚本（`.av`）可原样使用；仅翻译不了的构造（三元、`=~`、`string.split` 等）
 //! 会被跳过并记日志。默认空目录的无脚本行为与上游一致。
 
-use crate::avscript::{build_script_env, transpile, ScriptDownloader};
+use crate::avscript::{build_script_env, parse_metadata, transpile, ScriptDownloader};
 use crate::i18n::TranslationComponent;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
@@ -72,36 +72,6 @@ fn now_millis() -> i64 {
 fn build_engine() -> (Engine, Arc<AtomicI64>) {
     let env = build_script_env();
     (env.engine, env.start)
-}
-
-/// 解析脚本头部元数据（`## @NAME` / `@AUTHOR` / `@CACHEABLE` / `@VERSION` / `@THREADSAFE`）。
-///
-/// 对齐上游 `AVScriptEngine.compileScript`：`#` 开头的行剥去井号后识别 `@NAME` 等
-/// （上游按 `substring(2)` 处理，即社区脚本惯用的 `##` 双井号；这里对 1 个或多个 `#` 都兼容）。
-fn parse_metadata(source: &str) -> (String, bool) {
-    let mut name = String::new();
-    let mut cacheable = true;
-    for line in source.lines() {
-        let Some(rest) = line.trim_start().strip_prefix('#') else {
-            continue;
-        };
-        let rest = rest.trim_start_matches('#').trim();
-        let Some(body) = rest.strip_prefix('@') else {
-            continue;
-        };
-        let body = body.trim();
-        if let Some(v) = body.strip_prefix("NAME") {
-            name = v.trim().to_string();
-        } else if let Some(v) = body.strip_prefix("CACHEABLE") {
-            cacheable = v.trim().parse().unwrap_or(true);
-        } else if body.strip_prefix("AUTHOR").is_some()
-            || body.strip_prefix("VERSION").is_some()
-            || body.strip_prefix("THREADSAFE").is_some()
-        {
-            // 仅 @NAME 用于展示名；其余字段本实现忽略（不影响封禁语义）
-        }
-    }
-    (name, cacheable)
 }
 
 /// 从目录加载所有 `.av` 脚本（对齐 AviatorScript 文件类型）。
@@ -181,7 +151,8 @@ impl ExpressionEngine {
             }
         }
         if ret.is_float() {
-            let v = ret.as_float().unwrap_or(0.0).round() as i64;
+            // 上游 `number.intValue()` 为向零截断（`return 0.9` → 0 = pass）
+            let v = ret.as_float().unwrap_or(0.0) as i64;
             return match v {
                 0 => None,
                 1 => Some((PeerAction::Ban, v.to_string())),

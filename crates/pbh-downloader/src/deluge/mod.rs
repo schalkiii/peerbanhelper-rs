@@ -282,37 +282,31 @@ impl Downloader for DelugeDownloader {
         Box::pin(async move {
             // 对齐 `AbstractDownloader.login()` 开头的 `isPaused()` 短路
             if self.config.paused {
-                return Ok(LoginResult {
-                    success: false,
-                    message: "Deluge 已暂停".into(),
-                    version: Self::VERSION.into(),
-                });
+                return Ok(LoginResult::paused("Deluge 已暂停", Self::VERSION));
             }
             let logged_in = match self.login_session().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: tl(MSG_IO_EXCEPTION, vec![exception_param(&e)]),
-                        version: Self::VERSION.into(),
-                    })
+                    // 上游 `catch (DelugeException)` → EXCEPTION（不进入冷却）
+                    return Ok(LoginResult::exception(tl(
+                        MSG_IO_EXCEPTION,
+                        vec![exception_param(&e)],
+                    )));
                 }
             };
             if !logged_in {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(MSG_INCORRECT_CRED, Vec::new()),
-                    version: Self::VERSION.into(),
-                });
+                return Ok(LoginResult::incorrect_credential(tl(
+                    MSG_INCORRECT_CRED,
+                    Vec::new(),
+                )));
             }
             let methods = match self.list_methods().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: tl(MSG_IO_EXCEPTION, vec![exception_param(&e)]),
-                        version: Self::VERSION.into(),
-                    })
+                    return Ok(LoginResult::exception(tl(
+                        MSG_IO_EXCEPTION,
+                        vec![exception_param(&e)],
+                    )))
                 }
             };
             // 对齐 `new HashSet<>(methods).containsAll(MUST_HAVE_METHODS)`
@@ -320,20 +314,12 @@ impl Downloader for DelugeDownloader {
                 .iter()
                 .all(|need| methods.iter().any(|m| m == need))
             {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_PLUGIN_NOT_INSTALLED,
-                        vec![Param::Text(self.config.name.clone())],
-                    ),
-                    version: Self::VERSION.into(),
-                });
+                return Ok(LoginResult::missing_components(tl(
+                    MSG_PLUGIN_NOT_INSTALLED,
+                    vec![Param::Text(self.config.name.clone())],
+                )));
             }
-            Ok(LoginResult {
-                success: true,
-                message: "OK".into(),
-                version: Self::VERSION.into(),
-            })
+            Ok(LoginResult::success("OK", Self::VERSION))
         })
     }
 

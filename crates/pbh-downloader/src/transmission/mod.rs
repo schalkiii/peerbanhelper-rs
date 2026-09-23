@@ -308,31 +308,14 @@ impl Downloader for TransmissionDownloader {
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
             if self.config.paused {
-                return Ok(LoginResult {
-                    success: false,
-                    message: "Transmission 已暂停".into(),
-                    version: self.version(),
-                });
+                return Ok(LoginResult::paused("Transmission 已暂停", self.version()));
             }
-            let (result, session) = match self
+            // 上游 `login0` 无 try/catch：传输异常外抛给 `AbstractDownloader.login()` 计数
+            let (result, session) = self
                 .rpc::<SessionGet>("session-get", serde_json::json!({}))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: format!("Transmission 登录失败: {e}"),
-                        version: String::new(),
-                    })
-                }
-            };
+                .await?;
             if result != "success" {
-                return Ok(LoginResult {
-                    success: false,
-                    message: format!("session-get 返回 {result}"),
-                    version: String::new(),
-                });
+                return Err(anyhow::anyhow!("session-get 返回 {result}"));
             }
             let version = Self::normalize_version(&session.version);
             if let Ok(mut guard) = self.last_version.lock() {
@@ -354,11 +337,10 @@ impl Downloader for TransmissionDownloader {
                 parts.get(1).copied().unwrap_or(0),
             );
             if major < 4 || (major == 4 && minor < 1) {
-                return Ok(LoginResult {
-                    success: false,
-                    message: format!("Transmission 版本不支持（需 >= 4.1.0）：{version}"),
-                    version,
-                });
+                // 上游返回 EXCEPTION 状态（不进入冷却）
+                return Ok(LoginResult::exception(format!(
+                    "Transmission 版本不支持（需 >= 4.1.0）：{version}"
+                )));
             }
 
             // blocklist 必须指向 PBH 自身端点
@@ -366,28 +348,21 @@ impl Downloader for TransmissionDownloader {
             if !session.blocklist_enabled || !session.blocklist_url.starts_with(&expected) {
                 let url = format!("{expected}?t={}", chrono_like_now_ms());
                 if !self.set_blocklist_url(&url).await? {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: "设置 Transmission blocklist URL 失败".into(),
-                        version,
-                    });
+                    return Ok(LoginResult::exception(
+                        "设置 Transmission blocklist URL 失败",
+                    ));
                 }
                 if !self.update_blocklist().await? {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: "Transmission blocklist 更新失败".into(),
+                    return Ok(LoginResult::require_take_actions(
+                        "Transmission blocklist 更新失败",
                         version,
-                    });
+                    ));
                 }
             }
             if let Ok(mut guard) = self.healthy.lock() {
                 *guard = true;
             }
-            Ok(LoginResult {
-                success: true,
-                message: "OK".into(),
-                version,
-            })
+            Ok(LoginResult::success("OK", version))
         })
     }
 

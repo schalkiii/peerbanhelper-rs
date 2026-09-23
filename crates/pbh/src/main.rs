@@ -23,6 +23,7 @@ use pbh_db::{Database, DbBtnSubmitSource, DbMetadataStore, DbMonitorSink};
 use pbh_downloader::http::ReqwestFetcher;
 use pbh_web::{build_router, AppState, DownloaderStatus, Metrics, RingLog};
 use ring::RingLayer;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -64,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let data_dir = args.data.clone();
     std::fs::create_dir_all(&data_dir)?;
+    // 暴露数据目录给库内按 `<data>/...` 解析的路径（expression-engine 脚本目录等，
+    // 对齐上游 Main.getDataDirectory() 的语义）
+    std::env::set_var("PBH_DATA_DIR", &data_dir);
 
     let (mut cfg, cfg_path) = config::AppConfig::load_or_create(&data_dir)?;
     if let Some(port) = args.port {
@@ -359,6 +363,10 @@ async fn main() -> anyhow::Result<()> {
     // Web 后端：配置读写 / 下载器热管理 / 手动封禁 / 推送渠道（对齐上游各 Controller）
     let wave_trigger = Arc::new(tokio::sync::Notify::new());
     let global_pause = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // 登录闸门：wave 与 Web 后端共享；下载器更新/删除时重置（对齐上游
+    // `unregisterDownloader + registerDownloader` 使失败计数随实例重建而清零）
+    let login_gates: Arc<Mutex<HashMap<String, wave::LoginGate>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let backend = Arc::new(backend::PbhBackend::new(
         data_dir.clone(),
         cfg.clone(),
@@ -369,6 +377,7 @@ async fn main() -> anyhow::Result<()> {
         statuses.clone(),
         alert_manager.clone(),
         wave_trigger.clone(),
+        login_gates.clone(),
     ));
     // 规则订阅：与 Web 后端（`/api/sub/*`）共享同一份运行时配置
     let rulesub_shared: Arc<RwLock<IpRuleListConfig>> = Arc::new(RwLock::new(
@@ -476,7 +485,7 @@ async fn main() -> anyhow::Result<()> {
         alert_manager,
         monitor,
         geo,
-        login_gates: Default::default(),
+        login_gates,
     };
 
     let period = Duration::from_millis(cfg.profile.check_interval.max(500));

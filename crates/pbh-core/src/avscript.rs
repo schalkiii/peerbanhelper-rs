@@ -33,6 +33,7 @@
 use crate::model::{PeerData, TorrentData};
 use rhai::CustomType;
 use rhai::Engine;
+use rhai::Position;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -189,6 +190,65 @@ pub fn build_script_env() -> ScriptEnv {
             rhai::Dynamic::UNIT
         },
     );
+    // Aviator `double(x)` / `long(x)` / `int(x)`：失败时抛错（脚本按 pass 兜底，
+    // 对齐上游 NumberFormatException → 异常路径）
+    engine.register_fn(
+        "av_double",
+        |v: rhai::Dynamic| -> Result<rhai::FLOAT, Box<rhai::EvalAltResult>> {
+            if let Ok(f) = v.as_float() {
+                return Ok(f);
+            }
+            if let Ok(i) = v.as_int() {
+                return Ok(i as rhai::FLOAT);
+            }
+            let s = v.clone().into_string().map_err(|_| {
+                rhai::EvalAltResult::ErrorRuntime(
+                    format!("double() 需要 string，实得 {}", v.type_name()).into(),
+                    Position::NONE,
+                )
+            })?;
+            s.trim().parse::<rhai::FLOAT>().map_err(|e| {
+                Box::new(rhai::EvalAltResult::ErrorRuntime(
+                    format!("double() 无法解析 {s:?}: {e}").into(),
+                    Position::NONE,
+                ))
+            })
+        },
+    );
+    engine.register_fn(
+        "av_long",
+        |v: rhai::Dynamic| -> Result<i64, Box<rhai::EvalAltResult>> {
+            if let Ok(i) = v.as_int() {
+                return Ok(i);
+            }
+            if let Ok(f) = v.as_float() {
+                // 对齐 Java `(long) double` 的向零截断
+                return Ok(f as i64);
+            }
+            let s = v.clone().into_string().map_err(|_| {
+                rhai::EvalAltResult::ErrorRuntime(
+                    format!("long() 需要 string，实得 {}", v.type_name()).into(),
+                    Position::NONE,
+                )
+            })?;
+            s.trim().parse::<i64>().map_err(|e| {
+                Box::new(rhai::EvalAltResult::ErrorRuntime(
+                    format!("long() 无法解析 {s:?}: {e}").into(),
+                    Position::NONE,
+                ))
+            })
+        },
+    );
+    // Aviator `'a' + 123` 是合法字符串拼接；rhai 的 String + Int 未注册会运行期失败，
+    // 整脚本按 pass 兜底造成漏封。注册跨类型 `+`（任意值按 Java `String.valueOf` 语义转串拼接）。
+    engine.register_fn(
+        "+",
+        |a: rhai::ImmutableString, b: rhai::Dynamic| -> String { format!("{}{}", a, b) },
+    );
+    engine.register_fn(
+        "+",
+        |a: rhai::Dynamic, b: rhai::ImmutableString| -> String { format!("{}{}", a, b) },
+    );
 
     // ---- 超时兜底（对齐上游 runExpression 的 maxScriptExecuteTime） ----
     let start_for_cb = start.clone();
@@ -212,14 +272,42 @@ pub fn build_script_env() -> ScriptEnv {
 // AviatorScript → rhai 翻译器
 // ============================================================================
 
+/// 解析脚本头部元数据（`## @NAME` / `@AUTHOR` / `@CACHEABLE` / `@VERSION` / `@THREADSAFE`）。
+///
+/// 对齐上游 `AVScriptEngine.compileScript`：`#` 开头的行剥去井号后识别 `@NAME` 等
+/// （上游按 `substring(2)` 处理，即社区脚本惯用的 `##` 双井号；这里对 1 个或多个 `#` 都兼容）。
+pub fn parse_metadata(source: &str) -> (String, bool) {
+    let mut name = String::new();
+    let mut cacheable = true;
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let rest = rest.trim_start_matches('#').trim();
+        let Some(body) = rest.strip_prefix('@') else {
+            continue;
+        };
+        let body = body.trim();
+        if let Some(v) = body.strip_prefix("NAME") {
+            name = v.trim().to_string();
+        } else if let Some(v) = body.strip_prefix("CACHEABLE") {
+            cacheable = v.trim().parse().unwrap_or(true);
+        } else if body.strip_prefix("AUTHOR").is_some()
+            || body.strip_prefix("VERSION").is_some()
+            || body.strip_prefix("THREADSAFE").is_some()
+        {
+            // 仅 @NAME 用于展示名；其余字段不影响封禁语义
+        }
+    }
+    (name, cacheable)
+}
+
 /// 把 AviatorScript 源码翻译为 rhai 源码；无法安全翻译时返回 `Err(原因)`。
 pub fn transpile(source: &str) -> Result<String, String> {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::with_capacity(source.len() + 64);
     let mut i = 0usize;
     let n = chars.len();
-    // 上一个已产出的非空白字符，用于判断「语句起始位置」（裸赋值 → let）
-    let mut prev_sig = '\0';
 
     while i < n {
         let c = chars[i];
@@ -249,7 +337,6 @@ pub fn transpile(source: &str) -> Result<String, String> {
             }
             i += 2;
             out.push_str(&chars[start..i].iter().collect::<String>());
-            prev_sig = '/';
             continue;
         }
 
@@ -258,7 +345,6 @@ pub fn transpile(source: &str) -> Result<String, String> {
             let (s, ni) = read_string(&chars, i)?;
             out.push_str(&s);
             i = ni;
-            prev_sig = '"';
             continue;
         }
 
@@ -292,14 +378,12 @@ pub fn transpile(source: &str) -> Result<String, String> {
                     let args = split_args(&chars, k, close);
                     emit_namespaced_call(&mut out, &chars, &ident, &method, &args)?;
                     i = close + 1;
-                    prev_sig = ')';
                     continue;
                 }
                 // `string.` / `seq.` 后不是调用：原样透传（后续 rhai 编译报错，清晰可见）
                 out.push_str(&ident);
                 out.push('.');
                 i = m0;
-                prev_sig = '.';
                 continue;
             }
 
@@ -310,23 +394,22 @@ pub fn transpile(source: &str) -> Result<String, String> {
                     let args = split_args(&chars, j, close);
                     emit_builtin_call(&mut out, &chars, kind, &args)?;
                     i = close + 1;
-                    prev_sig = ')';
                     continue;
                 }
                 // 其它函数调用：名字原样保留，参数随主扫描继续（嵌套改写自然生效）
                 out.push_str(&ident);
                 out.push('(');
                 i = j + 1;
-                prev_sig = '(';
                 continue;
             }
 
-            // 3) 语句级裸赋值 `x = …`（非 `==`）→ `let x = …`
-            //    （rhai 允许 let 重声明遮蔽；上游脚本惯用隐式全局赋值）
+            // 3) 裸赋值 `x = …`（非 `==`）→ `let x = …`。
+            //    Aviator 裸赋值即变量定义，且语句分隔符（换行/分号）可省略，
+            //    无法可靠判定「语句起始位置」，故凡非比较的 `=` 一律改写为 `let`
+            //    （Aviator 不允许条件内赋值，误加 `let` 无副作用；rhai 允许 let 重声明遮蔽）。
+            //    源码本身写的是 `let x = …` 时（前一个已产出 token 是 `let`）不再重复包裹。
             if j < n && chars[j] == '=' && (j + 1 >= n || chars[j + 1] != '=') {
-                let at_statement =
-                    prev_sig == '\0' || prev_sig == ';' || prev_sig == '{' || prev_sig == '}';
-                if at_statement {
+                if !output_ends_with_let_keyword(&out) {
                     out.push_str("let ");
                 }
                 out.push_str(&ident);
@@ -335,14 +418,12 @@ pub fn transpile(source: &str) -> Result<String, String> {
                 while i < n && chars[i].is_whitespace() {
                     i += 1;
                 }
-                prev_sig = '=';
                 continue;
             }
 
             // 4) nil → ()
             if ident == "nil" {
                 out.push_str("()");
-                prev_sig = ')';
                 continue;
             }
 
@@ -350,15 +431,11 @@ pub fn transpile(source: &str) -> Result<String, String> {
             out.push_str(&ident);
             out.extend(chars[i..j].iter());
             i = j;
-            prev_sig = ident.chars().last().unwrap_or('_');
             continue;
         }
 
         // 其余字符原样
         out.push(c);
-        if !c.is_whitespace() {
-            prev_sig = c;
-        }
         i += 1;
     }
     Ok(out)
@@ -371,6 +448,9 @@ enum Builtin {
     ToLower,
     ToUpper,
     ToStr,
+    ToDouble,
+    ToLong,
+    ToInt,
 }
 
 fn builtin_kind(ident: &str) -> Option<Builtin> {
@@ -379,13 +459,24 @@ fn builtin_kind(ident: &str) -> Option<Builtin> {
         "isNotBlank" => Some(Builtin::IsNotBlank),
         "toLowerCase" => Some(Builtin::ToLower),
         "toUpperCase" => Some(Builtin::ToUpper),
-        "toString" => Some(Builtin::ToStr),
+        "toString" | "str" => Some(Builtin::ToStr),
+        "double" => Some(Builtin::ToDouble),
+        "long" => Some(Builtin::ToLong),
+        "int" => Some(Builtin::ToInt),
         _ => None,
     }
 }
 
 fn is_ident_start(c: char) -> bool {
     c.is_ascii_alphabetic() || c == '_'
+}
+
+/// 已产出文本的末尾（去空白后）是否恰好是独立的 `let` 关键字
+/// （用于避免把源码自身的 `let x = …` 重复包裹成 `let let x = …`）。
+fn output_ends_with_let_keyword(out: &str) -> bool {
+    let t = out.trim_end();
+    let word: String = t.chars().rev().take_while(|c| is_ident_char(*c)).collect();
+    word.chars().rev().eq("let".chars())
 }
 
 /// 两语言共用的控制流/保留字：不能当作函数调用改写（如 Aviator 惯用的 `if(...)` 写法）。
@@ -570,6 +661,18 @@ fn emit_builtin_call(
             require_arg_count("toString", args, 1)?;
             out.push_str(&format!("({a0}).to_string()"));
         }
+        Builtin::ToDouble => {
+            require_arg_count("double", args, 1)?;
+            out.push_str(&format!("av_double({a0})"));
+        }
+        Builtin::ToLong => {
+            require_arg_count("long", args, 1)?;
+            out.push_str(&format!("av_long({a0})"));
+        }
+        Builtin::ToInt => {
+            require_arg_count("int", args, 1)?;
+            out.push_str(&format!("av_long({a0})"));
+        }
     }
     Ok(())
 }
@@ -728,6 +831,19 @@ mod tests {
     }
 
     #[test]
+    fn transpile_bare_assignment_without_semicolons_still_becomes_let() {
+        // Aviator 的语句分隔符可省略（换行即分隔）；上一行以 `)` 结尾时
+        // 下一行裸赋值仍必须得到 `let`，否则 rhai 报未声明变量、整脚本按 pass（漏封）
+        let out =
+            transpile("ipAddress = peer.peerAddress.address\nstrIp = toString(ipAddress)\nstrIp")
+                .unwrap();
+        assert_eq!(
+            out,
+            "let ipAddress = peer.peerAddress.address\nlet strIp = (ipAddress).to_string()\nstrIp"
+        );
+    }
+
+    #[test]
     fn comparison_eq_is_not_treated_as_assignment() {
         let out = transpile("return x == 1;").unwrap();
         assert_eq!(out, "return x == 1;");
@@ -841,6 +957,35 @@ mod tests {
             env.engine.eval::<String>("(123).to_string()").unwrap(),
             "123"
         );
+    }
+
+    #[test]
+    fn string_plus_number_concatenates_like_aviator() {
+        // 上游 `return '下载=' + downloaded + ' 比例=' + ratio` 依赖跨类型 `+`
+        let v = eval_string("return '下载=' + 1024 + ' 比例=' + 0.5;");
+        assert_eq!(v, "下载=1024 比例=0.5");
+        let v = eval_string("return 7 + '天';");
+        assert_eq!(v, "7天");
+        // 字符串 + 字符串仍走 rhai 内建
+        let v = eval_string("return 'a' + 'b';");
+        assert_eq!(v, "ab");
+    }
+
+    #[test]
+    fn aviator_type_conversion_builtins() {
+        // 对齐上游 upload_ratio_check.av 的 `double(uploaded) / double(downloaded)`；
+        // `toString(3.0)` 与 Java `String.valueOf(3.0)` 一致输出 "3.0"
+        let v = eval_string("return toString(double('1.5') * 2);");
+        assert_eq!(v, "3.0");
+        // long 对浮点向零截断（对齐 Java (long) cast）
+        let env = build_script_env();
+        let src = transpile("return long(2.9);").unwrap();
+        assert_eq!(env.engine.eval::<i64>(&src).unwrap(), 2);
+        // 非法输入抛错 → 脚本按 pass 兜底（对齐上游 NumberFormatException）
+        assert!(env
+            .engine
+            .eval::<i64>(&transpile("return long('abc');").unwrap())
+            .is_err());
     }
 
     // ---------- 端到端：翻译后的社区脚本骨架在引擎里跑通 ----------

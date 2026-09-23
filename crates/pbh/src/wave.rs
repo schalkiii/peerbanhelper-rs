@@ -19,7 +19,7 @@ use pbh_core::modules::ProgressCheatBlocker;
 use pbh_core::pipeline::Decision;
 use pbh_core::Pipeline;
 use pbh_db::{peer_geoip_json, Database, HistoryRecord};
-use pbh_downloader::{BanEntry, Downloader, LoginResult};
+use pbh_downloader::{BanEntry, Downloader, LoginResult, LoginStatus};
 use pbh_web::{DownloaderStatus, Metrics};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -87,31 +87,28 @@ impl LoginGate {
     ) -> anyhow::Result<LoginResult> {
         if self.is_cooling(now_ms) {
             let cooling_until = self.next_login_try_ms.load(Ordering::Relaxed);
-            return Ok(LoginResult {
-                success: false,
-                message: format!("too many failed login attempts, retry after {cooling_until}"),
-                version: String::new(),
-            });
+            // 对齐上游冷却分支：返回 REQUIRE_TAKE_ACTIONS（外层不计数）
+            return Ok(LoginResult::require_take_actions(
+                format!("too many failed login attempts, retry after {cooling_until}"),
+                String::new(),
+            ));
         }
         match dl.login().await {
             Ok(result) => {
                 if result.success {
                     self.record_success();
+                } else if result.status == LoginStatus::IncorrectCredential {
+                    // 对齐上游：只有 INCORRECT_CREDENTIAL 递增计数；EXCEPTION /
+                    // REQUIRE_TAKE_ACTIONS / NETWORK_ERROR / PAUSED 等均不计数
+                    //（上游 qB/BitComet/Deluge/BiglyBT/Aria2 的 login0 内部 catch，
+                    //  网络故障恢复即恢复，不产生冷却盲区）
+                    self.record_failure(now_ms);
                 }
                 Ok(result)
             }
             Err(e) => {
-                // 上游对 IOException / Throwable 递增计数；返回的 LoginResult 只有
-                // INCORRECT_CREDENTIAL 才递增，本移植的 LoginResult 没有状态码，
-                // 故仅在 Err（网络/IO 异常）时递增，避免把版本不兼容等非凭据原因也计入冷却。
-                if self.record_failure(now_ms) {
-                    warn!(
-                        "下载器 {} 连续登录失败达 {} 次，按上游语义冷却至 {}（期间不再发起登录请求）",
-                        dl.id(),
-                        Self::MAX_ATTEMPTS,
-                        now_ms + Self::COOLDOWN_MS
-                    );
-                }
+                // 对应上游 `login0` 把异常抛到外层（如 Transmission 无 try/catch）→ 计数
+                self.record_failure(now_ms);
                 Err(e)
             }
         }
@@ -187,8 +184,11 @@ pub struct WaveEngine {
     /// 与 [`crate::monitor::MonitorHost`] 的落库 sink 共用同一份 provider（对齐上游
     /// `PersistMetrics` 注入的 `IPDBManager`）。
     pub geo: Option<Arc<dyn GeoIpProvider>>,
-    /// 下载器 ID → 登录闸门（对齐上游挂在 `AbstractDownloader` 上的失败计数与冷却）
-    pub login_gates: StdMutex<HashMap<String, LoginGate>>,
+    /// 下载器 ID → 登录闸门（对齐上游挂在 `AbstractDownloader` 上的失败计数与冷却）。
+    ///
+    /// 与 Web 后端共享：下载器更新/删除时由后端移除对应条目（对齐上游
+    /// `unregisterDownloader` 重建实例使计数清零的语义）。
+    pub login_gates: Arc<StdMutex<HashMap<String, LoginGate>>>,
 }
 
 impl WaveEngine {
@@ -534,6 +534,29 @@ impl WaveEngine {
             .entry(dl.id().to_string())
             .or_default()
             .clone();
+        if gate.is_cooling(now_ms) {
+            // 对齐上游冷却分支：每次 login() 都发布 WARN 告警（push=true，
+            // AlertManager 按 identifier 去重；冷却期内持续可见）
+            self.alert_manager
+                .publish_alert(
+                    true,
+                    AlertLevel::Warn,
+                    &format!("downloader-too-many-failed-attempt-{}", dl.id()),
+                    &TranslationComponent::with_params(
+                        "DOWNLOADER_ALERT_TOO_MANY_FAILED_ATTEMPT_TITLE",
+                        vec![Param::Text(dl.name().to_string())],
+                    ),
+                    &TranslationComponent::with_params(
+                        "DOWNLOADER_ALERT_TOO_MANY_FAILED_ATTEMPT_DESCRIPTION",
+                        vec![
+                            Param::Text(dl.name().to_string()),
+                            Param::Text("ERROR".to_string()),
+                            Param::Text(String::new()),
+                        ],
+                    ),
+                )
+                .await;
+        }
         let login = gate
             .login(&dl, now_ms)
             .await
@@ -807,13 +830,7 @@ mod tests {
             Vec::new()
         }
         fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
-            Box::pin(async {
-                Ok(LoginResult {
-                    success: true,
-                    message: String::new(),
-                    version: "5.0.0".to_string(),
-                })
-            })
+            Box::pin(async { Ok(LoginResult::success(String::new(), "5.0.0")) })
         }
         fn fetch_torrents<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Vec<TorrentData>>> {
             Box::pin(async { Ok(Vec::new()) })
@@ -867,6 +884,125 @@ mod tests {
             !gate.is_cooling(now + LoginGate::COOLDOWN_MS),
             "冷却到期后应恢复"
         );
+    }
+
+    /// 可配置登录结果的测试下载器（验证 LoginGate 的计数口径）。
+    struct GateMock {
+        result: StdMutex<LoginResult>,
+        fail_with_err: std::sync::atomic::AtomicBool,
+    }
+
+    impl Downloader for GateMock {
+        fn id(&self) -> &str {
+            "gate-mock"
+        }
+        fn name(&self) -> &str {
+            "GateMock"
+        }
+        fn downloader_type(&self) -> &'static str {
+            "qbittorrent"
+        }
+        fn feature_flags(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
+            Box::pin(async {
+                if self.fail_with_err.load(Ordering::Relaxed) {
+                    Err(anyhow::anyhow!("connect timeout"))
+                } else {
+                    Ok(self
+                        .result
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone())
+                }
+            })
+        }
+        fn fetch_torrents<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Vec<TorrentData>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn fetch_peers<'a>(
+            &'a self,
+            _torrent: &'a TorrentData,
+        ) -> BoxFuture<'a, anyhow::Result<Vec<PeerData>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn ban_peers<'a>(&'a self, _peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn replace_banned_ips<'a>(
+            &'a self,
+            _ips: &'a [String],
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
+            Box::pin(async { Ok(DownloaderStatistics::default()) })
+        }
+        fn get_speed_limiter<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<(i64, i64)>> {
+            Box::pin(async { Ok((0, 0)) })
+        }
+        fn set_speed_limiter<'a>(
+            &'a self,
+            _upload: i64,
+            _download: i64,
+        ) -> BoxFuture<'a, anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// 对齐上游计数口径：`Ok(INCORRECT_CREDENTIAL)` 与 `Err`（login0 外抛异常，如
+    /// Transmission）递增计数；`Ok(EXCEPTION)`（qB/BitComet/Deluge/BiglyBT/Aria2 的
+    /// login0 内部 catch）不计数——网络故障恢复即恢复，不产生冷却盲区；成功清零。
+    #[tokio::test]
+    async fn login_gate_counts_per_upstream_status_semantics() {
+        let now = 1_700_000_000_000i64;
+        let mock = Arc::new(GateMock {
+            result: StdMutex::new(LoginResult::exception("io error")),
+            fail_with_err: std::sync::atomic::AtomicBool::new(false),
+        });
+        let dl: Arc<dyn Downloader> = mock.clone();
+        let gate = LoginGate::default();
+
+        // EXCEPTION 状态：重复任意次都不计数、不冷却
+        for _ in 0..(LoginGate::MAX_ATTEMPTS * 2) {
+            let r = gate.login(&dl, now).await.unwrap();
+            assert_eq!(r.status, LoginStatus::Exception);
+            assert!(!gate.is_cooling(now));
+        }
+        assert_eq!(gate.attempts(), 0);
+
+        // INCORRECT_CREDENTIAL：达到上限进入冷却，冷却期内不再发起登录请求
+        *mock.result.lock().unwrap() = LoginResult::incorrect_credential("bad credential");
+        for _ in 0..(LoginGate::MAX_ATTEMPTS - 1) {
+            gate.login(&dl, now).await.unwrap();
+        }
+        assert_eq!(gate.attempts(), LoginGate::MAX_ATTEMPTS - 1);
+        let last = gate.login(&dl, now).await.unwrap();
+        assert_eq!(last.status, LoginStatus::IncorrectCredential);
+        assert!(gate.is_cooling(now), "第 15 次凭据失败应进入冷却");
+        // 冷却期内的登录尝试直接返回 REQUIRE_TAKE_ACTIONS（完全不发网络请求）
+        let cooled = gate.login(&dl, now).await.unwrap();
+        assert_eq!(cooled.status, LoginStatus::RequireTakeActions);
+
+        // Err（login0 外抛异常）：同样计数
+        let gate = LoginGate::default();
+        mock.fail_with_err.store(true, Ordering::Relaxed);
+        for _ in 0..LoginGate::MAX_ATTEMPTS {
+            assert!(gate.login(&dl, now).await.is_err());
+        }
+        assert!(gate.is_cooling(now));
+
+        // 登录成功清零计数
+        let gate = LoginGate::default();
+        mock.fail_with_err.store(false, Ordering::Relaxed);
+        *mock.result.lock().unwrap() = LoginResult::incorrect_credential("bad credential");
+        for _ in 0..5 {
+            gate.login(&dl, now).await.unwrap();
+        }
+        *mock.result.lock().unwrap() = LoginResult::success("OK", "5.0.0");
+        gate.login(&dl, now).await.unwrap();
+        assert_eq!(gate.attempts(), 0, "登录成功应清零失败计数");
     }
 
     fn engine(db: Arc<Database>) -> WaveEngine {

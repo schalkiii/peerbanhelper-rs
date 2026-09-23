@@ -18,12 +18,92 @@ pub use transmission::{TRConfig, TransmissionDownloader};
 
 use pbh_core::model::{PeerData, TorrentData};
 
+/// 登录结果状态（对齐上游 `DownloaderLoginResult.Status`）。
+///
+/// 冷却计数语义由外层 `AbstractDownloader.login()` 决定（wave 的 `LoginGate` 复刻）：
+/// - `IncorrectCredential` → `failedLoginAttempts++`；
+/// - `Ok(..)` 其它状态（Exception / RequireTakeActions / Paused / NetworkError）→ **不计数**
+///   （上游 qB/BitComet/Deluge/BiglyBT/Aria2 的 `login0` 内部 catch 异常返回 EXCEPTION/NETWORK_ERROR，
+///   网络故障不计入冷却，恢复即恢复）；
+/// - `Err(..)`（对应上游 `login0` 把异常抛到外层，如 Transmission 无 try/catch）→ 计数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginStatus {
+    Success,
+    IncorrectCredential,
+    Exception,
+    RequireTakeActions,
+    Paused,
+    NetworkError,
+    /// 上游 Deluge 插件缺失（`MISSING_COMPONENTS`，不进入冷却）
+    MissingComponents,
+}
+
 /// 登录/健康检查结果
 #[derive(Clone, Debug)]
 pub struct LoginResult {
     pub success: bool,
+    pub status: LoginStatus,
     pub message: String,
     pub version: String,
+}
+
+impl LoginResult {
+    pub fn success(message: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            status: LoginStatus::Success,
+            message: message.into(),
+            version: version.into(),
+        }
+    }
+    pub fn incorrect_credential(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::IncorrectCredential,
+            message: message.into(),
+            version: String::new(),
+        }
+    }
+    pub fn exception(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::Exception,
+            message: message.into(),
+            version: String::new(),
+        }
+    }
+    pub fn network_error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::NetworkError,
+            message: message.into(),
+            version: String::new(),
+        }
+    }
+    pub fn missing_components(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::MissingComponents,
+            message: message.into(),
+            version: String::new(),
+        }
+    }
+    pub fn require_take_actions(message: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::RequireTakeActions,
+            message: message.into(),
+            version: version.into(),
+        }
+    }
+    pub fn paused(message: impl Into<String>, version: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: LoginStatus::Paused,
+            message: message.into(),
+            version: version.into(),
+        }
+    }
 }
 
 /// 下载器概要统计（对齐 alltime_ul / alltime_dl）

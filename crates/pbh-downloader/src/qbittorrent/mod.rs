@@ -186,7 +186,11 @@ impl QBittorrentDownloader {
 
     /// 登录成功后的收尾：版本校验 + 首次健康时关闭「同 IP 多连接」。
     async fn finish_login(&self) -> anyhow::Result<LoginResult> {
-        let version_resp = self.get("/app/version").await?;
+        // 上游 `getDownloaderVersion()` 在 `login0` 的 try 内（异常 → EXCEPTION，不进入冷却）
+        let version_resp = match self.get("/app/version").await {
+            Ok(v) => v,
+            Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
+        };
         let version = version_resp.body.trim().trim_start_matches('v').to_string();
         if let Ok(mut last) = self.last_version.lock() {
             *last = version.clone();
@@ -203,13 +207,12 @@ impl QBittorrentDownloader {
             (4, 5, 0)
         };
         if !version_at_least(&version, min_major, min_minor, min_patch) {
-            return Ok(LoginResult {
-                success: false,
-                message: format!(
+            return Ok(LoginResult::require_take_actions(
+                format!(
                     "unsupported qBittorrent version: {version} (require >= {min_major}.{min_minor}.{min_patch})"
                 ),
                 version,
-            });
+            ));
         }
 
         let first_healthy = !self.healthy.swap(true, Ordering::SeqCst);
@@ -217,14 +220,13 @@ impl QBittorrentDownloader {
             let form = self.set_preferences(
                 serde_json::json!({ "enable_multi_connections_from_same_ip": false }),
             );
-            self.post_form("/app/setPreferences", form).await?;
+            // 上游在 `login0` 的 try 内调用（异常 → EXCEPTION，不进入冷却）
+            if let Err(e) = self.post_form("/app/setPreferences", form).await {
+                return Ok(LoginResult::exception(format!("{e:#}")));
+            }
         }
 
-        Ok(LoginResult {
-            success: true,
-            message: "OK".into(),
-            version,
-        })
+        Ok(LoginResult::success("OK", version))
     }
 
     async fn fetch_properties(&self, hash: &str) -> anyhow::Result<TorrentProperties> {
@@ -278,8 +280,8 @@ impl Downloader for QBittorrentDownloader {
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
             // 1. 复用已有会话（对齐 Java `login0` 开头的 `if (isLoggedIn()) return SUCCESS`）。
-            //    API Key 认证同样走此路径（无状态，无需 /auth/login）。
-            if self.session_valid().await? {
+            //    上游 `isLoggedIn()` 自捕获异常返回 false，传输失败不在此中断（继续走认证）。
+            if self.session_valid().await.unwrap_or(false) {
                 return self.finish_login().await;
             }
             // API Key 无效时不再尝试表单登录（上游直接返回凭据错误）
@@ -289,15 +291,13 @@ impl Downloader for QBittorrentDownloader {
                 .as_deref()
                 .is_some_and(|k| !k.trim().is_empty())
             {
-                return Ok(LoginResult {
-                    success: false,
-                    message: "API Key authentication failed".into(),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::incorrect_credential(
+                    "API Key authentication failed",
+                ));
             }
 
-            // 2. 表单登录
-            let resp = self
+            // 2. 表单登录（上游 catch(Exception) → EXCEPTION 状态，网络故障不进入冷却）
+            let resp = match self
                 .send(HttpRequest::post_form(
                     format!("{}/auth/login", self.api_base),
                     vec![
@@ -305,23 +305,24 @@ impl Downloader for QBittorrentDownloader {
                         ("password".to_string(), self.config.password.clone()),
                     ],
                 ))
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
+            };
             let body = resp.body.trim();
             if !body.eq_ignore_ascii_case("Ok.") {
-                return Ok(LoginResult {
-                    success: false,
-                    message: format!("login failed: {body}"),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::incorrect_credential(format!(
+                    "login failed: {body}"
+                )));
             }
 
-            // 3. 会话校验：buildInfo 的 libtorrent 非空
-            if !self.session_valid().await? {
-                return Ok(LoginResult {
-                    success: false,
-                    message: "session invalid: empty libtorrent".into(),
-                    version: String::new(),
-                });
+            // 3. 会话校验：buildInfo 的 libtorrent 非空（上游 `isLoggedIn()` 自捕获 →
+            //    false 时同样落入 INCORRECT_CREDENTIAL 分支，不计数）
+            if !self.session_valid().await.unwrap_or(false) {
+                return Ok(LoginResult::incorrect_credential(
+                    "session invalid: empty libtorrent",
+                ));
             }
             self.finish_login().await
         })

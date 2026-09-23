@@ -47,7 +47,9 @@ pub mod crypto;
 pub mod dto;
 
 use crate::http::{BoxFuture, HttpFetcher, HttpRequest, HttpResponse, ReqwestFetcher};
-use crate::{BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult};
+use crate::{
+    BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult, LoginStatus,
+};
 use crypto::CLIENT_ID;
 use dto::*;
 use pbh_core::defaults::qb as qbcfg;
@@ -558,19 +560,17 @@ impl Downloader for BitCometDownloader {
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
             if self.config.paused {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(MSG_PAUSED, Vec::new()),
-                    version: self.server_version(),
-                });
+                return Ok(LoginResult::paused(
+                    tl(MSG_PAUSED, Vec::new()),
+                    self.server_version(),
+                ));
             }
             // `if (isLoggedIn()) return SUCCESS; // 重用 Session 会话`
             if self.is_logged_in().await {
-                return Ok(LoginResult {
-                    success: true,
-                    message: tl(MSG_STATUS_OK, Vec::new()),
-                    version: self.server_version(),
-                });
+                return Ok(LoginResult::success(
+                    tl(MSG_STATUS_OK, Vec::new()),
+                    self.server_version(),
+                ));
             }
 
             // 1) AES 加密凭据并登录
@@ -587,17 +587,13 @@ impl Downloader for BitCometDownloader {
                 Err(e) => return Ok(login_io_exception(&e)),
             };
             if !is_success(login_resp.status) {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(format!(
-                            "{} {}",
-                            login_resp.status, login_resp.body
-                        ))],
-                    ),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::exception(tl(
+                    MSG_LOGIN_EXCEPTION,
+                    vec![Param::Text(format!(
+                        "{} {}",
+                        login_resp.status, login_resp.body
+                    ))],
+                )));
             }
             let login_response: BCLoginResponse = match serde_json::from_str(&login_resp.body) {
                 Ok(parsed) => parsed,
@@ -605,43 +601,33 @@ impl Downloader for BitCometDownloader {
             };
             let error_code = login_response.error_code.clone().unwrap_or_default();
             if error_code.eq_ignore_ascii_case("PASSWORD_ERROR") {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_INCORRECT_CRED,
-                        // 上游把响应对象本身作为占位参数（Gson/Lombok toString）
-                        vec![Param::Text(login_response.to_string())],
-                    ),
-                    version: login_response.version.clone().unwrap_or_default(),
-                });
+                return Ok(LoginResult::incorrect_credential(tl(
+                    MSG_LOGIN_INCORRECT_CRED,
+                    // 上游把响应对象本身作为占位参数（Gson/Lombok toString）
+                    vec![Param::Text(login_response.to_string())],
+                )));
             }
             if !error_code.eq_ignore_ascii_case("ok") {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(login_response.to_string())],
-                    ),
-                    version: login_response.version.clone().unwrap_or_default(),
-                });
+                return Ok(LoginResult::exception(tl(
+                    MSG_LOGIN_EXCEPTION,
+                    vec![Param::Text(login_response.to_string())],
+                )));
             }
 
             // 2) 版本检查：major > 2 或 (major == 2 && minor >= 18)
             let raw_version = login_response.version.clone().unwrap_or_default();
             let Some((major, minor, _)) = parse_loose_semver(&raw_version) else {
                 // 上游 `new Semver(...)` 抛 SemverException（null 则为 NPE），均落入外层 catch
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_IO_EXCEPTION,
-                        vec![Param::Text(format!("SemverException: {raw_version}"))],
-                    ),
-                    version: raw_version,
-                });
+                return Ok(LoginResult::exception(tl(
+                    MSG_LOGIN_IO_EXCEPTION,
+                    vec![Param::Text(format!("SemverException: {raw_version}"))],
+                )));
             };
             if !(major > 2 || (major == 2 && minor >= 18)) {
+                // 上游版本不达标 → MISSING_COMPONENTS（不进入冷却）
                 return Ok(LoginResult {
                     success: false,
+                    status: LoginStatus::MissingComponents,
                     message: tl(
                         MSG_VERSION_UNACCEPTABLE,
                         vec![Param::Text(MIN_VERSION.to_string())],
@@ -667,17 +653,13 @@ impl Downloader for BitCometDownloader {
                 Err(e) => return Ok(login_io_exception(&e)),
             };
             if !is_success(device_resp.status) {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(format!(
-                            "{} {}",
-                            device_resp.status, device_resp.body
-                        ))],
-                    ),
-                    version: raw_version,
-                });
+                return Ok(LoginResult::exception(tl(
+                    MSG_LOGIN_EXCEPTION,
+                    vec![Param::Text(format!(
+                        "{} {}",
+                        device_resp.status, device_resp.body
+                    ))],
+                )));
             }
             let device_token_result: BCDeviceTokenResult =
                 match serde_json::from_str(&device_resp.body) {
@@ -703,11 +685,10 @@ impl Downloader for BitCometDownloader {
                 Err(e) => return Ok(login_io_exception(&e)),
             }
 
-            Ok(LoginResult {
-                success: true,
-                message: tl(MSG_STATUS_OK, Vec::new()),
-                version: server_version,
-            })
+            Ok(LoginResult::success(
+                tl(MSG_STATUS_OK, Vec::new()),
+                server_version,
+            ))
         })
     }
 
@@ -1162,14 +1143,10 @@ fn is_success(status: u16) -> bool {
 /// 对齐 `new DownloaderLoginResult(Status.EXCEPTION, new TranslationComponent(Lang.DOWNLOADER_LOGIN_IO_EXCEPTION, e.getClass().getName() + ": " + e.getMessage()))`。
 fn login_io_exception(e: &anyhow::Error) -> LoginResult {
     let (class, message) = exception_params(e);
-    LoginResult {
-        success: false,
-        message: tl(
-            MSG_LOGIN_IO_EXCEPTION,
-            vec![Param::Text(format!("{class}: {message}"))],
-        ),
-        version: String::new(),
-    }
+    LoginResult::exception(tl(
+        MSG_LOGIN_IO_EXCEPTION,
+        vec![Param::Text(format!("{class}: {message}"))],
+    ))
 }
 
 /// 对齐上游 `e.getClass().getName()` 与 `e.getMessage()` 两个占位参数。

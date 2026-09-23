@@ -57,7 +57,9 @@
 pub mod dto;
 
 use crate::http::{BoxFuture, HttpFetcher, HttpRequest, ReqwestFetcher};
-use crate::{BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult};
+use crate::{
+    BanEntry, Downloader, DownloaderFeature, DownloaderStatistics, LoginResult, LoginStatus,
+};
 use dto::*;
 use pbh_core::defaults::qb as qbcfg;
 use pbh_core::i18n::{Param, TranslationComponent, Translator};
@@ -444,11 +446,10 @@ impl Downloader for Aria2Downloader {
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
             if self.config.paused {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(MSG_PAUSED, Vec::new()),
-                    version: self.version(),
-                });
+                return Ok(LoginResult::paused(
+                    tl(MSG_PAUSED, Vec::new()),
+                    self.version(),
+                ));
             }
             // `buildRpcRequest("aria2.getVersion", null)`
             let resp = match self
@@ -472,6 +473,7 @@ impl Downloader for Aria2Downloader {
                             debug!("Connected Aria2RPC server validation failure: {result:?}");
                             return Ok(LoginResult {
                                 success: false,
+                                status: LoginStatus::MissingComponents,
                                 message: tl(MSG_INCORRECT_PRODUCT, Vec::new()),
                                 version,
                             });
@@ -479,34 +481,25 @@ impl Downloader for Aria2Downloader {
                         // 对齐 `new Semver(version, LOOSE)`：不可解析时抛 SemverException
                         // （被最外层 catch 转成 NETWORK_ERROR）
                         if parse_loose_semver(&version).is_none() {
-                            return Ok(LoginResult {
-                                success: false,
-                                message: tl(
-                                    MSG_LOGIN_IO_EXCEPTION,
-                                    vec![Param::Text(format!("SemverException: {version}"))],
-                                ),
-                                version,
-                            });
+                            return Ok(LoginResult::network_error(tl(
+                                MSG_LOGIN_IO_EXCEPTION,
+                                vec![Param::Text(format!("SemverException: {version}"))],
+                            )));
                         }
                         if let Ok(mut last) = self.last_version.lock() {
                             *last = version.clone();
                         }
-                        return Ok(LoginResult {
-                            success: true,
-                            message: tl(MSG_STATUS_OK, Vec::new()),
-                            version,
-                        });
+                        return Ok(LoginResult::success(tl(MSG_STATUS_OK, Vec::new()), version));
                     }
                 }
                 // `result`/`version` 缺失：落到 login0 末尾的 EXCEPTION 分支
                 return Ok(login_status_code_exception(resp.status, self.version()));
             }
             if resp.status == 401 || resp.status == 403 {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(MSG_LOGIN_INCORRECT_CRED, Vec::new()),
-                    version: self.version(),
-                });
+                return Ok(LoginResult::incorrect_credential(tl(
+                    MSG_LOGIN_INCORRECT_CRED,
+                    Vec::new(),
+                )));
             }
             Ok(login_status_code_exception(resp.status, self.version()))
         })
@@ -775,6 +768,7 @@ fn is_success(status: u16) -> bool {
 fn login_status_code_exception(status: u16, version: String) -> LoginResult {
     LoginResult {
         success: false,
+        status: LoginStatus::Exception,
         message: tl(
             MSG_LOGIN_EXCEPTION,
             vec![Param::Text(format!("statusCode={status}"))],
@@ -787,14 +781,10 @@ fn login_status_code_exception(status: u16, version: String) -> LoginResult {
 /// `new TranslationComponent(Lang.DOWNLOADER_LOGIN_IO_EXCEPTION, e.getClass().getName() + ": " + e.getMessage())`。
 fn login_io_exception(e: &anyhow::Error) -> LoginResult {
     let (class, message) = exception_params(e);
-    LoginResult {
-        success: false,
-        message: tl(
-            MSG_LOGIN_IO_EXCEPTION,
-            vec![Param::Text(format!("{class}: {message}"))],
-        ),
-        version: String::new(),
-    }
+    LoginResult::network_error(tl(
+        MSG_LOGIN_IO_EXCEPTION,
+        vec![Param::Text(format!("{class}: {message}"))],
+    ))
 }
 
 /// 对齐上游 `e.getClass().getName()` 与 `e.getMessage()` 两个占位参数。

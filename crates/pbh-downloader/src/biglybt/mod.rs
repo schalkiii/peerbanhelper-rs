@@ -321,92 +321,66 @@ impl Downloader for BiglyBtDownloader {
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
             if self.config.paused {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(MSG_PAUSED, Vec::new()),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::paused(tl(MSG_PAUSED, Vec::new()), ""));
             }
             let resp = match self.get("/metadata").await {
                 Ok(resp) => resp,
-                // 对齐最外层 `catch (Exception e)` → NETWORK_ERROR
+                // 对齐最外层 `catch (Exception e)` → NETWORK_ERROR（不进入冷却）
                 Err(e) => {
                     let (class, message) = exception_params(&e);
-                    return Ok(LoginResult {
-                        success: false,
-                        message: tl(
-                            MSG_LOGIN_IO_EXCEPTION,
-                            vec![Param::Text(format!("{class}: {message}"))],
-                        ),
-                        version: String::new(),
-                    });
+                    return Ok(LoginResult::network_error(tl(
+                        MSG_LOGIN_IO_EXCEPTION,
+                        vec![Param::Text(format!("{class}: {message}"))],
+                    )));
                 }
             };
             if !is_success(resp.status) {
                 if resp.status == 403 {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: tl(MSG_INCORRECT_CRED, Vec::new()),
-                        version: String::new(),
-                    });
+                    return Ok(LoginResult::incorrect_credential(tl(
+                        MSG_INCORRECT_CRED,
+                        Vec::new(),
+                    )));
                 }
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_EXCEPTION,
-                        vec![Param::Text(format!("statusCode={}", resp.status))],
-                    ),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::exception(tl(
+                    MSG_LOGIN_EXCEPTION,
+                    vec![Param::Text(format!("statusCode={}", resp.status))],
+                )));
             }
             // 解析失败在 Java 里是 JsonSyntaxException，同样被最外层 catch 转成 NETWORK_ERROR
             let metadata: MetadataCallbackBean = match serde_json::from_str(&resp.body) {
                 Ok(metadata) => metadata,
                 Err(e) => {
-                    return Ok(LoginResult {
-                        success: false,
-                        message: tl(
-                            MSG_LOGIN_IO_EXCEPTION,
-                            vec![Param::Text(format!("JsonSyntaxException: {e}"))],
-                        ),
-                        version: String::new(),
-                    });
+                    return Ok(LoginResult::network_error(tl(
+                        MSG_LOGIN_IO_EXCEPTION,
+                        vec![Param::Text(format!("JsonSyntaxException: {e}"))],
+                    )));
                 }
             };
             // 上游对 null 的 pluginVersion 会 NPE（同样落入最外层 catch）
             let Some(plugin_version) = metadata.plugin_version.as_deref().map(str::trim) else {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_IO_EXCEPTION,
-                        vec![Param::Text(
-                            "NullPointerException: pluginVersion is null".to_string(),
-                        )],
-                    ),
-                    version: String::new(),
-                });
+                return Ok(LoginResult::network_error(tl(
+                    MSG_LOGIN_IO_EXCEPTION,
+                    vec![Param::Text(
+                        "NullPointerException: pluginVersion is null".to_string(),
+                    )],
+                )));
             };
             // `new Semver(version)` 解析失败会抛 SemverException（→ NETWORK_ERROR）
             let Some(too_old) = adapter_version_lower_than_min(plugin_version, MIN_ADAPTER_VERSION)
             else {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
-                        MSG_LOGIN_IO_EXCEPTION,
-                        vec![Param::Text(format!("SemverException: {plugin_version}"))],
-                    ),
-                    version: plugin_version.to_string(),
-                });
+                return Ok(LoginResult::network_error(tl(
+                    MSG_LOGIN_IO_EXCEPTION,
+                    vec![Param::Text(format!("SemverException: {plugin_version}"))],
+                )));
             };
             if too_old {
-                return Ok(LoginResult {
-                    success: false,
-                    message: tl(
+                return Ok(LoginResult::require_take_actions(
+                    tl(
                         MSG_ADAPTER_VERSION,
                         vec![Param::Text(MIN_ADAPTER_VERSION.to_string())],
                     ),
-                    version: plugin_version.to_string(),
-                });
+                    plugin_version,
+                ));
             }
             // 上游 `enqueue` 后立即返回：不等待、不检查状态码，只记录传输失败。
             let payload = ConnectorData {
@@ -422,11 +396,10 @@ impl Downloader for BiglyBtDownloader {
                 }
                 Err(e) => warn!("Unable to set connector for BiglyBT: {e}"),
             }
-            Ok(LoginResult {
-                success: true,
-                message: tl(MSG_STATUS_OK, Vec::new()),
-                version: plugin_version.to_string(),
-            })
+            Ok(LoginResult::success(
+                tl(MSG_STATUS_OK, Vec::new()),
+                plugin_version.to_string(),
+            ))
         })
     }
 
