@@ -103,11 +103,8 @@ pub async fn access_history(
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(30)
         .clamp(1, 500);
-    let order: Vec<(String, bool)> = params
-        .iter()
-        .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
-        .flat_map(|(_, value)| crate::parse_order_by(Some(value)))
-        .collect();
+    // `orderBy` 的值是 `field|asc|desc`，按值解析（见 `api::parse_order_by_params`）
+    let order: Vec<(String, bool)> = crate::api::parse_order_by_params(&params);
     match state
         .db
         .query_access_history(None, Some(&info_hash), &order, size, (page - 1) * size)

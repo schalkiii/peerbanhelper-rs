@@ -165,8 +165,8 @@ pub trait WebBackend: Send + Sync {
     // —— 手动封禁 / 解封（`PUT/DELETE /api/bans`）--
     /// 把 peer 加入封禁清单（调度器在下一轮 wave 应用）。
     fn ban_peers(&self, ips: &[String]) -> Result<(), String>;
-    /// 从封禁清单移除（`*` 表示清空）。
-    fn unban_peers(&self, ips: &[String]) -> Result<(), String>;
+    /// 从封禁清单移除（`*` 表示清空）；返回实际解封条数。
+    fn unban_peers(&self, ips: &[String]) -> Result<usize, String>;
 
     // —— 下载器管理 ----
     /// 下载器列表（含运行时状态，供 `/api/downloaders`）。

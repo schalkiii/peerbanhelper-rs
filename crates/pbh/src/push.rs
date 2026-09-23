@@ -1193,7 +1193,12 @@ fn smtp_build_message(
         .subject(subject)
         .singlepart(
             SinglePart::builder()
-                .header(ContentType::TEXT_HTML)
+                // 上游 `setContent(..., "text/html; charset=UTF-8")`：`TEXT_HTML` 只有
+                // `text/html`，缺 charset 时中文正文会被客户端按其它编码解出乱码。
+                .header(
+                    ContentType::parse("text/html; charset=utf-8")
+                        .unwrap_or(ContentType::TEXT_HTML),
+                )
                 .body(markdown_to_html(text)),
         )
         .map_err(|e| anyhow::anyhow!("unable to build mail message: {e}"))

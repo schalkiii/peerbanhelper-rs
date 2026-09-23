@@ -191,6 +191,15 @@ impl QBittorrentDownloader {
             Ok(v) => v,
             Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
         };
+        // 上游 `getDownloaderVersion()` 在 `!response.isSuccessful()` 时抛
+        // `IllegalStateException`（`login0` 的 catch → EXCEPTION，不进入冷却）；
+        // 缺了这一步，403/404 或反代返回的 HTML 会被当成版本串解析。
+        if !(200..300).contains(&version_resp.status) {
+            return Ok(LoginResult::exception(format!(
+                "failed to fetch qBittorrent version: statusCode={}",
+                version_resp.status
+            )));
+        }
         let version = version_resp.body.trim().trim_start_matches('v').to_string();
         if let Ok(mut last) = self.last_version.lock() {
             *last = version.clone();
@@ -310,10 +319,12 @@ impl Downloader for QBittorrentDownloader {
                 Ok(resp) => resp,
                 Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
             };
-            let body = resp.body.trim();
-            if !body.eq_ignore_ascii_case("Ok.") {
+            // 上游以 `response.isSuccessful() && "Ok.".equals(body)` 判定成功
+            if !(200..300).contains(&resp.status) || !resp.body.trim().eq_ignore_ascii_case("Ok.") {
                 return Ok(LoginResult::incorrect_credential(format!(
-                    "login failed: {body}"
+                    "login failed: statusCode={} body={}",
+                    resp.status,
+                    resp.body.trim()
                 )));
             }
 
@@ -339,6 +350,15 @@ impl Downloader for QBittorrentDownloader {
                         "/torrents/info?filter=active&limit={page}&offset={offset}"
                     ))
                     .await?;
+                // 上游 `!response.isSuccessful()` 时抛 `IllegalStateException`
+                //（DOWNLOADER_QB_FAILED_REQUEST_TORRENT_LIST）；缺了这一步，会话过期
+                // 或 5xx 会被静默当成「没有种子」。
+                if !(200..300).contains(&resp.status) {
+                    anyhow::bail!(
+                        "request torrent list failed: statusCode={}",
+                        resp.status
+                    );
+                }
                 let batch: Vec<QBittorrentTorrent> =
                     serde_json::from_str(&resp.body).unwrap_or_default();
                 let batch_len = batch.len();
@@ -407,6 +427,10 @@ impl Downloader for QBittorrentDownloader {
                     urlencoding(&torrent.hash)
                 ))
                 .await?;
+            // 上游 `!response.isSuccessful()` 时抛 `IllegalStateException`
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("request peers failed: statusCode={}", resp.status);
+            }
             let parsed: TorrentPeersResponse = serde_json::from_str(&resp.body).unwrap_or_default();
             let mut out = Vec::new();
             for (raw_ip, p) in parsed.peers {
@@ -455,8 +479,14 @@ impl Downloader for QBittorrentDownloader {
             }
             let payload: Vec<String> = peers.iter().map(|p| p.raw_ip.clone()).collect();
             let payload = dedupe_join(&payload, "|");
-            self.post_form("/transfer/banPeers", vec![("peers".to_string(), payload)])
+            let resp = self
+                .post_form("/transfer/banPeers", vec![("peers".to_string(), payload)])
                 .await?;
+            // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_INCREAMENT_BAN_FAILED`
+            // 并抛异常；静默成功会把「封禁未生效」当成已下发。
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("save qBittorrent banlist error: statusCode={}", resp.status);
+            }
             Ok(())
         })
     }
@@ -477,7 +507,14 @@ impl Downloader for QBittorrentDownloader {
             }
             joined.sort();
             let form = self.set_preferences(serde_json::json!({ "banned_IPs": joined.join("\n") }));
-            self.post_form("/app/setPreferences", form).await?;
+            let resp = self.post_form("/app/setPreferences", form).await?;
+            // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_FAILED_SAVE_BANLIST` 并抛异常
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!(
+                    "save qBittorrent banlist error: statusCode={}",
+                    resp.status
+                );
+            }
             Ok(())
         })
     }

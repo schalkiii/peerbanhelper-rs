@@ -5,6 +5,36 @@
 
 ## 未发布（working tree）
 
+### fix(移植对齐): 全面 review 修复与上游行为不一致
+
+- **Web 鉴权**：`token` 为空时不再放行任何鉴权 API，改为 `303 /init`（对齐上游
+  `WEBAPI_NEED_INIT`）；首次启动随机生成访问令牌并写回 `config.yml`（替代原匿名裸奔）。
+- **统计接口**（`pbh-db`）：`ban_trends` / `field_stats` / `weeklySessions` 数据源改为
+  `history` 表（JOIN `torrents`），对齐上游 `HistoryServiceImpl` / `PBHMetricsController`；
+  按天分桶使用**本地时区当日 0 点**闭区间；`field_stats` 走上游 `mapField` 字段映射
+  （`peerId` 按 `substringLength=8` 截断）。
+- **种子查询**：修正关键词参数占位符绑定（`?1||'%'` 复用占位符导致 `SQLITE_RANGE`）；
+  封禁数取自 `history.torrent_id`（原 `ban_logs` 为废弃表）。
+- **下载器适配**：qBittorrent 的版本/登录/种子列表/peers/封禁下发均校验 HTTP 状态码，
+  失败不再静默；Transmission 的 Basic Auth 在用户名或密码任一非空即带上（反代常见
+  `空用户名+密码`），`blocklist-update` 失败仅记日志不抛出（对齐上游不阻断本轮）；
+  HTTP 方法解析失败报错、响应体读取失败上抛（不再吞为 `GET`/空串）。
+- **规则/模型**：`PeerFlag` 的 `is_from_incoming` / `outgoing_connection` 改为恒 `false`
+  （`parseLibTorrent` 不设这两位，原按 `local_connection` 反推会把 NAT 误配告警条件写反）；
+  `MultiDialingBlocker` 的 `keep-hunting-time` 默认值改为 `2592000s→2_592_000_000ms`；
+  `StringBlacklist` 命中的 `data.rule` 改为命中规则的 `metadata()`（规则串，如 `-hp`），
+  原为 peer 自身值；`peer_id` 截断按 **UTF-16 码元**口径（含 emoji 等增补平面字符不多吃字符）；
+  i18n 反序列化新增 `null` 参数分支（上游 `null` 渲染为 `"null"`）；SMTP 正文补
+  `text/html; charset=utf-8` 避免中文乱码。
+- **空闲连接保护**：`idle-connection-dos-protection`（默认关闭）的 `onPeersRetrieved`
+  在 `wave::run_downloader` 显式派发，缺失会让跟踪表只增不减；并修复除零。
+- **BTN 上报**：`orderBy` 改用 `parse_order_by_params`（原 `parse_order_by` 传值恒空）；
+  `DELETE /api/bans` 返回实际解封条数（上游 `count`）；订阅日志分页 1-based（off-by-one 修复）；
+  `/blocklist/ip` 每行补 `/32` `/128` 前缀（下游按 CIDR 解析会丢弃裸地址）；
+  历史上报循环加防死循环保护（游标不推进即退出）；遗留封禁上报游标初值取构造时刻
+  （对齐上游 `lastReport = OffsetDateTime.now()`，避免首轮重报全部历史）；`reconfigure`
+  后按 `kind` 重新定位 ability（避免下标串位）。
+
 ### feat(wave): 单条封禁日志（Lang.BAN_PEER）对齐上游
 
 - 新增逐条封禁 INFO 日志（对齐 `DownloaderServerImpl` 第 252 行：**仅 `action != BAN_FOR_DISCONNECT`

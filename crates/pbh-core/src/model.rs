@@ -120,14 +120,59 @@ impl PeerFlag {
         }
     }
 
+    /// 上游 `PeerFlag.isFromIncoming()`（`peerSourceFlags` 第 5 位）。
+    ///
+    /// `parseLibTorrent` 从不设置该位（只设置 DHT/PEX/LSD 三个来源位），因此恒为
+    /// `false`——不要按 `local_connection` 反推，否则 NAT 误配告警的条件会与上游相反。
     pub fn is_from_incoming(&self) -> bool {
-        // 上游 RunCheckModuleOrgan 中用于 NAT 误配提醒的简化判定
-        !self.outgoing_connection()
+        false
     }
 
+    /// 上游 `PeerFlag.isOutgoingConnection()`（`peerFlags` 第 5 位）。
+    ///
+    /// 同上：`parseLibTorrent` 从不设置该位，恒为 `false`。上游
+    /// `isPeerHavePossibleBadNatConfig` 里的 `!isOutgoingConnection()` 因此对任何
+    /// 带 flags 的 peer 恒真（该分支实际不产生过滤作用）。
     pub fn outgoing_connection(&self) -> bool {
-        // libtorrent flags 中没有直接字符；本地连接且非入站语义保守处理
-        self.local_connection
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn libtorrent_flags_never_report_incoming_or_outgoing() {
+        // 上游 `parseLibTorrent` 只设置 DHT/PEX/LSD 来源位，不设置
+        // `peerFlags` 第 5 位（outgoing）与 `peerSourceFlags` 第 5 位（incoming），
+        // 因此二者恒为 false——不能用 local_connection 反推。
+        let flag = PeerFlag::parse("d u X");
+        assert!(!flag.is_from_incoming());
+        assert!(!flag.outgoing_connection());
+        assert!(flag.from_pex);
+        assert!(!flag.from_dht);
+
+        // 同时带 DHT/PEX/LSD 的 flags
+        let mixed = PeerFlag::parse("H X L");
+        assert!(mixed.from_dht);
+        assert!(mixed.from_pex);
+        assert!(mixed.from_lsd);
+
+        // 入站连接（'I' 清掉 local_connection）也不得改变 incoming 判定
+        let inbound = PeerFlag::parse("I");
+        assert!(!inbound.is_from_incoming());
+        assert!(!inbound.local_connection);
+    }
+
+    #[test]
+    fn peer_flag_parses_source_bits() {
+        let flag = PeerFlag::parse("H X L");
+        assert!(flag.from_dht);
+        assert!(flag.from_pex);
+        assert!(flag.from_lsd);
+        let none = PeerFlag::parse("");
+        assert!(!none.from_dht && !none.from_pex && !none.from_lsd);
     }
 }
 

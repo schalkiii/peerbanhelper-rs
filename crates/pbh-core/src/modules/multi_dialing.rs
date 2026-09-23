@@ -42,7 +42,8 @@ impl Default for MultiDialingSettings {
             tolerate_num_ipv6: 5,
             cache_lifespan_ms: 86_400_000,
             keep_hunting: false,
-            keep_hunting_time_ms: 0,
+            // 上游 `profile.yml` 的 `keep-hunting-time: 2592000`（秒）→ 毫秒
+            keep_hunting_time_ms: 2_592_000_000,
         }
     }
 }
@@ -177,5 +178,19 @@ impl RuleModule for MultiDialingBlocker {
         }
 
         CheckResult::pass(&module)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_upstream_profile() {
+        // 上游 profile.yml：keep-hunting-time: 2592000（秒）→ 毫秒
+        let s = MultiDialingSettings::default();
+        assert_eq!(s.keep_hunting_time_ms, 2_592_000_000);
+        assert_eq!(s.ban_duration_ms, 1_296_000_000);
+        assert_eq!(s.subnet_mask_length, 24);
     }
 }

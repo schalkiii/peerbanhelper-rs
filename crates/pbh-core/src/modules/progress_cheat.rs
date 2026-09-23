@@ -323,6 +323,22 @@ impl ProgressCheatBlocker {
         range.ban_delay_window_end_ms = 0;
         addr.ban_delay_window_end_ms = 0;
     }
+
+    /// 解封回调：删除该 `(downloader, torrent, ip)` 的 IP 实体。
+    ///
+    /// 对齐上游 `@Subscribe onPeerUnBan(PeerUnbanEvent)` →
+    /// `pcbAddressDao.deleteEntry(torrentId, addr)`：peer 解封后立即清空它的进度历史，
+    /// 下次重连时重新累计上传增量并重新获得宽限窗口。前缀（range）实体上游不动。
+    pub fn on_unban(&self, downloader_id: &str, torrent_id: &str, ip: &str) -> bool {
+        let mut store = match self.store.lock() {
+            Ok(s) => s,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        store
+            .addr
+            .remove(&(downloader_id.to_string(), torrent_id.to_string(), ip.to_string()))
+            .is_some()
+    }
 }
 
 impl RuleModule for ProgressCheatBlocker {
@@ -363,8 +379,16 @@ impl RuleModule for ProgressCheatBlocker {
             peer.ip.clone(),
         );
 
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
         let (range, addr) = store.pair(&range_key, &addr_key);
+        // 首次出现时间（对齐上游新建实体时的 `OffsetDateTime.now()`）：
+        // 缺失时补当前时间，避免落库的 `first_time_seen` 每轮被刷新成「最近出现时间」。
+        if range.first_time_seen_ms <= 0 {
+            range.first_time_seen_ms = now;
+        }
+        if addr.first_time_seen_ms <= 0 {
+            addr.first_time_seen_ms = now;
+        }
         // 端口只用于 `pcb_addr` 行主键：取该 IP 首次出现时的端口（键本身不含端口）
         if addr.port == 0 {
             addr.port = peer.port;

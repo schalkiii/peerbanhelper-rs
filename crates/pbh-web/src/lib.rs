@@ -204,10 +204,23 @@ pub fn build_p2p_plain(remapped: &[String], user_agent: Option<&str>) -> String 
 }
 
 /// `/blocklist/ip`：每行一个 CIDR。
+///
+/// 对齐上游 `BlockListController`：`ipAddress.toPrefixBlock().toCompressedString()`，
+/// 因此裸主机地址要补 `/32` / `/128`（下游按 CIDR 解析时会丢弃不带前缀的行）。
 pub fn build_ip_list(remapped: &[String]) -> String {
     let mut out = String::new();
     for ip in remapped {
-        out.push_str(ip);
+        let line = match ip.parse::<ipnet::IpNet>() {
+            Ok(net) => net.to_string(),
+            Err(_) => match ip.parse::<std::net::IpAddr>() {
+                Ok(addr) => match ipnet::IpNet::new(addr, if addr.is_ipv4() { 32 } else { 128 }) {
+                    Ok(net) => net.to_string(),
+                    Err(_) => ip.clone(),
+                },
+                Err(_) => ip.clone(),
+            },
+        };
+        out.push_str(&line);
         out.push('\n');
     }
     out
@@ -342,7 +355,18 @@ async fn auth_middleware(
         .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
         .map(|p| p.trim_start_matches("token=") == token)
         .unwrap_or(false);
-    if token.is_empty() || header_ok || query_ok {
+    if token.is_empty() {
+        // 上游 `JavalinWebContainer`：token 为空表示尚未完成初始化向导，
+        // 此时任何鉴权 API 都重定向到 `/init`（`WEBAPI_NEED_INIT`）。
+        // 放行会让出厂默认配置下的所有写接口完全裸奔。
+        return (
+            StatusCode::SEE_OTHER,
+            [(axum::http::header::LOCATION, "/init")],
+            std_resp(false, Some("WEBAPI_NEED_INIT"), json!({ "location": "/init" })),
+        )
+            .into_response();
+    }
+    if header_ok || query_ok {
         next.run(req).await
     } else {
         (
@@ -723,8 +747,8 @@ mod tests {
         fn ban_peers(&self, _ips: &[String]) -> Result<(), String> {
             Ok(())
         }
-        fn unban_peers(&self, _ips: &[String]) -> Result<(), String> {
-            Ok(())
+        fn unban_peers(&self, _ips: &[String]) -> Result<usize, String> {
+            Ok(0)
         }
         fn downloaders(&self) -> Vec<Value> {
             vec![]

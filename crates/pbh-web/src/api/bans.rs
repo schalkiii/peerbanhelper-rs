@@ -197,11 +197,11 @@ pub async fn logs(
             .map(String::as_str)
             .unwrap_or(&state.locale),
     );
-    // 排序：DTO 字段名 → `history` 列名（对齐上游 `Orderable.addRemapping`）
-    let order: Vec<(String, bool)> = params
-        .iter()
-        .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
-        .flat_map(|(_, value)| crate::parse_order_by(Some(value)))
+    // 排序：DTO 字段名 → `history` 列名（对齐上游 `Orderable.addRemapping`）。
+    // 参数值是 `field|asc|desc` 形式，必须用 `parse_order_by_params` 解析
+    //（`parse_order_by` 吃的是整段 `orderBy=field|desc` 查询串，传值会恒返回空）。
+    let order: Vec<(String, bool)> = crate::api::parse_order_by_params(&params)
+        .into_iter()
         .filter_map(|(field, asc)| {
             crate::api::bans::order_column(&field).map(|column| (column, asc))
         })

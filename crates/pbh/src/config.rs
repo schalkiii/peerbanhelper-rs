@@ -547,6 +547,15 @@ impl Default for AppConfig {
 
 const DEFAULT_CONFIG_YAML: &str = include_str!("default-config.yml");
 
+/// 生成随机访问令牌（32 位十六进制，形状对齐上游 UUID 去连字符的写法）。
+fn generate_server_token() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..32)
+        .map(|_| char::from_digit(rng.gen_range(0..16), 16).unwrap_or('0'))
+        .collect()
+}
+
 impl AppConfig {
     /// 从 data 目录加载配置；不存在则写入默认配置。
     ///
@@ -575,8 +584,17 @@ impl AppConfig {
             cfg.normalize_upstream();
             Ok((cfg, path))
         } else {
-            std::fs::write(&path, DEFAULT_CONFIG_YAML)?;
-            let cfg: AppConfig = serde_yaml::from_str(DEFAULT_CONFIG_YAML)?;
+            // 首次启动：随机生成访问令牌并写回。
+            // 上游在初始化向导里设置 token，空 token 会让所有鉴权 API 返回 303 /init；
+            // 本移植暂无向导，因此在这里生成，避免出厂配置直接把写接口暴露给匿名访问。
+            let token = generate_server_token();
+            let text = DEFAULT_CONFIG_YAML.replacen("token: \"\"", &format!("token: \"{token}\""), 1);
+            std::fs::write(&path, &text)?;
+            let mut cfg: AppConfig = serde_yaml::from_str(&text)?;
+            if cfg.server.token.is_empty() {
+                cfg.server.token = token;
+            }
+            tracing::info!("已生成访问令牌并写入 {}（WebUI 鉴权使用）", path.display());
             Ok((cfg, path))
         }
     }

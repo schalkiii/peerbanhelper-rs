@@ -1151,6 +1151,9 @@ impl BtnAbility {
 /// 记日志、不加 PoW 请求头、继续后续流程。
 pub const POW_MAX_ITERATIONS: u64 = 20_000_000;
 
+/// `submit_histories` 单轮最多翻多少页（纯防御：数据源异常时避免无限上报）。
+const MAX_HISTORY_PAGES: usize = 200;
+
 /// 上游 `PoWClient.hasLeadingZeroBits`：摘要的前 `bits` 位必须全为 0。
 pub fn has_leading_zero_bits(hash: &[u8], bits: i32) -> bool {
     if bits <= 0 {
@@ -1389,7 +1392,8 @@ pub struct BtnNetwork {
     local_ips_provider: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     /// `BtnAbilitySubmitHistory` 的 `tryLock`（防止上一轮提交未完成时重入）
     submit_history_lock: StdMutex<()>,
-    /// `LegacyBtnAbilitySubmitBans.lastReport`（epoch 毫秒；初值 0 ⇒ 首轮全量上报）
+    /// `LegacyBtnAbilitySubmitBans.lastReport`（epoch 毫秒；初值为构造时刻，
+    /// 对齐上游 `lastReport = OffsetDateTime.now()`）
     legacy_bans_last_report_ms: AtomicI64,
 }
 
@@ -1471,7 +1475,9 @@ impl BtnNetwork {
             submit_source: None,
             local_ips_provider: None,
             submit_history_lock: StdMutex::new(()),
-            legacy_bans_last_report_ms: AtomicI64::new(0),
+            // 对齐上游 `LegacyBtnAbilitySubmitBans.lastReport = OffsetDateTime.now()`：
+            // 初值取构造时刻，避免首轮把启动前的全部历史封禁重报一遍。
+            legacy_bans_last_report_ms: AtomicI64::new(now_millis()),
         }
     }
 
@@ -1903,7 +1909,9 @@ impl BtnNetwork {
                 AbilityOutcome::Skipped => (false, None),
             };
             let last_status = if let Ok(mut slot) = self.abilities.write() {
-                if let Some(ability) = slot.get_mut(index) {
+                // `reconfigure` 可能已重建 ability 列表（`reset_abilities`），此时下标会串位：
+                // 按 kind 重新定位，找不到就跳过本轮记账（上游用对象引用，不存在该问题）。
+                if let Some(ability) = slot.iter_mut().find(|ability| ability.kind == kind) {
                     if let Some(status) = reported_status {
                         ability.last_status = status;
                         ability.last_status_at_ms = now_ms;
@@ -2168,7 +2176,9 @@ impl BtnNetwork {
         };
         let now = now_millis();
         let mut last_submit_at = self.history_timestamp();
+        let mut previous_cursor = last_submit_at;
         let mut total = 0usize;
+        let mut pages = 0usize;
         loop {
             let rows = source.batch_peer_history(last_submit_at, 5000);
             if rows.is_empty() {
@@ -2207,6 +2217,15 @@ impl BtnNetwork {
             if rows.len() < 5000 {
                 break;
             }
+            // 防御：数据源若持续回带同一批行（例如 `last_time_seen` 为 NULL 的记录，
+            // 上游在该处会 NPE 并终止），游标无法推进会造成无限上报。这里限制单轮页数
+            // 并在游标未推进时退出，避免占住 `submit_history_lock` 与网络。
+            pages += 1;
+            if last_submit_at <= previous_cursor || pages >= MAX_HISTORY_PAGES {
+                warn!("BTN submit_histories：游标未推进（{previous_cursor} → {last_submit_at}），本轮提前结束");
+                break;
+            }
+            previous_cursor = last_submit_at;
         }
         debug!("BTN submit_histories：已上报 {total} 条");
         AbilityOutcome::Reported {

@@ -107,6 +107,9 @@ axum 服务：Token 鉴权、健康检查、封禁列表/日志/统计/图表 AP
 规则订阅管理（`/api/sub/*`）、`/api/peer/{ip}/btnQuery`、实时日志（SSE，对齐上游弃用 WebSocket 后的现状）、
 静态 WebUI 托管。
 
+> 鉴权：`config.yml` 的 `server.token` 为空时，首次启动会随机生成并写回文件；空 token 下所有
+> 鉴权 API 返回 `303 /init`（对齐上游未完成初始化向导时的行为），不会匿名放行。
+
 ---
 
 ## 与上游的已知差异

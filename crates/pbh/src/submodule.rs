@@ -185,7 +185,8 @@ impl SubModule for RuleSubBackend {
 
     fn logs(&self, page: i64, size: i64) -> (i64, Vec<Value>) {
         let limit = size.clamp(1, 100);
-        let offset = (page.max(0)) * limit;
+        // 上游 `Pageable` 的 page 是 1-based（缺省 1），`getZeroBasedPage() = page - 1`
+        let offset = (page.max(1) - 1) * limit;
         let total = self.db.count_rule_sub_log(None).unwrap_or(0);
         let rows = self
             .db

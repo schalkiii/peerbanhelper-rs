@@ -270,24 +270,31 @@ impl WebBackend for PbhBackend {
         Ok(())
     }
 
-    fn unban_peers(&self, ips: &[String]) -> Result<(), String> {
+    fn unban_peers(&self, ips: &[String]) -> Result<usize, String> {
         let mut list = self
             .pipeline
             .ban_list
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if ips.iter().any(|ip| ip == "*") {
+        // 返回实际解封条数（上游 `Map.of("count", pendingRemovals.size())`）
+        let removed = if ips.iter().any(|ip| ip == "*") {
             // 对齐上游 DELETE /api/bans 的 `*` 清空语义
+            let count = list.len();
             list.clear();
+            count
         } else {
+            let mut count = 0usize;
             for ip in ips {
-                list.remove(ip);
+                if list.remove(ip).is_some() {
+                    count += 1;
+                }
             }
-        }
+            count
+        };
         list.mark_reapply();
         drop(list);
         self.wave_trigger.notify_one();
-        Ok(())
+        Ok(removed)
     }
 
     fn downloaders(&self) -> Vec<Value> {

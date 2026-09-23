@@ -508,6 +508,31 @@ fn module_results_carry_upstream_translation_keys() {
     );
 }
 
+/// `StructuredData.rule` 必须是命中规则的 `metadata()`（规则串本身，如 `-hp`），
+/// 而非 peer 的 peerId/clientName 值。早期实现错把 peer 值写进了 `data.rule`，
+/// 导致下游 `history.rule_name` 字段与上游不一致。
+#[test]
+fn string_blacklist_data_rule_is_matched_rule_metadata() {
+    let t = torrent(1_000_000_000, 0, 0);
+    let bad = peer(
+        "9.9.9.9",
+        1,
+        Some("-hp001-x"),
+        Some("qBittorrent"),
+        10,
+        10,
+        0.1,
+    );
+    let r = StringBlacklist::peer_id().check("d", &t, &bad, &ctx(0));
+    assert_eq!(r.action, PeerAction::Ban);
+    assert_eq!(
+        r.data["rule"].as_str(),
+        Some("-hp"),
+        "data.rule 应为命中规则的 metadata（规则串），不是 peer 的 peerId"
+    );
+    assert_ne!(r.data["rule"].as_str(), Some("-hp001-x"));
+}
+
 /// PCB 状态持久化（上游 `enable-persist: true`）：跨「进程重启」保留解封窗口与计数器。
 ///
 /// 上游把 `PCBRangeEntity` / `PCBAddressEntity` 落库（`pcb_range` / `pcb_addr`），

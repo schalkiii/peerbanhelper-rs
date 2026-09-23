@@ -16,8 +16,10 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn week_start_ms() -> i64 {
-    now_ms() - 7 * 24 * 3600 * 1000
+/// 上游 `weeklySessions` 的窗口由 `Database::peer_session_count_week` 内部按
+/// 「本地当日 0 点」计算，这里只提供当前时刻。
+fn now_for_week_window() -> i64 {
+    now_ms()
 }
 
 /// `GET /api/statistic/counter`：总体计数器（对齐上游 `BasicMetrics` + `HistoryService`）。
@@ -35,7 +37,10 @@ pub async fn counter(State(state): State<AppState>) -> Response {
         "wastedTraffic": 0,
         "trackedSwarmCount": state.db.tracked_swarm_size().unwrap_or(0) as u64,
         "peerBlockRate": if peers > 0 { metrics.peer_bans as f64 / peers as f64 } else { 0.0 },
-        "weeklySessions": state.db.peer_session_count_since(week_start_ms()).unwrap_or(0),
+        "weeklySessions": state
+            .db
+            .peer_session_count_week(now_for_week_window())
+            .unwrap_or(0),
     });
     drop(metrics);
     (StatusCode::OK, crate::std_resp(true, None, data)).into_response()

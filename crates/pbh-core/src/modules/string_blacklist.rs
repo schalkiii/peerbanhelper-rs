@@ -97,29 +97,35 @@ impl RuleModule for StringBlacklist {
         }
         let result = self.rules.r#match(value.as_deref());
         if result.hit {
-            // 对齐上游：rule = 命中规则的 matcherName()，reason = MODULE_CNB_MATCH_CLIENT_NAME(com comment)
+            // 对齐上游 PeerIdBlacklist/ClientNameBlacklist：
+            //   rule_key  = matchResult.rule().matcherName()        （可翻译的规则名）
+            //   reason    = MODULE_CNB_MATCH_CLIENT_NAME(comment)   （comment 即 matcherName 组件）
+            //   data.rule = matchResult.rule().metadata()           （命中的规则串，如 `-hp`，
+            //             而非 peer 自身的值——当前实现错把 peer 值写进了 data.rule）
             let matched = self
                 .rules
                 .rules
-                .get(result.index.max(0) as usize)
+                .get(result.index.max(0) as usize);
+            let rule_name = matched
                 .map(|m| m.name_component())
                 .unwrap_or_else(|| TranslationComponent::new(""));
+            let rule_metadata = matched.map(|m| m.metadata()).unwrap_or_default();
             let reason_key = TranslationComponent::with_params(
                 "MODULE_CNB_MATCH_CLIENT_NAME",
-                vec![matched.clone().into()],
+                vec![rule_name.clone().into()],
             );
             CheckResult::ban(
                 &module,
                 self.ban_duration_ms,
                 "rule",
                 &format!(
-                    "matched {self_data_type}: {value}",
-                    self_data_type = self.data_type,
-                    value = value.as_deref().unwrap_or("")
+                    "matched {}: {}",
+                    self.data_type,
+                    value.as_deref().unwrap_or("")
                 ),
-                serde_json::json!({ "type": self.data_type, "rule": value, "index": result.index }),
+                serde_json::json!({ "type": self.data_type, "rule": rule_metadata, "index": result.index }),
             )
-            .with_keys(matched, reason_key)
+            .with_keys(rule_name, reason_key)
         } else {
             // Java 未命中即返回 pass()（OK_CHECK_RESULT）
             CheckResult::pass(&module)

@@ -61,8 +61,12 @@ impl<'de> Deserialize<'de> for Param {
                 #[serde(rename = "Component")]
                 component: TranslationComponent,
             },
+            /// 上游 `TextManager` 会把 `null` 参数直接 `toString()` 成 `"null"`
+            ///（`BAN_PEER` 的 peerId / clientName 可以为 null），未覆盖会让整条组件反序列化失败
+            Null,
         }
         Ok(match Raw::deserialize(deserializer)? {
+            Raw::Null => Param::Text("null".to_string()),
             Raw::Text(text) => Param::Text(text),
             Raw::Number(number) => Param::Text(format_scalar_number(number)),
             Raw::Bool(flag) => Param::Text(flag.to_string()),
@@ -316,5 +320,41 @@ mod tests {
         let t = Translator::embedded();
         assert_eq!(t.tables.len(), 4);
         assert!(t.template("PCB_RULE_PROGRESS_REWIND", "zh_cn").is_some());
+    }
+
+    /// 上游 `TextManager.convert` 把 `null` 参数 `toString()` 成 `"null"`，
+    /// 缺失该分支会让携带 null 参数的 `TranslationComponent` 反序列化直接失败。
+    #[test]
+    fn null_param_deserializes_to_literal_null() {
+        let json = r#"["MOD_KEY", null, "tail"]"#;
+        let params: Vec<Param> = serde_json::from_str(json).unwrap();
+        assert_eq!(params.len(), 3);
+        assert!(matches!(params[0], Param::Text(_)));
+        // 中间的 null -> "null" 文本参数
+        match &params[1] {
+            Param::Text(s) => assert_eq!(s, "null"),
+            other => panic!("null 应被解析为文本 \"null\"，实际 {other:?}"),
+        }
+        assert!(matches!(params[2], Param::Text(_)));
+    }
+
+    /// 回退链对齐上游 `TextManager.tl`：`locale → en_us → fallback`。
+    /// 缺失的键回退到 fallback，再缺失则原样输出 key（上游 `getString` 返回 null 时填 key）。
+    #[test]
+    fn fallback_chain_locale_then_en_us_then_fallback() {
+        let t = Translator::embedded();
+        // zh_cn 中存在的键，带参渲染
+        assert_eq!(
+            t.render(
+                &TranslationComponent::with_params("MATCH_STRING_STARTS_WITH", vec!["-hp".into()]),
+                "zh_cn"
+            ),
+            "字符串开头: -hp"
+        );
+        // 完全不存在的键原样返回（上游 `getString` 为 null 时填 key 本身）
+        assert_eq!(
+            t.render(&TranslationComponent::new("NO_SUCH_KEY_XYZ"), "zh_cn"),
+            "NO_SUCH_KEY_XYZ"
+        );
     }
 }

@@ -152,10 +152,10 @@ impl TransmissionDownloader {
 
     async fn post_json(&self, body: String) -> anyhow::Result<crate::http::HttpResponse> {
         let mut req = HttpRequest::post_json(self.rpc_endpoint.clone(), body);
-        if let (Some(user), password) = (Some(&self.config.username), &self.config.password) {
-            if !user.is_empty() {
-                req.basic = Some((user.clone(), password.clone()));
-            }
+        // 上游由 cordelia `TrClient` 决定是否带凭据：用户名或密码任一非空都要带
+        //（反代常见「空用户名 + 密码」配置）
+        if !self.config.username.is_empty() || !self.config.password.is_empty() {
+            req.basic = Some((self.config.username.clone(), self.config.password.clone()));
         }
         let session = self
             .session_id
@@ -420,8 +420,20 @@ impl Downloader for TransmissionDownloader {
     /// （列表内容由 PBH 自己的 `/blocklist/p2p-plain-format` 端点提供）。
     fn replace_banned_ips<'a>(&'a self, _ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
         Box::pin(async move {
-            if !self.update_blocklist().await? {
-                anyhow::bail!("blocklist-update 返回失败");
+            // 上游 `setBanList` 在 `blocklist-update` 失败时**只**记
+            // `DOWNLOADER_TR_INCORRECT_SET_BANLIST_API_RESP` 错误日志 + 发布告警，
+            // 不抛异常（下一轮继续重试）；抛错会让本轮下发被整体跳过。
+            match self.update_blocklist().await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::error!(
+                        "Transmission blocklist-update 返回失败（blocklistUrl={}）",
+                        self.config.blocklist_url
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Transmission blocklist-update 失败: {e:#}");
+                }
             }
             Ok(())
         })

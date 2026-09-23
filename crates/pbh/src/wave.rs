@@ -15,7 +15,7 @@ use pbh_core::geoip::GeoIpProvider;
 use pbh_core::i18n::{Param, TranslationComponent};
 use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::{CheckContext, CheckResult};
-use pbh_core::modules::ProgressCheatBlocker;
+use pbh_core::modules::{IdleConnectionDosProtection, ProgressCheatBlocker};
 use pbh_core::pipeline::Decision;
 use pbh_core::Pipeline;
 use pbh_db::{peer_geoip_json, Database, HistoryRecord};
@@ -191,6 +191,12 @@ struct BanRecord {
     /// 对方 torrent 进度（`downloader_progress` 列）
     torrent_progress: f64,
     torrent_size: i64,
+    /// 下载器口径的已完成字节数（`TorrentWrapper.completedSize`）。
+    ///
+    /// 上游取 `torrent.getCompletedSize()`（qB = `piece_size*pieces_have`，否则 -1；
+    /// Transmission = `sizeWhenDone*percentDone`），**不是** `size × progress`；
+    /// 多数字适配器设置了 `completed_override`，直接用进度乘总量会算出不同的值。
+    torrent_completed_size: i64,
     torrent_is_private: Option<bool>,
     flags: Option<String>,
     structured_data: serde_json::Value,
@@ -259,6 +265,18 @@ impl WaveEngine {
         // 1) 解封到期条目
         let removed = self.remove_expired_bans(now_ms);
         report.unbanned = removed.len();
+        // 解封后同步清理 PCB 历史（对齐上游 `@Subscribe onPeerUnBan` →
+        // `pcbAddressDao.deleteEntry`）：否则解封后 peer 重连会沿用旧的累计上传量，
+        // 下一次判定不再获得宽限窗口。
+        self.on_peers_unbanned(&removed);
+
+        // 判重基线：对齐上游在写入任何封禁**之前**取的 `banList.copyKeySet()` 快照，
+        // 使「同一 wave 内同一 IP 被多个 torrent / 多个下载器命中」不算重复封禁。
+        let ban_baseline = self
+            .ban_list()
+            .lock()
+            .map(|list| list.key_snapshot())
+            .unwrap_or_default();
 
         // 2) 全部下载器判定（此时不触碰下载器，也不写封禁表）
         // 先取快照并释放锁：判定/下发均为异步 I/O，持锁跨 await 会阻塞下载器热管理
@@ -286,14 +304,25 @@ impl WaveEngine {
                     statuses.push(out.status);
                     pending.push((idx, out.bans));
                 }
-                Err(e) => report.errors.push(e),
+                Err(e) => {
+                    // 上游 `TorrentsFetchOrgan` 抛异常时该下载器的 lastStatus 仍可被 Web 读到，
+                    // 这里补一条离线状态，避免下载器从 `/api/downloaders` 列表里消失
+                    statuses.push(DownloaderStatus {
+                        id: entry.downloader.id().to_string(),
+                        name: entry.downloader.name().to_string(),
+                        kind: entry.downloader.downloader_type().to_string(),
+                        online: false,
+                        version: String::new(),
+                    });
+                    report.errors.push(e);
+                }
             }
         }
 
         // 3) 写入内存封禁表 + 落库（对齐上游：先跑完整个 digestion，再逐个 `banPeer`，
         //    因此本 wave 内的判定互相看不到本轮新封禁，跨下载器也不会互相影响）
         for (idx, bans) in &pending {
-            self.record_bans(&entries[*idx], bans, now_ms);
+            self.record_bans(&entries[*idx], bans, &ban_baseline, now_ms);
         }
 
         // 3) 下发：本轮有新增封禁或解封时，对**全部**下载器下发（对齐上游
@@ -325,9 +354,9 @@ impl WaveEngine {
         // 4) PCB 状态落库（对齐上游 `batchFlushBackDatabase*`，只写 dirty 实体）
         self.persist_pcb_state();
 
-        *self.statuses.lock().unwrap() = statuses;
+        *self.statuses.lock().unwrap_or_else(|e| e.into_inner()) = statuses;
         {
-            let mut m = self.metrics.lock().unwrap();
+            let mut m = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
             m.downloader_count = report.online_downloaders;
             m.torrent_count = report.torrents;
             m.peer_count = report.peers;
@@ -354,6 +383,59 @@ impl WaveEngine {
         }
         if let Err(e) = self.db.upsert_pcb_rows(&rows) {
             warn!("PCB 状态落库失败: {e}");
+        }
+    }
+
+    /// 仅在「需要全量重放」时执行一次下发（暂停/手动触发路径用）。
+    ///
+    /// 返回是否真的下发过。对齐上游 `banWave` 暂停分支里的
+    /// `if (needReApplyBanList.get()) reApplyBanListForDownloaders();`。
+    pub async fn consume_pending_replay(
+        &self,
+        entries: &[DownloaderEntry],
+        now_ms: i64,
+    ) -> bool {
+        let force_full = self
+            .ban_list()
+            .lock()
+            .map(|b| b.need_reapply())
+            .unwrap_or(false);
+        if !force_full {
+            return false;
+        }
+        for entry in entries {
+            self.apply_bans(entry, &[], 0, true, now_ms).await;
+        }
+        if let Ok(mut b) = self.ban_list().lock() {
+            b.clear_need_reapply();
+        }
+        true
+    }
+
+    /// 解封后的收尾：清掉 PCB 的逐 IP 历史（内存实体 + `pcb_address` 行）。
+    ///
+    /// 上游由 `PeerUnbanEvent` 触发 `pcbAddressDao.deleteEntry`，因此解封后 peer 重连会
+    /// 重新累计上传增量并重新获得宽限窗口；缺失这一步会让「封禁 → 解封 → 重连」路径
+    /// 带着旧状态直接进入判定，下一轮立刻再封。
+    fn on_peers_unbanned(&self, removed: &[BannedRecord]) {
+        if removed.is_empty() {
+            return;
+        }
+        let Some(pcb) = self.pcb_module() else {
+            return;
+        };
+        for record in removed {
+            let torrent_id = record.metadata.torrent.hash.clone();
+            if torrent_id.is_empty() {
+                continue;
+            }
+            pcb.on_unban(&record.metadata.downloader.id, &torrent_id, &record.ip);
+            if let Err(e) = self
+                .db
+                .delete_pcb_addr(&record.metadata.downloader.id, &torrent_id, &record.ip)
+            {
+                warn!("删除 PCB 历史失败 ({}): {e}", record.ip);
+            }
         }
     }
 
@@ -387,7 +469,15 @@ impl WaveEngine {
     }
 
     /// 记录新封禁：落库 + 写入内存封禁表。
-    fn record_bans(&self, entry: &DownloaderEntry, bans: &[BanRecord], now_ms: i64) {
+    ///
+    /// `baseline` 为本 wave 开始前的封禁地址快照（对齐上游 `banList.copyKeySet()`）。
+    fn record_bans(
+        &self,
+        entry: &DownloaderEntry,
+        bans: &[BanRecord],
+        baseline: &std::collections::HashSet<String>,
+        now_ms: i64,
+    ) {
         for b in bans {
             let unban_at_ms = if b.duration > 0 {
                 now_ms + b.duration
@@ -426,8 +516,7 @@ impl WaveEngine {
                 torrent: BannedTorrent {
                     id: b.torrent_hash.clone(),
                     size: b.torrent_size,
-                    completed_size: ((b.torrent_size as f64) * b.torrent_progress.clamp(0.0, 1.0))
-                        as i64,
+                    completed_size: b.torrent_completed_size,
                     name: b.torrent_name.clone(),
                     hash: b.torrent_hash.clone(),
                     private_torrent: b.torrent_is_private.unwrap_or(false),
@@ -492,7 +581,12 @@ impl WaveEngine {
                     description: serde_json::to_string(&description_component).unwrap_or_default(),
                     flags: b.flags.clone(),
                     downloader: entry.downloader.id().to_string(),
-                    structured_data: Some(b.structured_data.to_string()),
+                    // 模块未设置结构化数据时上游落 NULL（`PersistMetrics`），不是字符串 "null"
+                    structured_data: if b.structured_data.is_null() {
+                        None
+                    } else {
+                        Some(b.structured_data.to_string())
+                    },
                     peer_geoip: self.query_peer_geoip(&b.entry.ip),
                 };
                 if let Err(e) = self.db.insert_history(&history) {
@@ -500,20 +594,32 @@ impl WaveEngine {
                 }
             }
             let duplicate = match self.ban_list().lock() {
-                Ok(mut list) => list.add_record(BannedRecord {
-                    ip: b.entry.ip.clone(),
-                    unban_at_ms,
-                    module: b.module.clone(),
-                    ban_for_disconnect: b.ban_for_disconnect,
-                    metadata,
-                }),
-                Err(_) => false,
+                Ok(mut list) => list.add_record_in_wave(
+                    BannedRecord {
+                        ip: b.entry.ip.clone(),
+                        unban_at_ms,
+                        module: b.module.clone(),
+                        ban_for_disconnect: b.ban_for_disconnect,
+                        metadata,
+                    },
+                    baseline,
+                ),
+                Err(poisoned) => {
+                    poisoned.into_inner().add_record_in_wave(
+                        BannedRecord {
+                            ip: b.entry.ip.clone(),
+                            unban_at_ms,
+                            module: b.module.clone(),
+                            ban_for_disconnect: b.ban_for_disconnect,
+                            metadata,
+                        },
+                        baseline,
+                    )
+                }
             };
             if duplicate {
-                warn!(
-                    "对等体 {} 已在封禁表中，下一轮将全量重放封禁列表",
-                    b.entry.ip
-                );
+                // 上游为 `log.error(Lang.DUPLICATE_BAN, ...)`
+                warn!("对等体 {} 重复封禁，将全量重放封禁列表", b.entry.ip);
             }
             // 单条封禁日志（上游 `Lang.BAN_PEER`，仅 `action != BAN_FOR_DISCONNECT` 时打印；
             // ban-for-disconnect 静默，对齐 `DownloaderServerImpl` 第 252 行）
@@ -569,7 +675,9 @@ impl WaveEngine {
 
     /// 下发封禁列表（增量或全量），对齐上游 `updateDownloader`：
     ///
-    /// 1. 本轮既无新增也无解封时直接返回（`if (!updateBanList) return;`）；
+    /// 1. 本轮既无新增也无解封**且无需全量重放**时直接返回（`if (!updateBanList) return;`）。
+    ///    注意 `force_full` 必须计入该门控：手动封禁/解封（`mark_reapply`）只置位
+    ///    `needReApplyBanList`，本轮可能既无新增也无解封，漏掉这一项会让变更永远不下发。
     /// 2. 下发前**重新登录**（每轮第二次 `login()`，经同一 LoginGate 计数）——
     ///    判定阶段登录失败的下载器在此有恢复机会；失败仅记日志并跳过（PAUSED 静默）；
     /// 3. 成功后按需增量/全量下发。dry-run 在登录前短路（不下发任何请求）。
@@ -581,7 +689,7 @@ impl WaveEngine {
         force_full: bool,
         now_ms: i64,
     ) {
-        if added.is_empty() && removed_count == 0 {
+        if added.is_empty() && removed_count == 0 && !force_full {
             return;
         }
         let dl = entry.downloader.clone();
@@ -681,6 +789,15 @@ impl WaveEngine {
         };
         if !login.success {
             status.online = false;
+            // 对齐上游 `DownloaderLoginOrgan`：登录失败的下载器要留下可读状态与一条错误日志
+            //（`ERR_CLIENT_LOGIN_FAILURE_SKIP`）；PAUSED 属主动暂停，上游静默。
+            if login.status != LoginStatus::Paused {
+                warn!(
+                    "下载器 {} 登录失败，跳过本轮检查: {}",
+                    dl.id(),
+                    login.message
+                );
+            }
             return Ok(DownloaderOutput {
                 status,
                 torrents: 0,
@@ -717,6 +834,18 @@ impl WaveEngine {
                 };
                 // 监控模块的 `onPeersRetrieved`（与判定无关，只做统计/记录）
                 monitor.on_peers_retrieved(dl.id(), &torrent, &peers, now_ms);
+                // `idle-connection-dos-protection` 的 `onPeersRetrieved`：上游由
+                // `DownloaderServerImpl` 逐模块派发，用于剔除已消失的空闲连接
+                //（默认关闭，启用后缺失该调用会让跟踪表只增不减）。
+                if let Some(idle) = pipeline.module_as::<IdleConnectionDosProtection>(
+                    "idle-connection-dos-protection",
+                ) {
+                    let keys: Vec<(String, u16)> = peers
+                        .iter()
+                        .map(|p| (p.ip.clone(), p.port))
+                        .collect();
+                    idle.on_peers_retrieved(&keys);
+                }
                 // BTN 遗留协议 live peers 快照（对齐上游 `DownloaderServer` 的 livePeers）；
                 // 作用域内完成写入，避免 MutexGuard 跨 await（非 Send）
                 {
@@ -768,6 +897,7 @@ impl WaveEngine {
                             peer_progress: peer.progress,
                             torrent_progress: torrent.progress,
                             torrent_size: torrent.total_size,
+                            torrent_completed_size: torrent.completed_size(),
                             torrent_is_private: torrent.is_private,
                             flags: peer.flags.clone(),
                             structured_data: result.data.clone(),
@@ -1334,6 +1464,7 @@ mod tests {
             peer_progress: 0.25,
             torrent_progress: 0.75,
             torrent_size: 2048,
+            torrent_completed_size: 1536,
             torrent_is_private: Some(true),
             flags: Some("U".to_string()),
             structured_data: serde_json::json!({ "type": "test" }),
@@ -1356,9 +1487,11 @@ mod tests {
             increment_ban: true,
         };
 
+        let baseline = std::collections::HashSet::new();
         engine.record_bans(
             &entry,
             &[ban("1.1.1.1", false), ban("1.1.1.2", true)],
+            &baseline,
             1_700_000_000_000,
         );
 

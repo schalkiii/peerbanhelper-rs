@@ -126,6 +126,49 @@ fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
+/// 本地时区当日 0 点的 epoch 毫秒（对齐上游 `TimeUtil.getStartOfToday`）。
+///
+/// 上游按 JVM 默认时区截断；世界协调时截断会让「按天分桶」与上游错开一个时区偏移。
+pub(crate) fn start_of_today_ms(ts_ms: i64) -> i64 {
+    use chrono::{Local, TimeZone};
+    let Some(local) = Local.timestamp_millis_opt(ts_ms).single() else {
+        return ts_ms;
+    };
+    local
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| naive.and_local_timezone(Local).single())
+        .map(|midnight| midnight.timestamp_millis())
+        .unwrap_or(ts_ms)
+}
+
+/// 上游 `HistoryServiceImpl.mapField`：驼峰字段 → `history`（JOIN `torrents`）的列名。
+///
+/// `peerId` 按上游传入的 `substringLength = 8` 截断；未知字段返回 `None`
+/// （上游会因字段名校验失败而返回空结果）。
+fn history_field_column(field: &str) -> Option<String> {
+    let mapped = match field {
+        "torrentName" | "torrent_name" => "t.name",
+        "module" | "moduleName" | "module_name" => "h.module_name",
+        "clientName" | "peerClientName" | "client_name" | "peer_client_name" => {
+            "h.peer_client_name"
+        }
+        "peerIp" | "ip" => "h.ip",
+        "port" => "h.port",
+        "peerId" | "peer_id" => "substr(h.peer_id, 1, 8)",
+        "peerUploaded" | "peer_uploaded" => "h.peer_uploaded",
+        "peerDownloaded" | "peer_downloaded" => "h.peer_downloaded",
+        "peerProgress" | "peer_progress" => "h.peer_progress",
+        "time" => "h.ban_at",
+        "downloader" | "downloader_id" => "h.downloader",
+        "rule" => "h.rule_name",
+        "description" => "h.description",
+        "torrentHash" | "torrent_hash" => "h.torrent_id",
+        _ => return None,
+    };
+    Some(mapped.to_string())
+}
+
 /// `torrents` 表按 info_hash 取一行（`TorrentServiceImpl.queryByInfoHash`）。
 pub(crate) struct TorrentLookup {
     pub(crate) id: i64,
@@ -483,11 +526,26 @@ impl Database {
     }
 
     /// 删除 `ban_at` 早于 `keep_days` 天的历史（`persist.ban-logs-keep-days`），返回删除条数。
+    ///
+    /// 边界对齐上游 `HistoryServiceImpl` 的 `le(ban_at, threshold)`（**闭区间**）。
     pub fn cleanup_history(&self, keep_days: i64) -> anyhow::Result<usize> {
         let cutoff = now_ms() - keep_days * 86_400_000;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.execute(
-            "DELETE FROM history WHERE ban_at < ?1",
+            "DELETE FROM history WHERE ban_at <= ?1",
+            rusqlite::params![cutoff],
+        )?)
+    }
+
+    /// 删除 `keep_days` 天前的告警（上游 `AlertServiceImpl.deleteOldAlerts`，闭区间）。
+    ///
+    /// 上游由 `AlertManagerImpl` 每天调度一次；缺失这一步会让 `alert` 表与
+    /// `/api/alerts` 的未读列表无限增长。
+    pub fn cleanup_alerts(&self, keep_days: i64) -> anyhow::Result<usize> {
+        let cutoff = now_ms() - keep_days * 86_400_000;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn.execute(
+            "DELETE FROM alert WHERE create_at <= ?1",
             rusqlite::params![cutoff],
         )?)
     }
@@ -794,6 +852,24 @@ impl Database {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// 删除某个 `(downloader, torrent, ip)` 的 PCB 逐 IP 历史。
+    ///
+    /// 对齐上游 `@Subscribe onPeerUnBan` → `pcbAddressDao.deleteEntry(torrentId, addr)`：
+    /// peer 解封后立即清掉它的进度历史（前缀聚合行按上游保持不动）。
+    /// `pcb_address` 的主键含 `port`，这里按 IP 删除该下载器+种子下的全部端口。
+    pub fn delete_pcb_addr(
+        &self,
+        downloader_id: &str,
+        torrent_id: &str,
+        ip: &str,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(conn.execute(
+            "DELETE FROM pcb_address WHERE downloader = ?1 AND torrent_id = ?2 AND ip = ?3",
+            rusqlite::params![downloader_id, torrent_id, ip],
+        )?)
+    }
+
     pub fn cleanup_pcb(&self, older_than_ms: i64) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let mut n = 0;
@@ -849,25 +925,33 @@ impl Database {
         }
     }
 
-    /// 在 `since_ms` 之后（含）的会话总连接数（`weeklySessions` 计数等）。
-    pub fn peer_session_count_since(&self, since_ms: i64) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+    /// 最近 7 天的会话总连接数（对齐上游 `handleCounter` 的 `weeklySessions`）。
+    ///
+    /// 上游窗口是 `[getStartOfToday(now-7d), getStartOfToday(now)]`——两端都按**本地**
+    /// 当日 0 点截断且为**闭区间**；只给 `timeframe_at >= now-7d` 会多算今天与 7 天前
+    /// 的非整天数据。
+    pub fn peer_session_count_week(&self, now_ms: i64) -> anyhow::Result<i64> {
+        let start = start_of_today_ms(now_ms - 7 * 86_400_000);
+        let end = start_of_today_ms(now_ms);
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn
             .query_row(
-                "SELECT COALESCE(SUM(total_connections), 0) FROM peer_connection_metrics WHERE timeframe_at >= ?1",
-                rusqlite::params![since_ms],
+                "SELECT COALESCE(SUM(total_connections), 0) FROM peer_connection_metrics
+                 WHERE timeframe_at >= ?1 AND timeframe_at <= ?2",
+                rusqlite::params![start, end],
                 |r| r.get(0),
             )
             .unwrap_or(0))
     }
 
     /// 当前 swarm 中唯一 IP 数量（`trackedSwarmCount` 计数）。
+    ///
+    /// 对齐上游 `trackedSwarmDao.count()` = `COUNT(*)`：与
+    /// [`Database::tracked_swarm_count`]（`/api/modules/swarm-tracking`）口径一致。
     pub fn tracked_swarm_size(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn
-            .query_row("SELECT COUNT(DISTINCT ip) FROM tracked_swarm", [], |r| {
-                r.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM tracked_swarm", [], |r| r.get(0))
             .unwrap_or(0))
     }
 
@@ -1120,31 +1204,42 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(Vec<TorrentRow>, i64)> {
-        let conn = self.conn.lock().unwrap();
-        let cond = match keyword {
-            Some(kw) if !kw.is_empty() => "WHERE t.name LIKE ?1 || '%' OR t.info_hash = ?1",
-            _ => "",
-        };
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // 关键词命中「名称前缀」或「完整 info_hash」；两个条件各占一个占位符
+        //（重复写 `?1` 会让占位符个数与实际绑定个数不符）。
+        let has_kw = keyword.map(|kw| !kw.is_empty()).unwrap_or(false);
         let kw = keyword.unwrap_or("").to_string();
+        let cond = if has_kw {
+            "WHERE t.name LIKE ?1 || '%' OR t.info_hash = ?2"
+        } else {
+            ""
+        };
+        // 无关键词时 limit/offset 顺延为 ?1/?2
+        let (p_limit, p_offset) = if has_kw { ("?3", "?4") } else { ("?1", "?2") };
         let total: i64 = {
-            let params: [&dyn rusqlite::ToSql; 2] = [&kw, &kw];
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+            if has_kw {
+                params.push(&kw);
+                params.push(&kw);
+            }
             conn.query_row(
-                &format!("SELECT COUNT(*) FROM torrents t {cond} "),
-                rusqlite::params_from_iter(params.iter()),
+                &format!("SELECT COUNT(*) FROM torrents t {cond}"),
+                rusqlite::params_from_iter(params),
                 |r| r.get(0),
             )
             .unwrap_or(0)
         };
+        // 封禁数取 `history.torrent_id`（上游 `HistoryService`），`ban_logs` 是废弃表
         let sql = format!(
             "SELECT t.id, t.info_hash, t.name, t.size,
-                    COALESCE((SELECT COUNT(*) FROM ban_logs b WHERE b.torrent_hash = t.info_hash), 0),
+                    COALESCE((SELECT COUNT(*) FROM history b WHERE b.torrent_id = t.id), 0),
                     COALESCE((SELECT COUNT(*) FROM peer_records p WHERE p.torrent_id = t.id), 0)
              FROM torrents t {cond}
-             ORDER BY t.id DESC LIMIT ? OFFSET ?"
+             ORDER BY t.id DESC LIMIT {p_limit} OFFSET {p_offset}"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::new();
-        if !cond.is_empty() {
+        if has_kw {
             query_params.push(&kw);
             query_params.push(&kw);
         }
@@ -1190,42 +1285,45 @@ impl Database {
         Ok(row)
     }
 
-    /// 在时间窗口内按天汇总封禁数（对齐上游 `banTrends`，时间戳按天向下取整）。
+    /// 在时间窗口内按天汇总封禁数（对齐上游 `handleBanTrends`）。
+    ///
+    /// 上游数据源是 `HistoryEntity`（`history.ban_at` / `downloader`），分桶用
+    /// `TimeUtil.getStartOfToday`（**本地时区**当日 0 点），窗口两端为闭区间。
     pub fn ban_trends(
         &self,
         start_ms: i64,
         end_ms: i64,
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(i64, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let sql = if downloader.is_some() {
-            "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*)
-             FROM ban_logs WHERE created_at >= ?1 AND created_at < ?2 AND downloader_id = ?3
-             GROUP BY day ORDER BY day"
+            "SELECT ban_at FROM history WHERE ban_at >= ?1 AND ban_at <= ?2 AND downloader = ?3"
         } else {
-            "SELECT (created_at / 86400000) * 86400000 AS day, COUNT(*)
-             FROM ban_logs WHERE created_at >= ?1 AND created_at < ?2
-             GROUP BY day ORDER BY day"
+            "SELECT ban_at FROM history WHERE ban_at >= ?1 AND ban_at <= ?2"
         };
         let mut stmt = conn.prepare(sql)?;
-        let rows = if let Some(d) = downloader {
-            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+        let map_fn = |r: &rusqlite::Row| r.get::<_, i64>(0);
+        let stamps: Vec<i64> = if let Some(d) = downloader {
+            stmt.query_map(rusqlite::params![start_ms, end_ms, d], map_fn)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
-            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            stmt.query_map(rusqlite::params![start_ms, end_ms], map_fn)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
-        Ok(rows)
+        let mut buckets: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        for ts in stamps {
+            *buckets.entry(start_of_today_ms(ts)).or_insert(0) += 1;
+        }
+        Ok(buckets.into_iter().collect())
     }
 
     /// 字段统计（对齐上游 `/api/statistic/analysis/field` 的 `countOrSum` 两种模式）。
     ///
-    /// `mode = "count"` 计数，`mode = "sum"` 求和。`field` 必须是 `ban_logs` 的白名单列，
-    /// 非法列返回空列表（上游也会因 SQL 校验失败而返回空）。
+    /// `mode = "count"` 计数，`mode = "sum"` 求和。
+    ///
+    /// 数据源为 `history h LEFT JOIN torrents t`（`torrentName` 取 `t.name`，`peerId`
+    /// 按上游 `substringLength=8` 截断）；字段名走上游 `mapField` 的驼峰→下划线映射
+    /// 与白名单，非法列返回空列表（上游 SQL 校验失败同样是空）。
     pub fn field_stats(
         &self,
         field: &str,
@@ -1233,35 +1331,24 @@ impl Database {
         percent_filter: f64,
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(String, i64, f64)>> {
-        const WHITELIST: &[&str] = &[
-            "downloader_id",
-            "torrent_name",
-            "torrent_hash",
-            "ip",
-            "port",
-            "peer_id",
-            "client_name",
-            "module",
-            "rule",
-            "reason",
-        ];
-        if !WHITELIST.contains(&field) {
+        let Some(column) = history_field_column(field) else {
             return Ok(Vec::new());
-        }
+        };
         let (cond, d_param): (String, bool) = match downloader {
-            Some(_) => (" AND downloader_id = ?3".to_string(), true),
+            Some(_) => (" AND h.downloader = ?1".to_string(), true),
             None => (String::new(), false),
         };
         let select = if mode.eq_ignore_ascii_case("sum") {
-            format!("SUM({field})")
+            format!("SUM({column})")
         } else {
-            format!("COUNT({field})")
+            format!("COUNT({column})")
         };
         let sql = format!(
-            "SELECT COALESCE(CAST({field} AS TEXT), 'unknown') AS k, {select} AS v
-             FROM ban_logs WHERE 1=1{cond} GROUP BY k ORDER BY v DESC"
+            "SELECT COALESCE(CAST({column} AS TEXT), 'unknown') AS k, {select} AS v
+             FROM history h LEFT JOIN torrents t ON h.torrent_id = t.id
+             WHERE 1=1{cond} GROUP BY k ORDER BY v DESC"
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&sql)?;
         let list: Vec<(String, i64, f64)> = if d_param {
             let d = downloader.unwrap_or_default();
@@ -1716,6 +1803,65 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM banlist", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// 统计接口对齐上游 `HistoryServiceImpl` / `PBHMetricsController`：
+    /// `ban_trends` 按本地当日 0 点分桶、`field_stats` 数据源为 `history`（JOIN `torrents`）、
+    /// `peer_session_count_week` 窗口为「本地当日 0 点」的闭区间。
+    #[test]
+    fn statistics_queries_align_with_upstream_history_source() {
+        let db = Database::open_in_memory().unwrap();
+        let day = start_of_today_ms(1_700_000_000_000);
+        let mut a = history_record("1.2.3.1");
+        a.ban_at_ms = day + 1;
+        let mut b = history_record("1.2.3.2");
+        b.ban_at_ms = day + 2;
+        let mut c = history_record("1.2.3.3");
+        c.ban_at_ms = day + 86_400_001; // 次日
+        db.insert_history(&a).unwrap();
+        db.insert_history(&b).unwrap();
+        db.insert_history(&c).unwrap();
+
+        // 按本地当日 0 点分桶：同一天 2 条、次日 1 条（升序）
+        let trends = db.ban_trends(0, 2_000_000_000_000, None).unwrap();
+        assert_eq!(trends.len(), 2, "应按天分成 2 个桶");
+        assert_eq!(trends[0].1, 2, "首日 2 条");
+        assert_eq!(trends[1].1, 1, "次日 1 条");
+        assert_eq!(trends[1].0 - trends[0].0, 86_400_000, "相邻桶间隔一天");
+
+        // 按下载器过滤
+        let scoped = db
+            .ban_trends(0, 2_000_000_000_000, Some("qb"))
+            .unwrap();
+        assert_eq!(scoped.len(), 2);
+        let total: i64 = scoped.iter().map(|(_, n)| *n).sum();
+        assert_eq!(total, 3);
+
+        // 字段统计（rule_name）数据源为 history
+        let stats = db.field_stats("rule", "count", 0.0, None).unwrap();
+        assert!(!stats.is_empty(), "非法字段才返回空，rule 合法");
+        let total: i64 = stats.iter().map(|(_, n, _)| *n).sum();
+        assert_eq!(total, 3, "统计应覆盖 history 全部 3 行");
+
+        // weeklySessions：窗口按本地当日 0 点闭区间；直接插入 metrics 行验证
+        let now = day + 10_000; // 当天
+        let start = start_of_today_ms(now - 7 * 86_400_000);
+        let end = start_of_today_ms(now);
+        {
+            let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "INSERT INTO peer_connection_metrics (timeframe_at, downloader, total_connections, incoming_connections, remote_refuse_transfer_to_client, remote_accept_transfer_to_client, local_refuse_transfer_to_peer, local_accept_transfer_to_peer, local_not_interested, question_status, optimistic_unchoke, from_dht, from_pex, from_lsd, from_tracker_or_other, rc4_encrypted, plain_text_encrypted, utp_socket, tcp_socket)
+                 VALUES (?1, 'qb', 5, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+                rusqlite::params![start + 1000],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO peer_connection_metrics (timeframe_at, downloader, total_connections, incoming_connections, remote_refuse_transfer_to_client, remote_accept_transfer_to_client, local_refuse_transfer_to_peer, local_accept_transfer_to_peer, local_not_interested, question_status, optimistic_unchoke, from_dht, from_pex, from_lsd, from_tracker_or_other, rc4_encrypted, plain_text_encrypted, utp_socket, tcp_socket)
+                 VALUES (?1, 'qb', 7, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+                rusqlite::params![end],
+            ).unwrap();
+        }
+        let weekly = db.peer_session_count_week(now).unwrap();
+        assert_eq!(weekly, 12, "本周会话数应为两行之和（5 + 7）");
     }
 
     fn default_pcb_row() -> PcbPersistRow {

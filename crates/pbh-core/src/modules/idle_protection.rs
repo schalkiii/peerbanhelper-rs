@@ -100,7 +100,10 @@ impl IdleConnectionDosProtection {
 
     /// 每个 torrent 拉取完 peers 后调用：连续 5 次未出现的连接会被清理
     /// （对齐上游 `onPeersRetrieved`）。
-    pub fn on_peers_retrieved(&self, peers: &[PeerKey]) {
+    ///
+    /// 上游由 `DownloaderServerImpl` 在拉到 peers 后逐模块派发；本移植在 wave 的
+    /// `run_downloader` 里显式调用（见 `pbh::wave`）。缺失该调用会让跟踪表只增不减。
+    pub fn on_peers_retrieved(&self, peers: &[(String, u16)]) {
         if let Ok(mut map) = self.idle_connections.lock() {
             map.retain(|key, info| {
                 if !peers.contains(key) {
@@ -177,7 +180,8 @@ impl RuleModule for IdleConnectionDosProtection {
                 .clone()
         };
 
-        let elapsed = ctx.now_ms - info.idle_start_time + 1;
+        // 上游 `now - start + 1`；`now_ms` 回退到起始时刻之前时会被夹到 1，避免除零
+        let elapsed = (ctx.now_ms - info.idle_start_time + 1).max(1);
         let avg_upload = (peer.uploaded - info.uploaded) / elapsed;
         let avg_download = (peer.downloaded - info.downloaded) / elapsed;
         let percentage_change = (peer.progress * 100.0 - info.percentage).abs();

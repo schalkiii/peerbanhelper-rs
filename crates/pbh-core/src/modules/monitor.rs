@@ -1785,13 +1785,17 @@ fn peer_snapshot_same(a: &PeerData, b: &PeerData) -> bool {
 }
 
 /// 对齐上游 `PeerRecordServiceImpl.flushToDatabase` 的 peer_id 截断：
-/// `peer.getId().length() > 8 ? substring(0, 8) : peer.getId()`（本移植按字符截断）。
+/// `peer.getId().length() > 8 ? substring(0, 8) : peer.getId()`。
+///
+/// 上游的 `length()` / `substring` 都是 **UTF-16 码元**口径，因此含 emoji 等增补平面
+/// 字符的 peer-id 必须按码元截断，按 Unicode 标量截断会多保留字符。
 fn truncate_peer_id(peer_id: Option<&str>) -> String {
     let Some(peer_id) = peer_id else {
         return String::new();
     };
-    if peer_id.chars().count() > 8 {
-        peer_id.chars().take(8).collect()
+    let units: Vec<u16> = peer_id.encode_utf16().collect();
+    if units.len() > 8 {
+        String::from_utf16_lossy(&units[..8])
     } else {
         peer_id.to_string()
     }
@@ -3202,5 +3206,34 @@ mod tests {
         assert_eq!(module.count(), 1);
         assert_eq!(s.tracked_swarm()[0].downloaded, 4096);
         assert_eq!(s.tracked_swarm()[0].first_time_seen_ms, now + 1);
+    }
+
+    /// 上游 `peer.getId().length() > 8` 是 UTF-16 码元数（Java `String.length()`）。
+    #[test]
+    fn truncate_peer_id_uses_utf16_code_units() {
+        // 直接以 UTF-16 码元序列构造输入，规避源码字面量的编码歧义：
+        // a b c [D83D DE00](😀) e f g h i = 10 个码元
+        let units: Vec<u16> = vec![
+            b'a' as u16, b'b' as u16, b'c' as u16, 0xD83D, 0xDE00,
+            b'e' as u16, b'f' as u16, b'g' as u16, b'h' as u16, b'i' as u16,
+        ];
+        let input = String::from_utf16_lossy(&units);
+        // 保留前 8 个码元：索引 0..7 = a b c [D83D DE00] e f g = "abc😀efg"
+        let got = truncate_peer_id(Some(&input));
+        assert_eq!(
+            got.encode_utf16().collect::<Vec<u16>>(),
+            vec![
+                b'a' as u16, b'b' as u16, b'c' as u16, 0xD83D, 0xDE00,
+                b'e' as u16, b'f' as u16, b'g' as u16,
+            ],
+            "应按 UTF-16 码元（而非 Unicode 标量）截断到 8"
+        );
+
+        // 纯 ASCII：超过 8 字符截断（保留前 8 个码元 = "-qB5000-"）
+        assert_eq!(truncate_peer_id(Some("-qB5000-000000000000")), "-qB5000-");
+        // 不超过 8 字符原样返回
+        assert_eq!(truncate_peer_id(Some("-qB5000")), "-qB5000");
+        // None 返回空串
+        assert_eq!(truncate_peer_id(None), "");
     }
 }

@@ -129,9 +129,12 @@ impl ReqwestFetcher {
 impl HttpFetcher for ReqwestFetcher {
     fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
         Box::pin(async move {
-            let mut builder = self
-                .client
-                .request(req.method.parse().unwrap_or(reqwest::Method::GET), &req.url);
+            // 非法 method 直接报错，而不是静默降级成 GET（否则 PUT 被写错时请求语义会变）
+            let method: reqwest::Method = req
+                .method
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid http method: {}", req.method))?;
+            let mut builder = self.client.request(method, &req.url);
             if let Some((u, p)) = req.basic {
                 builder = builder.basic_auth(u, Some(p));
             }
@@ -154,7 +157,9 @@ impl HttpFetcher for ReqwestFetcher {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
                 .collect();
-            let body = resp.text().await.unwrap_or_default();
+            // 读取响应体失败要向上抛（对齐 OkHttp 的 `IOException`），
+            // 静默换成空串会把「读取失败」伪装成「空响应」
+            let body = resp.text().await?;
             Ok(HttpResponse {
                 status,
                 headers,

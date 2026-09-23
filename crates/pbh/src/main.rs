@@ -391,7 +391,14 @@ async fn main() -> anyhow::Result<()> {
         }
         info!("已从数据库恢复 {} 条封禁记录", records.len());
         if let Ok(mut list) = pipeline.ban_list.lock() {
+            let restored = records.len();
             list.load(records);
+            if restored > 0 {
+                // 对齐上游 `load()` 后的 `reApplyBanListForDownloaders()`：重启后要把
+                // 恢复出来的封禁表推给下载器（下载器侧重启后名单是空的），否则只能等
+                // 下一轮恰好产生新增/解封才会下发。
+                list.mark_reapply();
+            }
         }
     }
 
@@ -534,6 +541,10 @@ async fn main() -> anyhow::Result<()> {
     // 避免某轮耗时超过间隔时立刻补跑（突发）导致下载器被连续冲击。
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let cleanup_days = cfg.persist.ban_logs_keep_days;
+    // 对齐上游 `AlertManagerImpl` / `AlertServiceImpl`：每天清理一次 30 天前的告警
+    const ALERT_KEEP_DAYS: i64 = 30;
+    let cleanup_period = Duration::from_secs(24 * 3600);
+    let mut next_cleanup = std::time::Instant::now();
     // 封禁列表落库节奏（对齐上游 `saveBanList` 的 10s 首延迟 + 1h 固定间隔）
     let banlist_save_period = Duration::from_secs(3600);
     let mut next_banlist_save = std::time::Instant::now() + Duration::from_secs(10);
@@ -546,12 +557,28 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                // 全局暂停（web `/api/general/global` 切换）：暂停期跳过 ban wave，
-                // 但监控模块定时任务照常（对齐上游 pause 下任务仍执行的语义）
-                if global_pause.load(std::sync::atomic::Ordering::Relaxed) {
+                let now = chrono::Utc::now().timestamp_millis();
+                // 全局暂停（web `/api/general/global` 切换）：暂停期跳过 ban wave 的判定，
+                // 但监控模块定时任务照常（上游各模块由独立的 `registerScheduledTask`
+                // 调度，不受 pause 影响）。
+                let paused = global_pause.load(std::sync::atomic::Ordering::Relaxed);
+                if paused {
+                    let entries_snapshot: Vec<_> = engine
+                        .entries
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    engine
+                        .monitor
+                        .run_scheduled(&entries_snapshot, now, args.dry_run)
+                        .await;
+                    // 暂停期间手动封禁/解封的变更仍需重放（上游暂停分支里也会检查
+                    // `needReApplyBanList`），否则变更要等到恢复后才生效。
+                    if engine.consume_pending_replay(&entries_snapshot, now).await {
+                        debug!("暂停期间完成一次封禁列表重放");
+                    }
                     continue;
                 }
-                let now = chrono::Utc::now().timestamp_millis();
                 let wave_started = std::time::Instant::now();
                 let report = engine.run_once(now).await;
                 wave_count += 1;
@@ -606,11 +633,22 @@ async fn main() -> anyhow::Result<()> {
                     debug!("封禁列表已落库 {written} 条");
                     next_banlist_save = std::time::Instant::now() + banlist_save_period;
                 }
-                // 每 100 轮清理一次过期封禁历史（`persist.ban-logs-keep-days`）
-                if wave_count.is_multiple_of(100) && cleanup_days > 0 {
-                    if let Ok(n) = db.cleanup_history(cleanup_days) {
-                        if n > 0 { info!("清理过期封禁日志 {n} 条"); }
+                // 过期清理按墙钟时间调度（对齐上游 `scheduleWithFixedDelay(cleanup, 0, 1, DAYS)`）：
+                // 封禁历史按 `persist.ban-logs-keep-days`、告警按上游 30 天。
+                if std::time::Instant::now() >= next_cleanup {
+                    if cleanup_days > 0 {
+                        match db.cleanup_history(cleanup_days) {
+                            Ok(n) if n > 0 => info!("清理过期封禁日志 {n} 条"),
+                            Ok(_) => {}
+                            Err(e) => warn!("清理过期封禁日志失败: {e}"),
+                        }
                     }
+                    match db.cleanup_alerts(ALERT_KEEP_DAYS) {
+                        Ok(n) if n > 0 => info!("清理过期告警 {n} 条"),
+                        Ok(_) => {}
+                        Err(e) => warn!("清理过期告警失败: {e}"),
+                    }
+                    next_cleanup = std::time::Instant::now() + cleanup_period;
                 }
                 // PCB 过期清理（默认每 8 小时）
                 if std::time::Instant::now() >= next_pcb_cleanup {
@@ -648,6 +686,12 @@ async fn main() -> anyhow::Result<()> {
                     .monitor
                     .shutdown(&entries_snapshot, chrono::Utc::now().timestamp_millis())
                     .await;
+                // 退出前保存封禁表（对齐上游 `close()` → `saveBanList()`），
+                // 否则最多丢失最近一个落库周期内的封禁变更。
+                if cfg.persist.banlist {
+                    let written = engine.persist_ban_list();
+                    debug!("退出前封禁列表已落库 {written} 条");
+                }
                 break;
             }
         }

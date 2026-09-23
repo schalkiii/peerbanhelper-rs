@@ -11,7 +11,7 @@
 use crate::i18n::TranslationComponent;
 use crate::model::{PeerData, TorrentData};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// 上游 `DownloaderBasicInfo`（封禁快照里的下载器信息）。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +274,8 @@ impl BanList {
     }
 
     /// 写入一条完整记录（ban wave 落库路径：携带 peer/torrent/规则等完整 `BanMetadata`）。
+    ///
+    /// 判重基于**实时**封禁表，适用于手动封禁等 wave 外路径。
     pub fn add_record(&mut self, record: BannedRecord) -> bool {
         let duplicate = self.entries.contains_key(&record.ip);
         if duplicate {
@@ -281,6 +283,26 @@ impl BanList {
         }
         self.entries.insert(record.ip.clone(), record);
         duplicate
+    }
+
+    /// ban wave 内的写入：判重基准为「本 wave 开始前」的地址快照。
+    ///
+    /// 上游 `DownloaderServerImpl.banWave` 在写入任何封禁之前先 `banList.copyKeySet()`
+    /// 得到快照，`banPeer` 用该快照判重，因此**同一 wave 内**同一 IP 被多个 torrent /
+    /// 多个下载器命中不算重复封禁（不会置位 `needReApplyBanList`）；只有跨 wave 的重复
+    /// 才会触发下一轮全量重放。
+    pub fn add_record_in_wave(&mut self, record: BannedRecord, baseline: &HashSet<String>) -> bool {
+        let duplicate = baseline.contains(&record.ip);
+        if duplicate {
+            self.need_reapply = true;
+        }
+        self.entries.insert(record.ip.clone(), record);
+        duplicate
+    }
+
+    /// 取「本 wave 开始前」的地址快照（对齐上游 `banList.copyKeySet()`）。
+    pub fn key_snapshot(&self) -> HashSet<String> {
+        self.entries.keys().cloned().collect()
     }
 
     /// 全量快照（按 IP 排序，供落库/展示/上报）。
@@ -294,9 +316,16 @@ impl BanList {
         self.entries.contains_key(ip)
     }
 
-    /// 遍历全部封禁记录（`auto-range-ban` 需要扫描已封禁地址）。
+    /// 遍历全部封禁记录（按 IP 有序，供 `auto-range-ban` 扫描已封禁地址）。
+    ///
+    /// 上游 `BanList` 底层是 `DualIPv4v6AssociativeTries`，`forEach` 的遍历顺序确定；
+    /// Rust 侧用 `HashMap` 会因随机序导致同一 peer 命中多个已封禁网段时
+    /// `relatedBannedAddress` 不确定，因此这里统一按 IP 字典序输出。
     pub fn iter(&self) -> impl Iterator<Item = (&String, &BannedRecord)> {
-        self.entries.iter()
+        let mut keys: Vec<&String> = self.entries.keys().collect();
+        keys.sort();
+        keys.into_iter()
+            .filter_map(|key| self.entries.get(key).map(|record| (key, record)))
     }
 
     pub fn len(&self) -> usize {
