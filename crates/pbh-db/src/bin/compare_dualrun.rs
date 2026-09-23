@@ -223,16 +223,24 @@ fn join_set(set: &std::collections::BTreeSet<String>) -> String {
         .join("+")
 }
 
-/// `YYYY-MM-DD` → 当日零点 epoch 毫秒（仅用于数值列的粗过滤；解析失败返回 0 = 不过滤）。
+/// `--since` 解析（**UTC**）：`YYYY-MM-DD`（当日零点）或 `YYYY-MM-DDTHH:MM[:SS]`（分钟级窗口，
+/// 用于长跑对账只比对两侧同时在线的时段）；解析失败返回 0（= 不过滤）。
 fn chrono_like_day_start_ms(date: &str) -> i64 {
-    let parts: Vec<i64> = date.split('-').filter_map(|p| p.parse().ok()).collect();
-    if parts.len() < 3 {
-        return 0;
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(date, fmt) {
+            return chrono::Utc.from_utc_datetime(&dt).timestamp_millis();
+        }
     }
-    // 简化儒略日换算（足以覆盖 2026 年附近，误差在小时桶粒度内无影响）
-    let (y, m, d) = (parts[0], parts[1], parts[2]);
-    let days = 367 * y - (7 * (y + (m + 9) / 12)) / 4 + (275 * m) / 9 + d - 719559;
-    days * 86_400_000
+    match NaiveDate::parse_from_str(date, "%Y-%m-%d").map(|d| d.and_hms_opt(0, 0, 0)) {
+        Ok(Some(dt)) => chrono::Utc.from_utc_datetime(&dt).timestamp_millis(),
+        _ => 0,
+    }
 }
 
 fn write_csv(path: &str, report: &Report) -> std::io::Result<()> {
@@ -325,6 +333,19 @@ mod tests {
         assert_eq!(r.module_mismatch.len(), 1);
         assert!(r.module_mismatch[0].contains("PeerIdBlacklist"));
         assert!(r.module_mismatch[0].contains("MultiDialingBlocker"));
+    }
+
+    #[test]
+    fn since_supports_day_and_minute_precision() {
+        // 2026-09-23T00:00:00Z
+        assert_eq!(chrono_like_day_start_ms("2026-09-23"), 1_790_121_600_000);
+        // 同日 12:31（分钟级窗口，长跑对账常用）
+        assert_eq!(
+            chrono_like_day_start_ms("2026-09-23T12:31"),
+            1_790_121_600_000 + (12 * 60 + 31) * 60_000
+        );
+        // 非法输入 → 0 = 不过滤
+        assert_eq!(chrono_like_day_start_ms("not-a-date"), 0);
     }
 
     #[test]
