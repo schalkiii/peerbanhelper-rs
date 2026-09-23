@@ -1229,14 +1229,10 @@ mod tests {
     #[test]
     fn bind_connect_preserves_bound_source_port() {
         // 绑定一个随机本地端口后连接对端：对端观测到的 peer 端口必须等于绑定端口
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let source_port = probe.local_addr().unwrap().port();
-        drop(probe);
-        let local = SocketAddr::from(([127, 0, 0, 1], source_port));
-        let peers: Arc<Mutex<Vec<SocketAddr>>> = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&peers);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let real_addr = listener.local_addr().unwrap();
+        let peers: Arc<Mutex<Vec<SocketAddr>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&peers);
         std::thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
                 if let Ok(peer) = stream.peer_addr() {
@@ -1244,8 +1240,27 @@ mod tests {
                 }
             }
         });
-        let mut stream =
-            bind_connect(local, real_addr, Duration::from_secs(2)).expect("bind+connect");
+        // probe 释放与重绑之间，该临时端口可能被同进程的并行测试抢占 ⇒ AddrInUse；
+        // 只对这种情况换端口重试（测试加固，不改变被测语义）
+        let (mut stream, source_port) = {
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+                let source_port = probe.local_addr().unwrap().port();
+                drop(probe);
+                let local = SocketAddr::from(([127, 0, 0, 1], source_port));
+                match bind_connect(local, real_addr, Duration::from_secs(2)) {
+                    Ok(stream) => break (stream, source_port),
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 8 =>
+                    {
+                        continue;
+                    }
+                    Err(e) => panic!("bind+connect: {e}"),
+                }
+            }
+        };
         assert_eq!(
             stream.local_addr().unwrap().port(),
             source_port,

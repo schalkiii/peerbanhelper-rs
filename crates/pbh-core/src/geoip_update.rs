@@ -91,8 +91,10 @@
 //!    上游在系统临时目录建文件再 `Files.move`。任何一步失败都会删除临时文件，
 //!    绝不出现半成品数据库（上游在「下载失败但目标已存在」时会继续 `Files.move` 一个空临时文件，
 //!    会截断既有数据库；此处不复刻该缺陷，失败时一律保留原文件）。
-//! 3. 上游用 `BackgroundTaskManager` 汇报下载进度（`DOWNLOAD_PROGRESS*` 文案），本移植版改为
-//!    `debug!` 日志（同样的文案键），因为本 crate 没有后台任务 UI 层。
+//! 3. 上游用 `BackgroundTaskManager` 汇报下载进度（WebUI 的 SSE `/api/tasks/live`），本移植版
+//!    通过可选的进度 sink（[`GeoIpUpdater::with_progress_sink`] + [`GeoIpProgress`] 事件流）
+//!    对接 `pbh-web` 的 `BackgroundTaskRegistry`（任务标题同上游 `Lang.IPDB_DOWNLOAD_MMDB`）；
+//!    未接 sink 时退化为 `debug!` 日志（同样的文案键），两者并存。
 //! 4. 「本地从来没有过该库且下载失败」时上游抛 `IllegalStateException`，整个 `IPDB` 构造失败
 //!    （后续数据库不再尝试、`IPDBManager.ipdb` 保持 null ⇒ 四个维度全部不命中）；
 //!    本移植版记录为 [`DatabaseUpdate::Failed`] `{ kept_local_copy: false }` 并继续处理其余数据库，
@@ -150,9 +152,9 @@ pub const LANG_IPDB_EXISTS_UPDATE_FAILED: &str = "IPDB_EXISTS_UPDATE_FAILED";
 pub const LANG_IPDB_RETRY_WITH_BACKUP_SOURCE: &str = "IPDB_RETRY_WITH_BACKUP_SOURCE";
 pub const LANG_IPDB_UNGZIP_FAILED: &str = "IPDB_UNGZIP_FAILED";
 /// 上游用它做后台任务**标题**（`new FunctionalBackgroundTask(new TranslationComponent(Lang.IPDB_DOWNLOAD_MMDB), ...)`）；
-/// 本移植版没有后台任务 UI 层，因此只保留该键、不参与日志输出
+/// 本移植版由 `pbh-web` 的 `BackgroundTaskRegistry` 适配层用作注册表任务标题
 pub const LANG_IPDB_DOWNLOAD_MMDB: &str = "IPDB_DOWNLOAD_MMDB";
-/// 上游用它做下载**状态文本**（参数为镜像 URL），此处以 `debug!` 输出
+/// 上游用它做下载**状态文本**（参数为镜像 URL），此处以 `debug!` 与进度事件输出
 pub const LANG_IPDB_DOWNLOAD_MMDB_DESCRIPTION: &str = "IPDB_DOWNLOAD_MMDB_DESCRIPTION";
 pub const LANG_IPDB_INVALID: &str = "IPDB_INVALID";
 pub const LANG_DOWNLOAD_PROGRESS: &str = "DOWNLOAD_PROGRESS";
@@ -250,15 +252,32 @@ impl GeoIpHttpRequest {
 }
 
 /// 下载响应：保留状态码（上游判定的是 `response.code() == 200`，而不是 2xx）
+///
+/// `content_length` 对齐上游 `body.contentLength()`（后台任务的 `max`；
+/// 未知为 `None` ⇒ 上游切 `INDETERMINATE`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeoIpHttpResponse {
     pub status: u16,
     pub body: Vec<u8>,
+    pub content_length: Option<i64>,
 }
 
 impl GeoIpHttpResponse {
     pub fn new(status: u16, body: Vec<u8>) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            content_length: Some(body.len() as i64),
+            body,
+        }
+    }
+
+    /// 显式指定 `contentLength`（真实客户端从响应头读取；mock 可传 `None` 模拟未知长度）
+    pub fn with_content_length(status: u16, body: Vec<u8>, content_length: Option<i64>) -> Self {
+        Self {
+            status,
+            content_length,
+            body,
+        }
     }
 
     /// 对齐 `IPDB#downloadFile` 的 `response.code() == 200`
@@ -340,8 +359,53 @@ impl GeoIpHttpClient for ReqwestBlockingHttpClient {
         }
         let response = builder.send()?;
         let status = response.status().as_u16();
+        // 对齐上游 `body.contentLength()`（后台任务的 max；-1/缺失 ⇒ None）
+        let content_length = response.content_length().map(|len| len as i64);
         let body = response.bytes()?.to_vec();
-        Ok(GeoIpHttpResponse::new(status, body))
+        Ok(GeoIpHttpResponse::with_content_length(status, body, content_length))
+    }
+}
+
+// ------------------------------------------------------------ 进度上报
+
+/// 进度阶段（对齐上游 `IPDB#downloadFile` / `updateMMDB` 的 BackgroundTask 状态流）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeoIpProgressStage {
+    /// 单个镜像开始下载（上游 `bgTask.setStatusText(IPDB_DOWNLOAD_MMDB_DESCRIPTION, mirror.getIPDBUrl())`）
+    DownloadStart,
+    /// 收到响应体（上游 `bgTask.setMax(totalSize)` + 循环里 `setCurrent(totalRead)`；
+    /// `total` 对齐 `body.contentLength()`，未知为 `None` ⇒ 上游切 `INDETERMINATE`）
+    DownloadBytes { bytes: i64, total: Option<i64> },
+    /// 进入解压/校验阶段（上游下载完切回 `INDETERMINATE` 后 `validateMMDB`）
+    Validate,
+    /// 校验通过，准备原子替换目标文件（上游 `Files.move`）
+    Write,
+    /// 该数据库更新结束（`success` 对应 `Files.move` 成功；失败对应全部镜像耗尽）
+    Finished { success: bool },
+}
+
+/// 一条进度事件（`database` 标识是哪个库的事件，一个库对应上游的一个 BackgroundTask）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeoIpProgress {
+    /// 配置里的数据库名（`database-city` / `database-asn` / `database-geocn`）
+    pub database: String,
+    /// 落盘目标：`<ipdb_dir>/geoip/<file>`
+    pub target: PathBuf,
+    pub stage: GeoIpProgressStage,
+    /// 当前镜像 URL（`DownloadStart` / `DownloadBytes` 阶段携带）
+    pub url: Option<String>,
+}
+
+/// 进度 sink：上游 `BackgroundTaskManager` 的对应物（`pbh-web` 的注册表适配层注入）。
+pub type GeoIpProgressSink = Arc<dyn Fn(&GeoIpProgress) + Send + Sync>;
+
+/// 包装 sink 使 [`GeoIpUpdater`] 可以继续 derive [`Debug`]（闭包本身不可 Debug）。
+#[derive(Clone)]
+struct ProgressSink(GeoIpProgressSink);
+
+impl std::fmt::Debug for ProgressSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProgressSink(..)")
     }
 }
 
@@ -472,6 +536,8 @@ pub struct GeoIpUpdater<'a> {
     mirrors: Vec<IpdbDownloadSource>,
     /// 复刻上游「`auto-update: false` 也下载缺失文件」的分支（默认关闭，见模块文档差异 1）
     download_missing: bool,
+    /// 进度 sink（上游 `BackgroundTaskManager` 的对接点；未设置则只输出 `debug!` 日志）
+    progress_sink: Option<ProgressSink>,
 }
 
 impl<'a> GeoIpUpdater<'a> {
@@ -488,6 +554,34 @@ impl<'a> GeoIpUpdater<'a> {
             http,
             mirrors: default_mirrors(&placeholder),
             download_missing: false,
+            progress_sink: None,
+        }
+    }
+
+    /// 接入进度 sink（上游把下载进度汇报给 `BackgroundTaskManager`，WebUI 经 SSE 读取；
+    /// 本移植由 `pbh-web` 的 `BackgroundTaskRegistry` 适配层消费 [`GeoIpProgress`] 事件）。
+    pub fn with_progress_sink(mut self, sink: Arc<dyn Fn(GeoIpProgress) + Send + Sync>) -> Self {
+        self.progress_sink = Some(ProgressSink(Arc::new(move |progress: &GeoIpProgress| {
+            sink(progress.clone())
+        })));
+        self
+    }
+
+    /// 发出一条进度事件（未接 sink 时为 no-op；`debug!` 日志与 sink 并存，都不贵）
+    fn emit_progress(
+        &self,
+        database: &str,
+        target: &Path,
+        stage: GeoIpProgressStage,
+        url: Option<String>,
+    ) {
+        if let Some(sink) = &self.progress_sink {
+            (sink.0)(&GeoIpProgress {
+                database: database.to_string(),
+                target: target.to_path_buf(),
+                stage,
+                url,
+            });
         }
     }
 
@@ -582,14 +676,27 @@ impl<'a> GeoIpUpdater<'a> {
                     vec![mirror.url().into()]
                 )
             );
-            match self.download_and_decompress(mirror, &tmp) {
+            self.emit_progress(
+                database_name,
+                target,
+                GeoIpProgressStage::DownloadStart,
+                Some(mirror.url()),
+            );
+            match self.download_and_decompress(database_name, target, mirror, &tmp) {
                 Ok(()) => {
+                    self.emit_progress(database_name, target, GeoIpProgressStage::Write, None);
                     return match std::fs::rename(&tmp, target) {
                         // 对齐 `Files.move(tmp, target, REPLACE_EXISTING)`：同目录 rename 为原子替换
                         Ok(()) => {
                             info!(
                                 "{}",
                                 t(LANG_IPDB_UPDATE_SUCCESS, vec![database_name.into()])
+                            );
+                            self.emit_progress(
+                                database_name,
+                                target,
+                                GeoIpProgressStage::Finished { success: true },
+                                None,
                             );
                             DatabaseReport {
                                 database: database_name.to_string(),
@@ -611,6 +718,12 @@ impl<'a> GeoIpUpdater<'a> {
                                     LANG_IPDB_UPDATE_FAILED,
                                     vec![database_name.into(), message.clone().into()]
                                 )
+                            );
+                            self.emit_progress(
+                                database_name,
+                                target,
+                                GeoIpProgressStage::Finished { success: false },
+                                None,
                             );
                             DatabaseReport {
                                 database: database_name.to_string(),
@@ -652,6 +765,12 @@ impl<'a> GeoIpUpdater<'a> {
                 t(LANG_IPDB_EXISTS_UPDATE_FAILED, vec![database_name.into()])
             );
         }
+        self.emit_progress(
+            database_name,
+            target,
+            GeoIpProgressStage::Finished { success: false },
+            None,
+        );
         DatabaseReport {
             database: database_name.to_string(),
             target: target.to_path_buf(),
@@ -666,6 +785,8 @@ impl<'a> GeoIpUpdater<'a> {
     /// 对齐 `IPDB#downloadFile` 的单次尝试（含 401 重试与 XZ 解压），成功时 `tmp` 已就绪
     fn download_and_decompress(
         &self,
+        database_name: &str,
+        target: &Path,
         mirror: &IpdbDownloadSource,
         tmp: &Path,
     ) -> anyhow::Result<()> {
@@ -694,6 +815,16 @@ impl<'a> GeoIpUpdater<'a> {
                 body_preview(&response.body)
             );
         }
+        // 上游 `bgTask.setMax(totalSize)` + 循环里的 `setCurrent(totalRead)`（响应体整块到达）
+        self.emit_progress(
+            database_name,
+            target,
+            GeoIpProgressStage::DownloadBytes {
+                bytes: response.body.len() as i64,
+                total: response.content_length,
+            },
+            Some(url.clone()),
+        );
         debug!(
             "{}",
             t(
@@ -704,6 +835,12 @@ impl<'a> GeoIpUpdater<'a> {
         if mirror.support_xzip {
             // 上游把 XZ 解压与 `validateMMDB` 放在同一个 try/catch 里：任一失败都记
             // `IPDB_UNGZIP_FAILED` 并轮换备用源
+            self.emit_progress(
+                database_name,
+                target,
+                GeoIpProgressStage::Validate,
+                Some(url.clone()),
+            );
             let outcome = decompress_xz(&response.body).and_then(|mmdb| {
                 std::fs::write(tmp, mmdb)
                     .map_err(|e| anyhow::anyhow!("write {} failed: {e}", tmp.display()))
@@ -1573,6 +1710,112 @@ mod tests {
 
         assert_eq!(report.failures().len(), 3);
         assert_eq!(mock.call_count(), 3, "没有凭据就不重试");
+    }
+
+    #[test]
+    fn progress_sink_receives_stage_events_for_each_database() {
+        let dir = TestDir::new("progress");
+        let fixtures = fixtures();
+        let mock = serve_all(&fixtures);
+
+        let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let updater = updater(&dir, auto_update_config(), &mock)
+            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+                sink.lock().unwrap().push(progress);
+            }));
+        let report = updater.update_if_needed();
+        assert_eq!(report.updated().len(), 3);
+
+        let events = events.lock().unwrap();
+        // 每个库一条完整事件流：DownloadStart → DownloadBytes → Validate → Write → Finished
+        let city_events: Vec<&GeoIpProgress> = events
+            .iter()
+            .filter(|event| event.database == "GeoLite2-City")
+            .collect();
+        assert_eq!(city_events.len(), 5, "City 库的事件流: {events:?}");
+        assert_eq!(city_events[0].stage, GeoIpProgressStage::DownloadStart);
+        assert_eq!(
+            city_events[0].url.as_deref(),
+            Some(mirror_url("GeoLite2-City").as_str()),
+            "DownloadStart 携带镜像 URL（上游 setStatusText 的参数）"
+        );
+        match &city_events[1].stage {
+            GeoIpProgressStage::DownloadBytes { bytes, total } => {
+                assert_eq!(*bytes, fixtures[0].2.len() as i64, "已接收字节数 = 响应体大小");
+                assert_eq!(
+                    *total,
+                    Some(fixtures[0].2.len() as i64),
+                    "total 对齐 body.contentLength()（mock 默认按 body 填充）"
+                );
+            }
+            other => panic!("第二事件应为 DownloadBytes，实际 {other:?}"),
+        }
+        assert_eq!(city_events[2].stage, GeoIpProgressStage::Validate);
+        assert_eq!(city_events[3].stage, GeoIpProgressStage::Write);
+        assert_eq!(
+            city_events[4].stage,
+            GeoIpProgressStage::Finished { success: true }
+        );
+        // 事件流按 City → ASN → GeoCN 的库顺序、以 Finished 收尾
+        assert_eq!(events.last().unwrap().stage, GeoIpProgressStage::Finished { success: true });
+        assert_eq!(events.len(), 15);
+    }
+
+    #[test]
+    fn progress_sink_reports_failure_after_all_mirrors_exhausted() {
+        let dir = TestDir::new("progress-failure");
+        let mock = MockHttpClient::default()
+            .serve(&mirror_url("GeoLite2-City"), Script::Status(503))
+            .serve(&mirror_url("GeoLite2-ASN"), Script::Status(503))
+            .serve(&mirror_url("GeoCN"), Script::Status(503));
+
+        let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let updater = updater(&dir, auto_update_config(), &mock)
+            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+                sink.lock().unwrap().push(progress);
+            }));
+        let report = updater.update_if_needed();
+        assert_eq!(report.failures().len(), 3);
+
+        let events = events.lock().unwrap();
+        // 单镜像失败：DownloadStart（无 DownloadBytes/Validate/Write）→ Finished{success:false}
+        let city_events: Vec<&GeoIpProgress> = events
+            .iter()
+            .filter(|event| event.database == "GeoLite2-City")
+            .collect();
+        assert_eq!(city_events.len(), 2, "失败库的事件流: {city_events:?}");
+        assert_eq!(city_events[0].stage, GeoIpProgressStage::DownloadStart);
+        assert_eq!(
+            city_events[1].stage,
+            GeoIpProgressStage::Finished { success: false }
+        );
+    }
+
+    #[test]
+    fn skipped_run_emits_no_progress_events_and_no_requests() {
+        let dir = TestDir::new("progress-skip");
+        fs::create_dir_all(dir.geoip_dir()).unwrap();
+        let city = dir.geoip_dir().join(CITY_MMDB);
+        fs::write(&city, b"existing-city").unwrap();
+
+        let fixtures = fixtures();
+        let mock = serve_all(&fixtures);
+        let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let updater = updater(&dir, IpDatabaseConfig::default(), &mock)
+            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+                sink.lock().unwrap().push(progress);
+            }));
+        let report = updater.update_if_needed();
+
+        assert_eq!(
+            report,
+            UpdateReport::Skipped(SkipReason::AutoUpdateDisabled)
+        );
+        assert_eq!(mock.call_count(), 0, "关闭时一个请求都不发");
+        assert!(events.lock().unwrap().is_empty(), "旁路时零任务/零事件");
     }
 
     #[test]

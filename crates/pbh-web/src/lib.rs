@@ -3,7 +3,12 @@
 
 pub mod api;
 pub mod backend;
+pub mod tasks;
 pub use backend::{BuildMeta, LogEntry, ModuleRecord, ReloadEntry, RingLog, SubModule, WebBackend};
+pub use tasks::{
+    BackgroundTask, BackgroundTaskBarType, BackgroundTaskRegistry, BackgroundTaskStatus,
+    GeoIpTaskAdapter,
+};
 
 use axum::{
     body::Body,
@@ -70,6 +75,8 @@ pub struct AppState {
     /// `BtnNetwork` 由 BTN 工作线程构造，这里只持有跨线程句柄
     /// （对齐上游 `PBHPeerController` 注入的 `BtnNetwork` 单例）。
     pub btn_network: pbh_core::btn_transport::SharedBtnNetwork,
+    /// 后台任务注册表（`GET /api/tasks/live`；对齐上游 `BackgroundTaskManager`）
+    pub tasks: Arc<BackgroundTaskRegistry>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -679,6 +686,7 @@ mod tests {
             global_pause: Arc::new(AtomicBool::new(false)),
             sub_module: None,
             btn_network: Default::default(),
+            tasks: Arc::new(BackgroundTaskRegistry::new()),
         }
     }
 

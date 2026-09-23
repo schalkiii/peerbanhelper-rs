@@ -18,6 +18,7 @@ pub mod peers;
 pub mod push;
 pub mod statistics;
 pub mod sub;
+pub mod tasks;
 pub mod torrents;
 
 use axum::{
@@ -53,6 +54,8 @@ pub fn api_routes() -> Router<crate::AppState> {
         // —— 日志（PBHLogsController：history + SSE live）——
         .route("/logs/history", get(logs::history))
         .route("/logs/live", get(logs::live))
+        // —— 后台任务（PBHBackgroundTaskController：SSE live，Role.USER_READ）——
+        .route("/tasks/live", get(tasks::live))
         // —— 全局通用（PBHGeneralController）——
         .route("/general/status", get(general::status))
         .route(

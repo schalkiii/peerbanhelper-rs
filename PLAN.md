@@ -119,10 +119,12 @@
 ### 4.1 与上游差异的对齐项
 > 原则：有差异就写在这里，说明现状与上游行为，按影响排序逐项关闭。
 
-- [ ] **GeoIP 更新进度展示**：上游经 `BackgroundTaskManager` 在 WebUI 汇报下载进度，本移植为
-      `debug!` 日志（同文案键）。待 WebUI 后台任务体系对接时补 UI 层。
-- [ ] **PTR 解析架构**：采用「应用层预热缓存 + 模块只读」设计（上游在模块内异步解析），
-      对外行为等价（见 SPEC §5.9）；如需完全对齐内部结构再评估。
+- [x] **GeoIP 更新进度展示**：已实现 `BackgroundTaskRegistry` + SSE `GET /api/tasks/live`
+      （逐字段对齐上游 `PBHBackgroundTaskController` 的 DTO 与状态机：QUEUED/PREPARING/RUNNING/
+      COMPLETED/FAILED、barType、locale 渲染），GeoIP 更新器经进度 sink 上报下载/校验/写盘各阶段。
+- [x] **PTR 解析架构**：解析所有权已移入 `PtrBlacklist` 模块（`observe()` 入口 + 注入式
+      `PtrResolver`、3 秒超时、负缓存 TTL 与容量对齐上游 `ModuleMatchCache`），wave 逐 peer 通知；
+      `check()` 保持只读，首轮 pass、下一轮判定的时序与原设计一致。
 
 ### 4.2 已知且保留的行为差异（说明，不计划「修复」）
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），

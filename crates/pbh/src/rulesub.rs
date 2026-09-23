@@ -236,8 +236,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pbh-rulesub-test-{}", std::process::id()));
+    /// 每个测试独立的临时目录（同一测试二进制并行执行，若共用按 pid 命名的目录，
+    /// 入口的 `remove_dir_all` 会互删对方的缓存文件导致间歇性失败）
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pbh-rulesub-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -251,7 +253,7 @@ mod tests {
 
     #[test]
     fn refresh_all_writes_rule_sub_log_and_info_on_cache_parse() {
-        let dir = temp_dir();
+        let dir = temp_dir("cache-parse");
         // 远程不可用（url 为空）但本地缓存存在且未加载 ⇒ ParseCache，应落库
         write_cache(&dir, "rules-1", "1.2.3.4\n5.6.7.8\n");
         let config = IpRuleListConfig {
@@ -315,7 +317,7 @@ mod tests {
 
     #[test]
     fn refresh_all_skips_disabled_rule_in_db() {
-        let dir = temp_dir();
+        let dir = temp_dir("disabled");
         let config = IpRuleListConfig {
             enabled: Some(true),
             ban_duration_ms: 0,

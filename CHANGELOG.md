@@ -5,6 +5,17 @@
 
 ## 未发布（working tree）
 
+### feat(web,ptr): 后台任务 SSE 端点（GeoIP 进度上屏）+ PTR 解析所有权移入模块
+
+- 对齐上游 `PBHBackgroundTaskController`：新增 `BackgroundTaskRegistry` 与 SSE `GET /api/tasks/live`
+  （DTO/状态枚举/barType/locale 渲染逐字段一致）；GeoIP 更新器经 `with_progress_sink` 上报
+  下载（按镜像 URL / 字节进度）/ 校验 / 写盘各阶段，`auto-update:false` 且库齐全 ⇒ 零任务零请求；
+- `PtrBlacklist` 收编解析职责：`observe()` 入口 + 注入式 `PtrResolver`（std UDP 实现，读
+  `/etc/resolv.conf`）、3 秒超时、负缓存 TTL/容量对齐上游 `ModuleMatchCache`；`check()` 只读不变；
+- 忠实性评审修复（live_peers 生命周期）：改为**每轮整表清空**（对齐上游 `endSession` 整表替换，
+  登录失败/已删除下载器的旧快照随之消失）；锁毒化统一 `into_inner()` 恢复策略；
+  修复两个与本次改动无关的既有测试竞态（rulesub 临时目录、AutoSTUN 端口抢占）。
+
 ### feat(btn): 遗留协议上报快照落地（live peers + ban list 内存数据源）
 
 - 新增 `pbh/src/btn_legacy.rs`：`LegacyAwareSubmitSource` 组合数据源——DB 批量数据

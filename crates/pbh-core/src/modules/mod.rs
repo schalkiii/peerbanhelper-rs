@@ -35,5 +35,5 @@ pub use monitor::{
 pub use multi_dialing::{MultiDialingBlocker, MultiDialingSettings};
 pub use peer_id::PeerIdBlacklist;
 pub use progress_cheat::{PcbConfig, ProgressCheatBlocker};
-pub use ptr_blacklist::{PtrBlacklist, PtrCache};
+pub use ptr_blacklist::{PtrBlacklist, PtrCache, PtrResolver, SystemPtrResolver};
 pub use string_blacklist::StringBlacklist;

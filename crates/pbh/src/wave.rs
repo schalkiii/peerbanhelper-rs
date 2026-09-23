@@ -203,6 +203,12 @@ impl WaveEngine {
 
     /// 执行一轮 ban wave。
     pub async fn run_once(&self, now_ms: i64) -> WaveReport {
+        // BTN 遗留协议 live peers：对齐上游 `endSession` 的整表替换——每轮开始清空全表，
+        // 由各下载器任务重新写入；登录失败/已删除的下载器本轮不产生任何行（旧数据随之消失）。
+        {
+            let mut map = self.live_peers.lock().unwrap_or_else(|e| e.into_inner());
+            map.clear();
+        }
         let mut report = WaveReport::default();
         let mut statuses = Vec::new();
 
@@ -613,10 +619,6 @@ impl WaveEngine {
             });
         }
 
-        // BTN 遗留协议 live peers：本轮开始前清空该下载器的旧快照（对齐上游每轮覆盖）
-        if let Ok(mut map) = self.live_peers.lock() {
-            map.insert(dl.id().to_string(), Vec::new());
-        }
         let torrents = dl
             .fetch_torrents()
             .await
@@ -644,8 +646,10 @@ impl WaveEngine {
                 };
                 // 监控模块的 `onPeersRetrieved`（与判定无关，只做统计/记录）
                 monitor.on_peers_retrieved(dl.id(), &torrent, &peers, now_ms);
-                // BTN 遗留协议 live peers 快照（对齐上游 `DownloaderServer` 的 livePeers）
-                if let Ok(mut map) = live_peers.lock() {
+                // BTN 遗留协议 live peers 快照（对齐上游 `DownloaderServer` 的 livePeers）；
+                // 作用域内完成写入，避免 MutexGuard 跨 await（非 Send）
+                {
+                    let mut map = live_peers.lock().unwrap_or_else(|e| e.into_inner());
                     map.entry(dl.id().to_string())
                         .or_default()
                         .extend(crate::btn_legacy::peer_rows_from(&torrent, &peers));

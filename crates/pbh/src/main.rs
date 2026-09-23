@@ -152,11 +152,18 @@ async fn main() -> anyhow::Result<()> {
     // `pbh.forceDisableIPDB` 打开、或 `<data>/ipdb/geoip/*.mmdb` 缺失/损坏时不注入 provider，
     // 此时 `ip-address-blocker` 的 asn / region / city / net-type 四个维度全部不命中
     //（与上游 IPDB 初始化失败的降级行为一致）。
+    // 后台任务注册表（对齐上游 `BackgroundTaskManager`）：GeoIP 更新进度经
+    // `GeoIpTaskAdapter` 映射为 `Lang.IPDB_DOWNLOAD_MMDB` 任务，WebUI 经 SSE
+    // `GET /api/tasks/live` 读取（对齐上游 `PBHBackgroundTaskController`）。
+    let background_tasks = Arc::new(pbh_web::BackgroundTaskRegistry::new());
     let geo: Option<Arc<dyn GeoIpProvider>> = if geoip_force_disabled() {
         info!("pbh.forceDisableIPDB 已打开，跳过 GeoIP 数据库加载");
         None
     } else {
         let ipdb_dir = data_dir.join("ipdb");
+        let geoip_task_adapter =
+            Arc::new(pbh_web::GeoIpTaskAdapter::new(background_tasks.clone()));
+        let geoip_progress_sink = geoip_task_adapter.sink();
         // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` → `IPDB` 构造函数的
         // 「先 updateMMDB 再 loadMMDB」：更新完成后再加载，本次启动即可用上新库）。
         // 镜像顺序、`.mmdb.xz` + XZ 解压、45 天 mtime 间隔、原子替换均见 `geoip_update`。
@@ -174,7 +181,8 @@ async fn main() -> anyhow::Result<()> {
                         updater_dir,
                         updater_config.clone(),
                         &http,
-                    );
+                    )
+                    .with_progress_sink(geoip_progress_sink);
                     let updater = if updater_config.auto_update {
                         updater
                     } else {
@@ -436,6 +444,7 @@ async fn main() -> anyhow::Result<()> {
             })
         },
         btn_network: btn_network_slot.clone(),
+        tasks: background_tasks.clone(),
     };
     let app = build_router(state);
     let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;

@@ -166,17 +166,13 @@ impl BtnSubmitSource for LegacyAwareSubmitSource {
     }
 
     fn legacy_peer_snapshot(&self) -> Vec<BtnLegacyPeerRow> {
-        self.live_peers
-            .lock()
-            .map(|map| map.values().flatten().cloned().collect())
-            .unwrap_or_default()
+        let map = self.live_peers.lock().unwrap_or_else(|e| e.into_inner());
+        map.values().flatten().cloned().collect()
     }
 
     fn legacy_ban_snapshot(&self) -> Vec<BtnLegacyBanRow> {
-        self.ban_list
-            .lock()
-            .map(|list| ban_rows_from_ban_list(&list, &self.translator, &self.locale))
-            .unwrap_or_default()
+        let list = self.ban_list.lock().unwrap_or_else(|e| e.into_inner());
+        ban_rows_from_ban_list(&list, &self.translator, &self.locale)
     }
 }
 
