@@ -103,6 +103,8 @@ pub fn build_script_env() -> ScriptEnv {
     engine.register_get("flags", |o: &mut PeerData| {
         o.flags.clone().unwrap_or_default()
     });
+    // 上游 `Peer.isHandshaking()`（up_speed<=0 && dl_speed<=0，见 model.rs）
+    engine.register_get("handshaking", |o: &mut PeerData| o.is_handshaking());
     // 驼峰别名（对齐上游 JavaBean getter：getPeerId/getClientName/…）
     engine.register_get("peerId", |o: &mut PeerData| {
         o.peer_id.clone().unwrap_or_default()

@@ -1,4 +1,5 @@
 mod backend;
+mod btn_legacy;
 mod config;
 mod monitor;
 mod push;
@@ -236,17 +237,27 @@ async fn main() -> anyhow::Result<()> {
     // （[`DbBtnSubmitSource`]）：`history` / `tracked_swarm` / `peer_records` 表。
     // `rule_name` / `description` 按服务端语言渲染（对齐上游 `tlUI(component)`）。
     let btn_network_slot: pbh_core::btn_transport::SharedBtnNetwork = Default::default();
+    // BTN 遗留协议 live peers 快照（wave 每轮写入；见 btn_legacy 模块文档）
+    let live_peer_map = btn_legacy::new_live_peer_map();
     let _btn_transport: Option<std::thread::JoinHandle<()>> = if cfg.btn.is_active() {
         // 阻塞式 HTTP 客户端自带 tokio 运行时，**必须**在工作线程内部构造
         // （在 async 上下文里构造/析构会 panic：`Cannot drop a runtime in a context
         // where blocking is not allowed`），因此这里只传入构造函数。
         // 规则缓存落 SQLite 的 `meta` 表（对齐上游 `metadataDao`；重启后回灌、不重拉）
         let metadata = Arc::new(DbMetadataStore::new(db.clone()));
-        let submit_source: Arc<dyn BtnSubmitSource> = Arc::new(DbBtnSubmitSource::new(
-            db.clone(),
-            translator.clone(),
-            cfg.language.locale.clone(),
-        ));
+        let submit_source: Arc<dyn BtnSubmitSource> = Arc::new(
+            btn_legacy::LegacyAwareSubmitSource::new(
+                Arc::new(DbBtnSubmitSource::new(
+                    db.clone(),
+                    translator.clone(),
+                    cfg.language.locale.clone(),
+                )),
+                live_peer_map.clone(),
+                pipeline.ban_list.clone(),
+                translator.clone(),
+                cfg.language.locale.clone(),
+            ),
+        );
         let handle = spawn_btn_transport(
             &cfg.btn,
             &pipeline,
@@ -494,6 +505,7 @@ async fn main() -> anyhow::Result<()> {
         monitor,
         geo,
         login_gates,
+        live_peers: live_peer_map,
     };
 
     let period = Duration::from_millis(cfg.profile.check_interval.max(500));

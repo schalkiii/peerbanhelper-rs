@@ -425,4 +425,11 @@ mod tests {
         let m = with_script("a.av", "if peer.ip == \"1.2.3.4\" { 1 } else { 0 }");
         assert_eq!(result_of(&m).action, PeerAction::Ban);
     }
+
+    #[test]
+    fn script_can_read_handshaking() {
+        // 测试 peer：up_speed=0 && dl_speed=0 ⇒ 握手中（对齐上游 Peer.isHandshaking()）
+        let m = with_script("a.av", "if peer.handshaking { 1 } else { 0 }");
+        assert_eq!(result_of(&m).action, PeerAction::Ban);
+    }
 }

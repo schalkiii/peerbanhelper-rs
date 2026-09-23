@@ -5,6 +5,18 @@
 
 ## 未发布（working tree）
 
+### feat(btn): 遗留协议上报快照落地（live peers + ban list 内存数据源）
+
+- 新增 `pbh/src/btn_legacy.rs`：`LegacyAwareSubmitSource` 组合数据源——DB 批量数据
+  （history / swarm / peer_records）委托 `DbBtnSubmitSource`，遗留协议
+  `legacy_peer_snapshot` / `legacy_ban_snapshot` 来自内存；
+- live peers：wave 每下载器轮次开始清空旧快照、每个 torrent 拉取成功后写入
+  （对齐上游 `DownloaderServer` 每轮覆盖 livePeers）；
+- 封禁快照对齐 `LegacyBtnAbilitySubmitBans.generateBans`：跳过 `ban_for_disconnect` /
+  `exclude_from_report`、按 peer 去重、`btn_ban` 按 context 判定、`rule` 渲染 description；
+  `ban_unique_id` 用元数据 `random_id`（上游 sha256(toString) 无法逐字节复现，见 PLAN §4.2）；
+- 表达式引擎补 `peer.handshaking` getter（对齐上游 `Peer.isHandshaking()`）。
+
 ### fix(wave): 下发阶段对齐上游 `updateDownloader`（全部下载器 + 下发前重新登录）
 
 - 本轮有新增封禁或解封时，对**全部**下载器下发（此前只对判定阶段成功的下载器下发）；

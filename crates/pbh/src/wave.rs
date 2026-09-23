@@ -189,6 +189,10 @@ pub struct WaveEngine {
     /// 与 Web 后端共享：下载器更新/删除时由后端移除对应条目（对齐上游
     /// `unregisterDownloader` 重建实例使计数清零的语义）。
     pub login_gates: Arc<StdMutex<HashMap<String, LoginGate>>>,
+    /// BTN 遗留协议 live peers 快照（下载器 ID → 本轮观测到的 peers）；
+    /// 由 wave 每轮写入、`btn_legacy::LegacyAwareSubmitSource` 消费
+    /// （对齐上游 `DownloaderServer` 的 livePeers 数据源）。
+    pub live_peers: crate::btn_legacy::LivePeerMap,
 }
 
 impl WaveEngine {
@@ -609,6 +613,10 @@ impl WaveEngine {
             });
         }
 
+        // BTN 遗留协议 live peers：本轮开始前清空该下载器的旧快照（对齐上游每轮覆盖）
+        if let Ok(mut map) = self.live_peers.lock() {
+            map.insert(dl.id().to_string(), Vec::new());
+        }
         let torrents = dl
             .fetch_torrents()
             .await
@@ -624,6 +632,7 @@ impl WaveEngine {
             let features = features.clone();
             let alert_manager = self.alert_manager.clone();
             let monitor = self.monitor.clone();
+            let live_peers = self.live_peers.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit_sem.acquire().await.ok();
                 let peers = match dl.fetch_peers(&torrent).await {
@@ -635,6 +644,12 @@ impl WaveEngine {
                 };
                 // 监控模块的 `onPeersRetrieved`（与判定无关，只做统计/记录）
                 monitor.on_peers_retrieved(dl.id(), &torrent, &peers, now_ms);
+                // BTN 遗留协议 live peers 快照（对齐上游 `DownloaderServer` 的 livePeers）
+                if let Ok(mut map) = live_peers.lock() {
+                    map.entry(dl.id().to_string())
+                        .or_default()
+                        .extend(crate::btn_legacy::peer_rows_from(&torrent, &peers));
+                }
                 let ctx = CheckContext { now_ms, features };
                 let mut out = TorrentOutput {
                     peer_count: peers.len(),
@@ -1059,6 +1074,7 @@ mod tests {
             dry_run: false,
             max_concurrent: 1,
             login_gates: Default::default(),
+            live_peers: crate::btn_legacy::new_live_peer_map(),
             alert_manager,
             monitor,
             geo: None,

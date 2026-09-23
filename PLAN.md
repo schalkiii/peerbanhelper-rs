@@ -119,12 +119,6 @@
 ### 4.1 与上游差异的对齐项
 > 原则：有差异就写在这里，说明现状与上游行为，按影响排序逐项关闭。
 
-- [ ] **BTN 遗留协议上报快照**：`min < 20` 的 `legacy_peer_snapshot` / `legacy_ban_snapshot`
-      依赖 `DownloaderServer` 内存数据（live peers / ban list），当前 DB 数据源为空实现
-      （等价上游「无待提交数据」）。如需支持遗留服务端，需在 Rust 侧维护等价的内存快照。
-- [ ] **表达式引擎 rhai 语义边界**：脚本直接返回 `PeerAction` / `CheckResult` 对象时按 `pass()`
-      处理（上游会直接使用返回值）；`peer.handshaking`、`torrent.completedSize` / `private` /
-      `seeding` / `hashedIdentifier` 未暴露（近似写法见迁移指南）。按社区脚本实际使用情况按需补齐。
 - [ ] **GeoIP 更新进度展示**：上游经 `BackgroundTaskManager` 在 WebUI 汇报下载进度，本移植为
       `debug!` 日志（同文案键）。待 WebUI 后台任务体系对接时补 UI 层。
 - [ ] **PTR 解析架构**：采用「应用层预热缓存 + 模块只读」设计（上游在模块内异步解析），
@@ -133,6 +127,10 @@
 ### 4.2 已知且保留的行为差异（说明，不计划「修复」）
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），
   本移植保留该上限属**更严格**的防御性行为（只会把超时脚本判为 pass，方向安全）。
+- 表达式脚本直接返回 `PeerAction` / `CheckResult` 对象：rhai 无对应类型，按 `pass()` 处理
+  （上游会直接使用返回值）；实践中脚本均返回 bool / 数字 / 字符串，无实际差异。
+- BTN 遗留协议封禁上报的 `ban_unique_id`：上游为 `sha256(metadata.toString())`（Java toString
+  无法逐字节复现），本移植用同样唯一的封禁元数据 `random_id`（语义一致：去重键）。
 - GeoIP 更新失败策略：上游「下载失败仍 move 空临时文件」会截断既有数据库，本移植失败时
   一律保留原文件（不复刻该缺陷）。
 - 每日流量阈值告警等上游默认关闭的功能：默认配置下无行为差异，仅 `enabled: true` 时生效。
