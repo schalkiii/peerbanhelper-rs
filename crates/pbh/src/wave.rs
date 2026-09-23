@@ -236,10 +236,12 @@ impl WaveEngine {
             self.record_bans(&entries[*idx], bans, now_ms);
         }
 
-        // 3) 下发：重复封禁（上游 needReApplyBanList）时全部下载器走全量
+        // 3) 下发：本轮有新增封禁或解封时，对**全部**下载器下发（对齐上游
+        //    `updateDownloader(downloader, !bannedPeers.isEmpty() || !unbannedPeers.isEmpty(), …)`
+        //    的 `downloaderManager.stream()` 全量遍历——判定阶段登录失败的下载器会在
+        //    下发阶段重新登录，有机会补上封禁列表）；重复封禁（needReApplyBanList）走全量。
         //
-        // 注意：上游的 `bannedPeers` 是**跨下载器的全局集合**，每个下载器都收到同一份新增列表
-        // （`updateDownloader(downloader, !bannedPeers.isEmpty() || !unbannedPeers.isEmpty(), bannedPeers, unbannedPeers, false)`），
+        // 注意：上游的 `bannedPeers` 是**跨下载器的全局集合**，每个下载器都收到同一份新增列表，
         // 因此本 wave 内任一下载器新增的封禁项会下发给**所有**下载器。
         let global_added: Vec<BanEntry> = pending
             .iter()
@@ -250,8 +252,8 @@ impl WaveEngine {
             .lock()
             .map(|b| b.need_reapply())
             .unwrap_or(false);
-        for (idx, _) in &pending {
-            self.apply_bans(&entries[*idx], &global_added, removed.len(), force_full)
+        for entry in &entries {
+            self.apply_bans(entry, &global_added, removed.len(), force_full, now_ms)
                 .await;
         }
         if force_full {
@@ -484,15 +486,19 @@ impl WaveEngine {
         }
     }
 
-    /// 下发封禁列表（增量或全量）。本轮既无新增也无解封时不请求下载器。
+    /// 下发封禁列表（增量或全量），对齐上游 `updateDownloader`：
     ///
-    /// `added` 为**本轮全局新增**（跨下载器），对齐上游传给每个下载器的 `bannedPeers`。
+    /// 1. 本轮既无新增也无解封时直接返回（`if (!updateBanList) return;`）；
+    /// 2. 下发前**重新登录**（每轮第二次 `login()`，经同一 LoginGate 计数）——
+    ///    判定阶段登录失败的下载器在此有恢复机会；失败仅记日志并跳过（PAUSED 静默）；
+    /// 3. 成功后按需增量/全量下发。dry-run 在登录前短路（不下发任何请求）。
     async fn apply_bans(
         &self,
         entry: &DownloaderEntry,
         added: &[BanEntry],
         removed_count: usize,
         force_full: bool,
+        now_ms: i64,
     ) {
         if added.is_empty() && removed_count == 0 {
             return;
@@ -505,6 +511,30 @@ impl WaveEngine {
                 dl.id(),
                 added.len()
             );
+            return;
+        }
+        let gate = self
+            .login_gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(dl.id().to_string())
+            .or_default()
+            .clone();
+        let login = match gate.login(&dl, now_ms).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("{} 下发阶段登录失败，跳过封禁列表更新: {e}", dl.id());
+                return;
+            }
+        };
+        if !login.success {
+            if login.status != LoginStatus::Paused {
+                warn!(
+                    "{} 下发阶段登录失败，跳过封禁列表更新: {}",
+                    dl.id(),
+                    login.message
+                );
+            }
             return;
         }
         if full {

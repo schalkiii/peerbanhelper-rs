@@ -5,6 +5,15 @@
 
 ## 未发布（working tree）
 
+### fix(wave): 下发阶段对齐上游 `updateDownloader`（全部下载器 + 下发前重新登录）
+
+- 本轮有新增封禁或解封时，对**全部**下载器下发（此前只对判定阶段成功的下载器下发）；
+  判定阶段登录失败的下载器会在下发阶段**重新登录**，有机会补上封禁列表
+  （对齐上游 `downloaderManager.stream().map(dl -> updateDownloader(dl, …))` 的全量遍历）；
+- 下发前重新登录（每轮第二次 `login()`，经同一 LoginGate 计数，对齐上游语义），
+  失败仅记日志并跳过（PAUSED 静默）；
+- dry-run 仍在登录前短路（不下发任何请求）。
+
 ### fix(script): 忠实性审查修复（表达式引擎 + 登录冷却计数口径）
 
 对本轮新增的 AviatorScript 兼容层与登录冷却机制做全面源码级审查（对照上游
