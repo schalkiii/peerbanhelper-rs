@@ -1305,6 +1305,16 @@ impl AlertManager {
         }
     }
 
+    /// 文案表（供 ban wave 等复用同一 translator/locale 渲染日志）。
+    pub fn translator(&self) -> &Arc<Translator> {
+        &self.translator
+    }
+
+    /// 当前 locale（与上游 `Main.DEF_LOCALE` 同义）。
+    pub fn locale(&self) -> &str {
+        &self.locale
+    }
+
     /// 对齐 `AlertManager.identifierAlertExists`（存在且**未读**）。
     pub fn identifier_alert_exists(&self, identifier: &str) -> bool {
         self.alerts

@@ -36,6 +36,45 @@ pub struct DownloaderEntry {
     pub increment_ban: bool,
 }
 
+/// 上游 `Lang.BAN_PEER` 首参：`PeerAddress` 的 Lombok `@Data` `toString()` 全字段 dump。
+///
+/// 字段顺序与上游声明一致；NAT/Teredo 翻译字段在本移植默认（`auto-stun.enabled=false`，
+/// 翻译恒直通）时恒为 `null` / `0` / `false`——与上游同一场景逐字一致。
+fn upstream_peer_address_dump(entry: &BanEntry) -> String {
+    format!(
+        "PeerAddress(downloaderRawIp={}, downloaderRawPort={}, teredoClientIp=null, \
+         teredoClientUdpPort=0, nattedClientIp=null, nattedClientPort=0, ip={}, address={}, \
+         port={}, natTranslated=false, teredoTranslated=false)",
+        entry.raw_ip, entry.port, entry.ip, entry.ip, entry.port
+    )
+}
+
+/// Java `Double.toString` 兼容格式（日志逐字对齐用）：
+/// 整数值补 `.0`（`0.0` 而非 `0`）；`< 1e-3` 或 `>= 1e7` 走 `1.0E-4` 风格科学计数法。
+fn java_double_to_string(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    let abs = v.abs();
+    if abs != 0.0 && (abs < 1e-3 || abs >= 1e7) {
+        let s = format!("{v:e}");
+        if let Some((mant, exp)) = s.split_once('e') {
+            let mant = if mant.contains('.') {
+                mant.to_string()
+            } else {
+                format!("{mant}.0")
+            };
+            return format!("{mant}E{exp}");
+        }
+        return s;
+    }
+    if v.fract() == 0.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    }
+}
+
 /// 登录闸门，对齐上游 `AbstractDownloader.login()` 的失败退避。
 ///
 /// 上游在连续 `failedLoginAttempts >= 15` 次登录后把 `nextLoginTry` 推到
@@ -475,6 +514,27 @@ impl WaveEngine {
                     "对等体 {} 已在封禁表中，下一轮将全量重放封禁列表",
                     b.entry.ip
                 );
+            }
+            // 单条封禁日志（上游 `Lang.BAN_PEER`，仅 `action != BAN_FOR_DISCONNECT` 时打印；
+            // ban-for-disconnect 静默，对齐 `DownloaderServerImpl` 第 252 行）
+            if !b.ban_for_disconnect {
+                let line = self.alert_manager.translator().render(
+                    &TranslationComponent::with_params(
+                        "BAN_PEER",
+                        vec![
+                            upstream_peer_address_dump(&b.entry).into(),
+                            b.peer_id.clone().into(),
+                            b.client_name.clone().into(),
+                            java_double_to_string(b.peer_progress).into(),
+                            b.peer_uploaded.to_string().into(),
+                            b.peer_downloaded.to_string().into(),
+                            b.torrent_name.clone().into(),
+                            description_component.clone().into(),
+                        ],
+                    ),
+                    self.alert_manager.locale(),
+                );
+                info!("{line}");
             }
         }
     }
@@ -1007,6 +1067,36 @@ mod tests {
         ) -> BoxFuture<'a, anyhow::Result<()>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[test]
+    fn ban_peer_log_helpers_match_upstream_formatting() {
+        // Java Double.toString：整数值补 .0、常规值取最短往返表示
+        assert_eq!(java_double_to_string(0.0), "0.0");
+        assert_eq!(java_double_to_string(1.0), "1.0");
+        assert_eq!(
+            java_double_to_string(0.6225200891494751),
+            "0.6225200891494751"
+        );
+        // 科学计数法阈值对齐 Java（< 1e-3 或 >= 1e7）
+        assert_eq!(java_double_to_string(1e-4), "1.0E-4");
+        assert_eq!(java_double_to_string(12_345_678.0), "1.2345678E7");
+
+        // PeerAddress dump：字段顺序与上游 Lombok @Data toString 一致
+        let entry = BanEntry {
+            ip: "2001:da8:d800:338:1152:d353:fb4e:6f18".to_string(),
+            port: 14331,
+            raw_ip: "[2001:da8:d800:338:1152:d353:fb4e:6f18]:14331".to_string(),
+        };
+        assert_eq!(
+            upstream_peer_address_dump(&entry),
+            "PeerAddress(downloaderRawIp=[2001:da8:d800:338:1152:d353:fb4e:6f18]:14331, \
+             downloaderRawPort=14331, teredoClientIp=null, teredoClientUdpPort=0, \
+             nattedClientIp=null, nattedClientPort=0, \
+             ip=2001:da8:d800:338:1152:d353:fb4e:6f18, \
+             address=2001:da8:d800:338:1152:d353:fb4e:6f18, port=14331, natTranslated=false, \
+             teredoTranslated=false)"
+        );
     }
 
     /// 计数对齐上游 `ProcessingStatistics`：只统计「有 peer 通过判定」的下载器/种子。

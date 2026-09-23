@@ -5,6 +5,16 @@
 
 ## 未发布（working tree）
 
+### feat(wave): 单条封禁日志（Lang.BAN_PEER）对齐上游
+
+- 新增逐条封禁 INFO 日志（对齐 `DownloaderServerImpl` 第 252 行：**仅 `action != BAN_FOR_DISCONNECT`
+  时打印**，ban-for-disconnect 静默）；
+- 首参数复刻上游 `PeerAddress` 的 Lombok `@Data` `toString()` 全字段 dump
+  （字段顺序一致；NAT/Teredo 翻译字段在默认直通场景恒为 `null`/`0`/`false`，与上游逐字一致）；
+- 浮点参数按 **Java `Double.toString`** 语义格式化（整数值补 `.0`；`< 1e-3` / `>= 1e7`
+  走 `1.0E-4` 风格科学计数法）——`Progress=` 与上游逐字可比；
+- 由此长时对跑两侧的 `[封禁]` 行可直接 diff；新增 `wave::tests::ban_peer_log_helpers_match_upstream_formatting`。
+
 ### fix(wave): ban wave 完成日志对齐上游文案与计数口径（ProcessingStatistics）
 
 - **计数口径**：`downloaders` / `torrents` 只统计「至少有一个 peer 通过判定」的条目
