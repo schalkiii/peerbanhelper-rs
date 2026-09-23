@@ -19,6 +19,9 @@
 param(
     [string]$JavaPid = "",
     [string]$JavaProcessName = "java",
+    # Java 进程命令行正则：设置后**每轮动态解析** PID（PBH 重启/多实例收敛后采样不中断），
+    # 优先于 -JavaPid / -JavaProcessName
+    [string]$JavaMatch = "",
     [string]$RustExe = ".\target\release\pbh.exe",
     # Rust 子进程参数（结构化，避免 Start-Process 对含空格字符串的引号歧义）
     [string]$RustDataDir = ".\data",
@@ -155,10 +158,18 @@ try {
         $round += 1
         $now = (Get-Date).ToUniversalTime().ToString("o")
 
-        # --- Java 进程 ---
+        # --- Java 进程（-JavaMatch 时每轮按命令行动态解析，PBH 重启不影响采样）---
         $javaProc = $null
-        if ($JavaPid) { $javaProc = Get-Process -Id $JavaPid -ErrorAction SilentlyContinue }
-        else { $javaProc = Get-Process -Name $JavaProcessName -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        if ($JavaMatch) {
+            $hit = Get-CimInstance Win32_Process -Filter "Name='javaw.exe' or Name='java.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine -match $JavaMatch } |
+                Sort-Object CreationDate | Select-Object -First 1
+            if ($hit) { $javaProc = Get-Process -Id $hit.ProcessId -ErrorAction SilentlyContinue }
+        } elseif ($JavaPid) {
+            $javaProc = Get-Process -Id $JavaPid -ErrorAction SilentlyContinue
+        } else {
+            $javaProc = Get-Process -Name $JavaProcessName -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
         $javaSample = Get-ProcSample $javaProc 0.0
 
         # --- Rust 进程（崩溃自动拉起） ---
