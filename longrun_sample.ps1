@@ -9,8 +9,8 @@
 #
 # 用法示例：
 #   .\longrun_sample.ps1 -JavaPid 12345 -RustExe .\target\release\pbh.exe `
-#       -RustArgs "--data D:\pbh-rs\data --dry-run --port 9899 --tag rust-longrun" `
-#       -RustPort 9899 -JavaDb C:\...\data\persist\peerbanhelper-nt.db `
+#       -RustDataDir D:\pbh-rs\data -RustPort 9899 -RustTag rust-longrun `
+#       -JavaDb C:\...\data\persist\peerbanhelper-nt.db `
 #       -RustDb D:\pbh-rs\data\persist\peerbanhelper-nt.db `
 #       -SnapshotDir .\target\live\snapshots -IntervalSec 300
 #
@@ -20,7 +20,11 @@ param(
     [string]$JavaPid = "",
     [string]$JavaProcessName = "java",
     [string]$RustExe = ".\target\release\pbh.exe",
-    [string]$RustArgs = "--data .\data --dry-run --port 9899",
+    # Rust 子进程参数（结构化，避免 Start-Process 对含空格字符串的引号歧义）
+    [string]$RustDataDir = ".\data",
+    [bool]$RustDryRun = $true,
+    [string]$RustTag = "rust-longrun",
+    [string[]]$RustExtraArgs = @(),
     [string]$RustWorkDir = ".",
     [int]$RustPort = 9899,
     [int]$JavaPort = 9898,
@@ -31,6 +35,8 @@ param(
     [string]$SnapshotDir = "",
     # 每 N 轮做一次快照（0 = 仅退出时快照一次）
     [int]$SnapshotEveryRounds = 12,
+    # 周期快照保留份数（最新 N 份；退出时的 r0-* 最终快照永不清理）
+    [int]$KeepSnapshots = 12,
     # 磁盘剩余空间低于该值（GB）时告警并在 JSONL 打 flag
     [double]$DiskFreeWarnGb = 5.0,
     # 单库超过该值（GB）时告警（天级 history 增长的磁盘水位）
@@ -113,14 +119,30 @@ function Snapshot-Dbs([int]$round) {
         }
         Write-Host "[longrun] 快照 $side ($ok) => $dir"
     }
+    # 保留策略：周期快照只留最新 N 份（r0-* 最终快照不清理），约束多天运行的磁盘占用
+    if ($KeepSnapshots -gt 0) {
+        $periodic = Get-ChildItem $SnapshotDir -Directory |
+            Where-Object { $_.Name -notlike 'r0-*' } |
+            Sort-Object LastWriteTime
+        if ($periodic.Count -gt $KeepSnapshots) {
+            $periodic | Select-Object -First ($periodic.Count - $KeepSnapshots) | ForEach-Object {
+                Write-Host "[longrun] 清理旧快照 $($_.Name)"
+                Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 # 启动 Rust 子进程（崩溃自动拉起）
 $rustProc = $null
 $rustCpuPrev = 0.0
 function Start-Rust {
-    Write-Host "[longrun] 启动 Rust：$RustExe $RustArgs（工作目录 $RustWorkDir）"
-    $script:rustProc = Start-Process -FilePath $RustExe -ArgumentList $RustArgs `
+    $argList = @('--data', $RustDataDir, '--port', "$RustPort")
+    if ($RustDryRun) { $argList += '--dry-run' }
+    if ($RustTag) { $argList += @('--tag', $RustTag) }
+    if ($RustExtraArgs.Count -gt 0) { $argList += $RustExtraArgs }
+    Write-Host "[longrun] 启动 Rust：$RustExe $($argList -join ' ')（工作目录 $RustWorkDir）"
+    $script:rustProc = Start-Process -FilePath $RustExe -ArgumentList $argList `
         -WorkingDirectory $RustWorkDir -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $RustLog -RedirectStandardError "$RustLog.err"
 }
