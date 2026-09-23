@@ -27,7 +27,11 @@ pub fn new_live_peer_map() -> LivePeerMap {
 }
 
 fn non_empty(s: String) -> Option<String> {
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// 由一次 `fetch_peers` 的结果构造遗留协议 peer 行
@@ -158,7 +162,8 @@ impl BtnSubmitSource for LegacyAwareSubmitSource {
         id_after: i64,
         limit: usize,
     ) -> Vec<BtnSwarmHistoryRow> {
-        self.inner.batch_swarm_history(last_time_seen_ms, id_after, limit)
+        self.inner
+            .batch_swarm_history(last_time_seen_ms, id_after, limit)
     }
 
     fn batch_peer_history(&self, last_time_seen_ms: i64, limit: usize) -> Vec<BtnPeerHistoryRow> {
@@ -179,7 +184,7 @@ impl BtnSubmitSource for LegacyAwareSubmitSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pbh_core::banlist::{BannedRecord, BanMetadata};
+    use pbh_core::banlist::{BanMetadata, BannedRecord};
 
     fn torrent() -> TorrentData {
         TorrentData {

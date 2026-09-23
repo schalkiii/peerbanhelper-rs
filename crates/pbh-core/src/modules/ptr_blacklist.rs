@@ -89,7 +89,11 @@ impl SystemPtrResolver {
     /// 向单个解析服务器发起一次 PTR 查询。
     fn query(&self, server: IpAddr, reverse_name: &str) -> Option<String> {
         let packet = build_ptr_query(reverse_name)?;
-        let bind: &str = if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let bind: &str = if server.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
         let socket = UdpSocket::bind(bind).ok()?;
         socket.connect((server, 53)).ok()?;
         socket.set_read_timeout(Some(self.timeout)).ok()?;
@@ -116,7 +120,9 @@ static DNS_TRANSACTION_ID: AtomicU16 = AtomicU16::new(0);
 /// 构造 PTR 查询报文（RFC 1035：1 个 question，type=PTR(12)，class=IN，RD=1）。
 fn build_ptr_query(reverse_name: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(17 + reverse_name.len());
-    let id = DNS_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed).to_be_bytes();
+    let id = DNS_TRANSACTION_ID
+        .fetch_add(1, Ordering::Relaxed)
+        .to_be_bytes();
     out.extend_from_slice(&id);
     out.extend_from_slice(&[0x01, 0x00]); // flags: RD=1
     out.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // QDCOUNT=1
@@ -145,7 +151,11 @@ fn skip_name(message: &[u8], mut offset: usize) -> Option<usize> {
         let byte = *message.get(offset)?;
         if byte & 0xC0 == 0xC0 {
             // 压缩指针：名字在此结束（2 字节）
-            return if offset + 2 <= message.len() { Some(offset + 2) } else { None };
+            return if offset + 2 <= message.len() {
+                Some(offset + 2)
+            } else {
+                None
+            };
         }
         if byte == 0 {
             return Some(offset + 1);
@@ -161,10 +171,7 @@ fn read_name(message: &[u8], mut offset: usize) -> Option<String> {
     loop {
         let byte = *message.get(offset)?;
         if byte & 0xC0 == 0xC0 {
-            let pointer = usize::from(u16::from_be_bytes([
-                byte & 0x3F,
-                *message.get(offset + 1)?,
-            ]));
+            let pointer = usize::from(u16::from_be_bytes([byte & 0x3F, *message.get(offset + 1)?]));
             jumps += 1;
             if jumps > 32 {
                 return None; // 压缩环路防护
@@ -222,10 +229,12 @@ fn system_dns_servers() -> Vec<IpAddr> {
     };
     content
         .lines()
-        .filter_map(|line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-            ["nameserver", addr] => addr.parse::<IpAddr>().ok(),
-            _ => None,
-        })
+        .filter_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                ["nameserver", addr] => addr.parse::<IpAddr>().ok(),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -255,7 +264,13 @@ impl PtrCache {
 
     /// 记录一次查询结果（`None` 表示无 PTR 记录）；不过期（外部直写的兼容路径）。
     pub fn insert(&self, reverse_name: impl Into<String>, value: Option<String>) {
-        self.insert_entry(reverse_name.into(), PtrEntry { value, expires_at: None });
+        self.insert_entry(
+            reverse_name.into(),
+            PtrEntry {
+                value,
+                expires_at: None,
+            },
+        );
     }
 
     /// 带过期时间写入（[`PtrBlacklist::observe`] 的解析流程用，正/负结果同一窗口）。
@@ -275,7 +290,9 @@ impl PtrCache {
     }
 
     fn insert_entry(&self, reverse_name: String, entry: PtrEntry) {
-        let Ok(mut map) = self.entries.lock() else { return };
+        let Ok(mut map) = self.entries.lock() else {
+            return;
+        };
         evict_if_full(&mut map);
         map.insert(reverse_name, entry);
     }
@@ -558,7 +575,10 @@ mod tests {
     }
 
     fn module_with_resolver(resolver: Arc<MockResolver>, timeout: Duration) -> PtrBlacklist {
-        let rules = RuleSet::from_json_text(&[r#"{"method":"EQUALS","content":"example.com"}"#.to_string()])
+        let rules =
+            RuleSet::from_json_text(
+                &[r#"{"method":"EQUALS","content":"example.com"}"#.to_string()],
+            )
             .expect("parse rule");
         PtrBlacklist::new(rules, 0, Arc::new(PtrCache::new()))
             .with_resolver(resolver)
@@ -680,8 +700,7 @@ mod tests {
     fn slow_resolver_hits_timeout_and_is_negatively_cached() {
         // 解析 500ms 才返回，等待上限 50ms ⇒ 对齐上游 TimeoutException → Optional.empty()
         let resolver = resolver_with(Some("example.com"), Duration::from_millis(500));
-        let module =
-            module_with_resolver(resolver.clone(), Duration::from_millis(50));
+        let module = module_with_resolver(resolver.clone(), Duration::from_millis(50));
 
         module.observe("1.2.3.4");
         assert!(
@@ -728,7 +747,9 @@ mod tests {
         assert_eq!(resolver.calls(), 0);
 
         // 上游 reloadConfig 的 invalidateAll：重载后重新解析
-        module.cache.insert("4.3.2.1.in-addr.arpa", Some("example.com".to_string()));
+        module
+            .cache
+            .insert("4.3.2.1.in-addr.arpa", Some("example.com".to_string()));
         assert!(module.cache.is_resolved("4.3.2.1.in-addr.arpa"));
         module.invalidate_cache();
         assert!(!module.cache.is_resolved("4.3.2.1.in-addr.arpa"));
@@ -745,10 +766,16 @@ mod tests {
         );
         // 命中续期（expireAfterAccess）：多次 get 后过期时间不断后移
         for _ in 0..3 {
-            assert_eq!(cache.get("4.3.2.1.in-addr.arpa").as_deref(), Some("example.com"));
+            assert_eq!(
+                cache.get("4.3.2.1.in-addr.arpa").as_deref(),
+                Some("example.com")
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(cache.get("4.3.2.1.in-addr.arpa").as_deref(), Some("example.com"));
+        assert_eq!(
+            cache.get("4.3.2.1.in-addr.arpa").as_deref(),
+            Some("example.com")
+        );
     }
 
     #[test]
@@ -762,7 +789,10 @@ mod tests {
                 b'd', b'r', 0x04, b'a', b'r', b'p', b'a', 0x00, 0x00, 0x0C, 0x00, 0x01
             ][..]
         );
-        assert!(build_ptr_query("single").is_none(), "必须带 arpa 后缀的完整反向名");
+        assert!(
+            build_ptr_query("single").is_none(),
+            "必须带 arpa 后缀的完整反向名"
+        );
 
         // 应答：question 名与答案名都用压缩指针（0xC00C），答案 PTR RDATA 同样压缩
         let mut answer = query.clone();

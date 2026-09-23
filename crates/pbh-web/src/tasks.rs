@@ -14,8 +14,7 @@
 //! `new FunctionalBackgroundTask(new TranslationComponent(Lang.IPDB_DOWNLOAD_MMDB), ...)`。
 
 use pbh_core::geoip_update::{
-    GeoIpProgress, GeoIpProgressStage, LANG_IPDB_DOWNLOAD_MMDB,
-    LANG_IPDB_DOWNLOAD_MMDB_DESCRIPTION,
+    GeoIpProgress, GeoIpProgressStage, LANG_IPDB_DOWNLOAD_MMDB, LANG_IPDB_DOWNLOAD_MMDB_DESCRIPTION,
 };
 use pbh_core::i18n::TranslationComponent;
 use std::collections::HashMap;
@@ -217,24 +216,22 @@ impl BackgroundTaskRegistry {
     pub fn task_list(&self) -> Vec<BackgroundTask> {
         self.retain_fresh();
         let mut list = self.tasks.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        list.sort_by(|a, b| {
-            match (a.status.is_active(), b.status.is_active()) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => {
-                    let a_done = matches!(
-                        a.status,
-                        BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
-                    );
-                    let b_done = matches!(
-                        b.status,
-                        BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
-                    );
-                    match (a_done, b_done) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => b.start_at_ms.cmp(&a.start_at_ms),
-                    }
+        list.sort_by(|a, b| match (a.status.is_active(), b.status.is_active()) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => {
+                let a_done = matches!(
+                    a.status,
+                    BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
+                );
+                let b_done = matches!(
+                    b.status,
+                    BackgroundTaskStatus::Completed | BackgroundTaskStatus::Failed
+                );
+                match (a_done, b_done) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.start_at_ms.cmp(&a.start_at_ms),
                 }
             }
         });
@@ -414,7 +411,9 @@ mod tests {
             &id,
             Some(TranslationComponent::with_params(
                 "IPDB_DOWNLOAD_MMDB_DESCRIPTION",
-                vec!["https://mirror.test/GeoLite2-City.mmdb.xz".to_string().into()],
+                vec!["https://mirror.test/GeoLite2-City.mmdb.xz"
+                    .to_string()
+                    .into()],
             )),
         );
         let updated = registry.get_task(&id).unwrap();
@@ -433,7 +432,10 @@ mod tests {
         // fail() 与 complete() 的语义差异（对齐上游两个方法）
         let failed_id = registry.add_task(TranslationComponent::new("X"));
         registry.fail_task(&failed_id);
-        assert_eq!(registry.get_task(&failed_id).unwrap().status.as_str(), "FAILED");
+        assert_eq!(
+            registry.get_task(&failed_id).unwrap().status.as_str(),
+            "FAILED"
+        );
     }
 
     #[test]
@@ -479,11 +481,12 @@ mod tests {
             }
         }
         let list = registry.task_list();
-        let remaining: Vec<&str> = list
-            .iter()
-            .map(|task| task.title.key.as_str())
-            .collect();
-        assert_eq!(remaining, vec!["B"], "COMPLETED 1 分钟后清理，FAILED 保留 30 分钟");
+        let remaining: Vec<&str> = list.iter().map(|task| task.title.key.as_str()).collect();
+        assert_eq!(
+            remaining,
+            vec!["B"],
+            "COMPLETED 1 分钟后清理，FAILED 保留 30 分钟"
+        );
 
         // FAILED 31 分钟前 ⇒ 也被清理
         {
@@ -570,7 +573,11 @@ mod tests {
         });
         let list = registry.task_list();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].status.as_str(), "FAILED", "新任务在前（startAt 倒序）");
+        assert_eq!(
+            list[0].status.as_str(),
+            "FAILED",
+            "新任务在前（startAt 倒序）"
+        );
         assert_eq!(
             list[0].bar_type.as_str(),
             "INDETERMINATE",

@@ -1252,9 +1252,7 @@ mod tests {
                 let local = SocketAddr::from(([127, 0, 0, 1], source_port));
                 match bind_connect(local, real_addr, Duration::from_secs(2)) {
                     Ok(stream) => break (stream, source_port),
-                    Err(e)
-                        if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 8 =>
-                    {
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 8 => {
                         continue;
                     }
                     Err(e) => panic!("bind+connect: {e}"),

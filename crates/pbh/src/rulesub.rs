@@ -239,7 +239,8 @@ mod tests {
     /// 每个测试独立的临时目录（同一测试二进制并行执行，若共用按 pid 命名的目录，
     /// 入口的 `remove_dir_all` 会互删对方的缓存文件导致间歇性失败）
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pbh-rulesub-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pbh-rulesub-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

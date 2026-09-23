@@ -26,14 +26,13 @@ pub async fn live(State(state): State<AppState>) -> Response {
     // 初始快照先于闭包消费 Arc/String（两个流各自持有一份渲染上下文）
     let initial_translator = state.translator.clone();
     let initial_locale = state.locale.clone();
-    let initial = futures_util::stream::iter(
-        state.tasks.task_list().into_iter().map(move |task| {
+    let initial =
+        futures_util::stream::iter(state.tasks.task_list().into_iter().map(move |task| {
             Ok::<String, Infallible>(format!(
                 "data: {}\n\n",
                 task_event(&task, &initial_translator, &initial_locale)
             ))
-        }),
-    );
+        }));
     let registry = state.tasks.clone();
     let live_translator = state.translator.clone();
     let live_locale = state.locale.clone();
@@ -116,7 +115,10 @@ mod tests {
         // 字段名与类型对齐上游 BackgroundTaskDTO（Gson/Jackson camelCase）
         assert_eq!(dto["id"], task.id.as_str());
         assert_eq!(dto["title"], "[GeoIPDB] Download database: {}");
-        assert_eq!(dto["statusText"], format!("Download from remote server: {url}"));
+        assert_eq!(
+            dto["statusText"],
+            format!("Download from remote server: {url}")
+        );
         assert_eq!(dto["status"], "RUNNING");
         assert_eq!(dto["barType"], "DETERMINATE");
         assert_eq!(dto["progress"], 0.5);

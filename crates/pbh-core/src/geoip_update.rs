@@ -362,7 +362,11 @@ impl GeoIpHttpClient for ReqwestBlockingHttpClient {
         // 对齐上游 `body.contentLength()`（后台任务的 max；-1/缺失 ⇒ None）
         let content_length = response.content_length().map(|len| len as i64);
         let body = response.bytes()?.to_vec();
-        Ok(GeoIpHttpResponse::with_content_length(status, body, content_length))
+        Ok(GeoIpHttpResponse::with_content_length(
+            status,
+            body,
+            content_length,
+        ))
     }
 }
 
@@ -1720,10 +1724,11 @@ mod tests {
 
         let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = events.clone();
-        let updater = updater(&dir, auto_update_config(), &mock)
-            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+        let updater = updater(&dir, auto_update_config(), &mock).with_progress_sink(Arc::new(
+            move |progress: GeoIpProgress| {
                 sink.lock().unwrap().push(progress);
-            }));
+            },
+        ));
         let report = updater.update_if_needed();
         assert_eq!(report.updated().len(), 3);
 
@@ -1742,7 +1747,11 @@ mod tests {
         );
         match &city_events[1].stage {
             GeoIpProgressStage::DownloadBytes { bytes, total } => {
-                assert_eq!(*bytes, fixtures[0].2.len() as i64, "已接收字节数 = 响应体大小");
+                assert_eq!(
+                    *bytes,
+                    fixtures[0].2.len() as i64,
+                    "已接收字节数 = 响应体大小"
+                );
                 assert_eq!(
                     *total,
                     Some(fixtures[0].2.len() as i64),
@@ -1758,7 +1767,10 @@ mod tests {
             GeoIpProgressStage::Finished { success: true }
         );
         // 事件流按 City → ASN → GeoCN 的库顺序、以 Finished 收尾
-        assert_eq!(events.last().unwrap().stage, GeoIpProgressStage::Finished { success: true });
+        assert_eq!(
+            events.last().unwrap().stage,
+            GeoIpProgressStage::Finished { success: true }
+        );
         assert_eq!(events.len(), 15);
     }
 
@@ -1772,10 +1784,11 @@ mod tests {
 
         let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = events.clone();
-        let updater = updater(&dir, auto_update_config(), &mock)
-            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+        let updater = updater(&dir, auto_update_config(), &mock).with_progress_sink(Arc::new(
+            move |progress: GeoIpProgress| {
                 sink.lock().unwrap().push(progress);
-            }));
+            },
+        ));
         let report = updater.update_if_needed();
         assert_eq!(report.failures().len(), 3);
 
@@ -1804,10 +1817,11 @@ mod tests {
         let mock = serve_all(&fixtures);
         let events: Arc<Mutex<Vec<GeoIpProgress>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = events.clone();
-        let updater = updater(&dir, IpDatabaseConfig::default(), &mock)
-            .with_progress_sink(Arc::new(move |progress: GeoIpProgress| {
+        let updater = updater(&dir, IpDatabaseConfig::default(), &mock).with_progress_sink(
+            Arc::new(move |progress: GeoIpProgress| {
                 sink.lock().unwrap().push(progress);
-            }));
+            }),
+        );
         let report = updater.update_if_needed();
 
         assert_eq!(
