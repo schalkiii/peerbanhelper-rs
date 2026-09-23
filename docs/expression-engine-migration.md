@@ -12,7 +12,7 @@ PeerBanHelper 上游（Java 版）的表达式规则引擎使用 **AviatorScript
 > 实机社区脚本（`gopeed-random-peerid.av`、`name-id-verify.av`、`2e0-61ff-fe.av`、
 > `dot-1-ipv6-tr296.av`）已作为黄金测试固化在 `crates/pbh-core/tests/fixtures/scripts/`，
 > 判定结果与 reason 原文由 `tests/av_script_golden.rs` 锁定。
-
+>
 > 结论先行：**默认配置下本仓库行为与上游完全一致** —— `expression-engine` 默认启用，但 `<data>/scripts/`
 > 目录默认没有任何 `.av` 脚本，因此模块恒返回 `pass()`，不产生任何封禁。
 > 只有当用户把自写的脚本放进该目录时，才涉及脚本语言问题（现已自动翻译，见上）。
@@ -163,6 +163,7 @@ rhai 用 snake_case 字段（由 `engine.register_get` 显式暴露）：
 ### 示例 1：按客户端名前缀封禁
 
 上游 AviatorScript：
+
 ```aviatorscript
 # @NAME Ban qBittorrent 4.x
 let client = peer.clientName;
@@ -172,7 +173,9 @@ if string.startsWith(client, "qBittorrent/4.") {
 return false;
 ```
 
+
 本仓库 rhai（`.av`）：
+
 ```rhai
 // @NAME Ban qBittorrent 4.x
 let client = peer.client_name;
@@ -181,11 +184,13 @@ if client.starts_with("qBittorrent/4.") {
 }
 return false;
 ```
+
 （`return peer.client_name.starts_with("qBittorrent/4.");` 一行即可）
 
 ### 示例 2：按上传速度阈值封禁（注意除法差异）
 
 上游 AviatorScript（整数除法）：
+
 ```aviatorscript
 let kb = peer.uploadSpeed / 1024;
 if kb > 1000 {
@@ -194,7 +199,9 @@ if kb > 1000 {
 return 0;
 ```
 
+
 本仓库 rhai（改写阈值方向，避免浮点截断歧义）：
+
 ```rhai
 if peer.upload_speed > 1024 * 1000 {
   return 1;
@@ -202,27 +209,34 @@ if peer.upload_speed > 1024 * 1000 {
 return 0;
 ```
 
+
 ### 示例 3：字符串返回携带 reason / SKIP
 
 上游 AviatorScript：
+
 ```aviatorscript
 return "Too many connections";   // BAN，reason = "Too many connections"
 return "@user-defined-skip";     // SKIP，reason key = "user-defined-skip"
 ```
 
+
 本仓库 rhai（完全一致）：
+
 ```rhai
 return "Too many connections";
 return "@user-defined-skip";
 ```
 
+
 ### 示例 4：用种子进度近似 completedSize
 
 上游 AviatorScript：`let done = torrent.completedSize;`
 本仓库 rhai（字段未直接暴露）：
+
 ```rhai
 let done = torrent.size * torrent.progress;
 ```
+
 
 ### 示例 5：多脚本聚合（SKIP 优先）
 

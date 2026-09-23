@@ -28,6 +28,7 @@
 ## 3. 已完成（按主题）
 
 ### 3.1 基础设施
+
 - [x] workspace 与 crate 划分；领域模型（`PeerAddress` / `PeerFlag` libtorrent flags / `Peer` / `Torrent`）
 - [x] 规则引擎：六种匹配器，完整对齐 `RuleParser.matchRule`（FALSE 短路、末条 TRUE 胜、DEFAULT 不命中）、
       Unicode 大小写折叠、`equalsIgnoreCase`、UTF-16 长度口径；默认规则集与上游 `profile.yml` 一致
@@ -35,6 +36,7 @@
       模块节缺失或无 `enabled: true` 视为禁用
 
 ### 3.2 规则模块（全部上游模块）
+
 - [x] `ip-address-blocker`：CIDR/单 IP/范围/端口 + GeoIP 四维度（ASN/地区/城市/网络类型，
       对齐 `IPDB` + `GeoCN1|2`）
 - [x] `peer-id-blacklist` / `client-name-blacklist`（含握手前置条件：仅「握手中且标识为空」才跳过）
@@ -50,6 +52,7 @@
 - [x] 多模块聚合按 `PeerAction` 等级 + 更长 ban 时长择优（非首个模块短路）
 
 ### 3.3 下载器（6 个适配器）
+
 - [x] qBittorrent：Cookie 会话 + `buildInfo` 校验、`/torrents/info` 分页、`/sync/torrentPeers` 解析过滤、
       增量 `/transfer/banPeers` 与全量 `setPreferences`、API Key（≥5.2.0）/口令（≥4.5.0）门槛、
       能力标志按版本判定（`RANGE_BAN_IP` 需 ≥5.3.0 / 5.2.0-beta1）
@@ -64,6 +67,7 @@
       Basic Auth 仅 401 后重试一次
 
 ### 3.4 封禁下发链路
+
 - [x] ban wave 三段式（判定 → 写表 → 下发，对齐 `digestion/banPeer/updateDownloader`）；
       下发阶段遍历**全部**下载器且下发前重新登录；fixed-delay 调度
 - [x] 到期解封（`now > unbanAt`）、重复封禁全量重放、有解封强制全量；无变化不请求下载器
@@ -72,6 +76,7 @@
 - [x] 匿名 blocklist 端点（`p2p-plain-format`（含 Transmission 空列表 workaround）/ `ip` / `dat-emule`）
 
 ### 3.5 GeoIP 数据库
+
 - [x] 自动更新：三镜像轮换（GitHub Releases → pbh-static.paulzzh.com → pbh-static.ghostchu.com）、
       `.mmdb.xz` + 纯 Rust XZ 解压、45 天 mtime 周期、校验后原子替换；在 `GeoIpDb::load` 之前接线；
       `auto-update: false` 时已存在的库不覆盖、本地缺失的库补下一次（对齐上游 `needUpdateMMDB`）
@@ -80,12 +85,14 @@
 - [x] 加载失败/`forceDisableIPDB` ⇒ 不注入 provider，四维度全不命中
 
 ### 3.6 AutoSTUN
+
 - [x] 地址翻译：TCP STUN（RFC 5389 `XOR-MAPPED-ADDRESS`）+ 静态映射表 + 后台刷新；
       `enabled: false`（默认）严格直通
 - [x] UDP NAT 类型探测（对齐 cdnbye/`StunManager`，仅遥测展示、不参与判定）
 - [x] TCP 转发器 + 端口保活心跳 + 友好回环映射绑定（对齐 `connectToUpstreamFriendly`）
 
 ### 3.7 监控与持久化
+
 - [x] `active-monitoring`（流量日志、日流量阈值告警 + push、滑动窗口限速计算与下发）与
       `peer-analyse-service.{session-analyse,peer-recording,swarm-tracking}`，按上游定时间隔驱动
 - [x] `DbMonitorSink`：`alert` / `traffic_journal_v3` / `peer_connection_metrics(_track)` /
@@ -94,6 +101,7 @@
 - [x] 告警推送 9 渠道 + 阈值/冷却告警走 push（`publishAlert(push=true)` 语义）
 
 ### 3.8 BTN 网络
+
 - [x] 传输层：配置端点握手、协议版本校验（实现版本 20，遗留/现代 abilities 分支）、
       `X-BTN-ContentVersion` + 本地缓存（`meta` 表 ≈ `metadataDao`）、PoW captcha、
       各 ability 独立调度（`interval` / `random_initial_delay`，游标成功后推进）与 600s 重试节流；
@@ -104,6 +112,7 @@
 - [x] `GET /api/peer/{ip}/btnQuery` 经 `SharedBtnNetwork`；`btn.allow-script-execute` 脚本规则（rhai）
 
 ### 3.9 Web 后端
+
 - [x] axum + Token 鉴权 + 静态 WebUI 托管；健康检查、封禁列表/日志/统计/图表 API
 - [x] 配置读写、下载器热管理（增删改 + 全量 reload）、推送渠道热管理、手动封禁/解封（立即下发）
 - [x] 告警读写（`dismiss` / `dismissAll` / `DELETE`，`read_at` 落库）、
@@ -111,6 +120,7 @@
 - [x] 实时日志：SSE `/api/logs/live`（对齐上游弃用 WebSocket 后的现状）+ 环形缓冲
 
 ### 3.10 工具链与验证
+
 - [x] `pbh-mockqb`：mock qBittorrent 服务（对跑/基准夹具，含封禁下发录制）
 - [x] 双跑与基准脚本：`java_dualrun.ps1` / `rust_dualrun.ps1` / `prepare_live.ps1` / `live_dualrun.ps1`；
       实测数据回填 README
@@ -119,10 +129,12 @@
 ## 4. 计划与未完成（TODO）
 
 ### 4.1 与上游差异的对齐项
+
 > 原则：有差异就写在这里，说明现状与上游行为，按影响排序逐项关闭。
 > 当前**无未关闭项**（GeoIP 进度 UI 与 PTR 架构已对齐并移入 §3.5/§3.6）。
 
 ### 4.2 已知且保留的行为差异（说明，不计划「修复」）
+
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），
   本移植保留该上限属**更严格**的防御性行为（只会把超时脚本判为 pass，方向安全）。
 - 表达式脚本直接返回 `PeerAction` / `CheckResult` 对象：rhai 无对应类型，按 `pass()` 处理
@@ -134,6 +146,7 @@
 - 每日流量阈值告警等上游默认关闭的功能：默认配置下无行为差异，仅 `enabled: true` 时生效。
 
 ### 4.3 原生 GUI（Tauri 托盘壳）——方案规划
+
 - [ ] **架构**：新增独立 crate `crates/pbh-gui`（**不加入 workspace members**——Tauri 在 Linux 需要
       webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建；Windows 侧单独构建）。
       职责：① 以子进程拉起 `pbh --data <dir>`（保留窗口关闭=隐藏到托盘、崩溃自动重启、日志重定向到文件）；
@@ -146,6 +159,7 @@
 - [ ] **验收**：关闭窗口仅隐藏；退出托盘菜单结束子进程并退出；`pbh.exe` 未就绪时窗口显示连接中提示并自动重载。
 
 ### 4.4 长时对跑基建（数十小时 ~ 数天）
+
 - [x] **采样脚本 `longrun_sample.ps1`**：周期（默认 5 分钟）采样两侧进程 RSS/私有内存/CPU、
       SQLite 文件大小、`/health` 状态，追加 JSONL；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
 - [x] **对账工具 `compare_dualrun`**（`pbh-db` 新增 bin）：读两侧 SQLite，比对 `history`
@@ -157,6 +171,7 @@
       `--dualrun-tag` 身份标记（便于区分两侧记录）。
 
 ### 4.5 扩展项（超出 v9.5.1 对等范围）
+
 - [ ] MySQL / PostgreSQL 支持（sqlx）——上游默认 sqlite/h2，属部署扩展
 - [ ] 插件系统评估（WASM / wasmtime）
 - [ ] 跨平台打包与发布：Windows/macOS 产物、Docker（scratch/Alpine）镜像、CI 自动发布
@@ -182,8 +197,11 @@
 
 ## 7. Definition of Done（每个模块/适配器）
 
-1. SPEC 中有对应契约；2. 至少一个黄金夹具且对应分层通过；3. `cargo build` / `clippy -D warnings` / `test` 全绿；
-4. 默认值与阈值与上游一致；5. 本文件「已完成」勾选 + CHANGELOG 记录。
+1. SPEC 中有对应契约；
+2. 至少一个黄金夹具且对应分层通过；
+3. `cargo build` / `clippy -D warnings` / `test` 全绿；
+4. 默认值与阈值与上游一致；
+5. 本文件「已完成」勾选 + CHANGELOG 记录。
 
 ## 8. 开发历史（里程碑）
 
