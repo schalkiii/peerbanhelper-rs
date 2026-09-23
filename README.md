@@ -20,18 +20,27 @@
 
 Rust 版用 tokio 异步 + 信号量限并发批量拉取 + serde 零成本反序列化 + 无 GC 重写该流水线。
 
-**实测（Windows x64，release，空载 1 个离线 qB 下载器）与设计估算：**
+**实测（Windows x64，release，空载 1 个离线 qB 下载器）与实机并行对跑：**
 
 | 指标 | Java 现状 | Rust（本仓库） | 改善 |
 | --- | --- | --- | --- |
-| 常驻内存 WorkingSet | 350–550 MB | **实测 32.9 MB**（私有内存 10.5 MB） | ↓ 约 90% |
+| 常驻内存 WorkingSet（空载） | 350–550 MB | **实测 32.9 MB**（私有内存 10.5 MB） | ↓ 约 90% |
+| **常驻内存 RSS（实机负载）** | **实测 780–851 MB**（v9.5.1 正式部署） | **实测 36–104 MB**（同配置 dry-run 并行对跑） | ↓ 约 **1/8 ~ 1/20** |
 | 冷启动到可服务 | 8–15 s | **实测 0.57 s**（time-to-health） | ↓ 约 93–96% |
 | 发布体积 | 镜像 ~200 MB+ / 安装包 150–280 MB（含 JRE） | **单二进制 7.82 MB（Linux x64，含文案资源）**（release，strip 后） | ↓ 约 95%+ |
 | 线程模型 | 每 peer×模块大量短命 `CompletableFuture` 任务 | tokio 协作任务，空载实测 22 线程 | 显著降低调度/GC 压力 |
-| 综合 CPU（高负载 ban wave） | 基线 | 设计估算为基线的 40–70% | ↓ 30–60%（**待对照基准实测**） |
+| 单轮 ban wave（实机 10 分钟并行对跑） | 中位 426 ms（样本 86–9269 ms） | 中位 4452 ms（样本 4139–4752 ms） | Rust 恒定偏慢，见注 |
 
-> 内存、启动、体积为本机 release 实测；CPU 高负载改善与 Java 侧数值为设计估算/上游典型值，
-> 需在相同规模（数千 peer）下用 criterion / 对照压测复核，见 PLAN.md「性能基准」。
+> **wave 耗时说明**：对跑环境含一个不可达下载器（防火墙丢包，TCP 连接 2s 超时）。上游语义
+> 对该类网络失败**不进入冷却**（`AbstractDownloader.login()` 只对 INCORRECT_CREDENTIAL 与
+> `login0` 外抛异常计数；qB 等 `login0` 内部 catch 的网络错误不计数、每轮重试）——Rust 忠实复刻
+> 该语义后每轮恒定多付两次连接尝试（~4s）；同一窗口 Java 侧也出现 7–9s 的更高尖峰（同为
+> 每轮重连，时序分布不同）。在线下载器的判定耗时两侧均为亚秒级；行为侧封禁集合一致
+> （对跑窗口内无可封禁流量，判定等价性另由 mock 双跑黄金测试锁定，见 `live_dualrun.ps1`）。
+>
+> 内存（空载）、启动、体积为本机 release 实测；实机并行对跑（同配置、同下载器、同 GeoIP 库，
+> Rust 侧 `--dry-run` 只读接入）各指标为 2026-09-22/23 实测，脚本见 `prepare_live.ps1` /
+> `live_dualrun.ps1`。
 
 ---
 
@@ -264,10 +273,11 @@ peerbanhelper-rs/
 - `cargo build --release --workspace`：通过（LTO + codegen-units=1 + strip），
   产物 `target/release/pbh` **7.82 MB**（Linux x64，含内嵌上游文案资源）；
   Windows x64 在 i18n 之前实测 6.28 MB。
-- `cargo test --workspace`：**480+ 个测试全部通过**
-  （pbh-core、pbh（推送渠道 + 监控宿主 + 出厂配置守卫）、pbh-db、pbh-web、
+- `cargo test --workspace`：**530+ 个测试全部通过**
+  （pbh-core、pbh（推送渠道 + 监控宿主 + 出厂配置守卫 + 登录冷却口径）、pbh-db、pbh-web、
   pbh-downloader（qB / Transmission / Deluge / BiglyBT / BitComet / Aria2Next）、
-  黄金测试（L1 匹配器 / L2 模块与 profile 配置 / L3 适配器 / L4 端到端））。
+  黄金测试（L1 匹配器 / L2 模块与 profile 配置 / L3 适配器 / L4 端到端 /
+  实机 AviatorScript 社区脚本判定与 reason））。
   各轮新增：`ip_rule_list` 的 `/0`、`/32`、`/128` 前缀边界回归（`RuleIndex::build` 的移位
   越界 panic 修复）、GeoIP/BTN/AutoSTUN/监控模块的配置与接线守卫、
   `MonitorHost` 的 `onPeersRetrieved` → 定时 flush 全链路（内存 sink）、
