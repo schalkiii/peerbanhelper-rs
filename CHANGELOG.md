@@ -5,6 +5,19 @@
 
 ## 未发布（working tree）
 
+### feat(dualrun): 长时对跑基建补齐（快照/水位/身份标记 + 对账增强）
+
+- `longrun_sample.ps1`：新增**共享读 DB 快照**（主库 + `-wal` + `-shm`，`FileShare.ReadWrite`
+  可在两侧运行中安全取证；周期 `-SnapshotEveryRounds` + 退出时最终快照）、**磁盘水位告警**
+  （剩余空间 / 单库体积阈值，JSONL 打 `disk`/`db_warn` 字段）、退出时结束 Rust 子进程；
+- `pbh` 新增 `--tag <str>` 长时对跑身份标记：写入 `metadata.dualrun_tag` 与
+  `metadata.dualrun_started_at`，并随启动日志输出；
+- `compare_dualrun` 增强：**IP 文本规范化**（两侧 IPv6 十六进制/点分映射写法差异不误报）、
+  **命中模块集合比对**（同址同小时但模块无交集 = 真实行为差异，独立报告 + CSV `module-mismatch` 行）；
+- 实机 Java 数据库经取证确认为 **SQLite**（`data/persist/peerbanhelper-nt.db`，魔数
+  `SQLite format 3`），运行中可共享读快照——PLAN「Java 侧 H2 导出」待补项关闭；
+- `prepare_live.ps1`：预建 `persist/` 使 Rust 采用上游 DB 布局（与快照/对账工具链路径一致）。
+
 ### feat(gui,dualrun): Tauri 原生 GUI 壳（M1 托盘）+ 长时对跑基建（采样脚本 + DB 对账工具）
 
 - 新增 `crates/pbh-gui`（**独立 crate，不在 workspace members**）：tauri v2 托盘壳——子进程拉起

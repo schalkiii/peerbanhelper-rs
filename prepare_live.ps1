@@ -8,6 +8,9 @@ $data = "$root\rust"
 
 if (Test-Path $data) { Remove-Item $data -Recurse -Force }
 New-Item -ItemType Directory -Force -Path "$data\config" | Out-Null
+# persist/ 目录存在 ⇒ Rust 采用上游 DB 布局 `<data>/persist/peerbanhelper-nt.db`
+# （与长时对跑/快照/对账工具链的路径假设一致）
+New-Item -ItemType Directory -Force -Path "$data\persist" | Out-Null
 
 # 1) 配置与 GeoIP 库（判定依据一致）
 Copy-Item "$src\config\config.yml"  "$data\config\config.yml"  -Force

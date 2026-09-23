@@ -1,17 +1,20 @@
 # 长时对跑采样脚本（longrun_sample.ps1）
 #
 # 用途：数小时~数天规模的 Java/Rust 双跑观测。周期采样两侧进程内存/CPU、SQLite 文件大小、
-#       /health 状态，追加 JSONL 供事后绘图；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
-#       在线逐条比对刻意不做（时钟漂移 + 重试时序差异会产生假阳性），跑完用
-#       `cargo run -p pbh-db --bin compare_dualrun -- <java.db> <rust.db>` 离线对账。
+#       磁盘水位、/health 状态，追加 JSONL 供事后绘图；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）；
+#       周期对两侧 DB 做**共享读快照**（SQLite 主库 + -wal + -shm，可在运行中安全拷贝），
+#       跑完用 `cargo run -p pbh-db --bin compare_dualrun -- <java快照> <rust快照>` 离线对账。
+#
+# 在线逐条比对刻意不做（时钟漂移 + 重试时序差异会产生假阳性），以离线 DB 对账为准。
 #
 # 用法示例：
 #   .\longrun_sample.ps1 -JavaPid 12345 -RustExe .\target\release\pbh.exe `
-#       -RustArgs "--data D:\pbh-rs\data --dry-run --port 9899" `
-#       -RustPort 9899 -JavaDb D:\pbh-java\data\database.sqlite `
-#       -RustDb D:\pbh-rs\data\database.sqlite -IntervalSec 300
+#       -RustArgs "--data D:\pbh-rs\data --dry-run --port 9899 --tag rust-longrun" `
+#       -RustPort 9899 -JavaDb C:\...\data\persist\peerbanhelper-nt.db `
+#       -RustDb D:\pbh-rs\data\persist\peerbanhelper-nt.db `
+#       -SnapshotDir .\target\live\snapshots -IntervalSec 300
 #
-# 停止：Ctrl+C（JSONL 每行即时落盘，随时可中断）。
+# 停止：Ctrl+C（JSONL 每行即时落盘；退出时做最终快照并结束 Rust 子进程，除非 -NoStopRustOnExit）。
 
 param(
     [string]$JavaPid = "",
@@ -24,7 +27,17 @@ param(
     [string]$JavaDb = "",
     [string]$RustDb = "",
     [int]$IntervalSec = 300,
+    # 快照目录：周期把两侧 DB（含 -wal/-shm）共享读拷贝到此，供离线对账
+    [string]$SnapshotDir = "",
+    # 每 N 轮做一次快照（0 = 仅退出时快照一次）
+    [int]$SnapshotEveryRounds = 12,
+    # 磁盘剩余空间低于该值（GB）时告警并在 JSONL 打 flag
+    [double]$DiskFreeWarnGb = 5.0,
+    # 单库超过该值（GB）时告警（天级 history 增长的磁盘水位）
+    [double]$DbSizeWarnGb = 2.0,
+    [string]$DiskPath = "D:",
     [switch]$NoAutoRestart,
+    [switch]$NoStopRustOnExit,
     [string]$OutFile = "longrun_samples.jsonl",
     [string]$RustLog = "longrun_pbh.log"
 )
@@ -55,8 +68,51 @@ function Get-Health($port) {
 }
 
 function Get-DbSize($path) {
-    if ($path -and (Test-Path $path)) { return [math]::Round((Get-Item $path).Length / 1MB, 2) }
+    $total = 0.0
+    $found = $false
+    foreach ($p in @($path, "$path-wal")) {
+        if ($p -and (Test-Path $p)) {
+            $total += (Get-Item $p).Length / 1MB
+            $found = $true
+        }
+    }
+    if ($found) { return [math]::Round($total, 2) }
     return $null
+}
+
+# 共享读拷贝（FileShare.ReadWrite）：Java 的 SQLite 在运行中也能安全取证；
+# 主库 + -wal + -shm 一并拷贝，快照可被 SQLite 正常恢复后打开。
+function Copy-Shared([string]$src, [string]$dst) {
+    if (-not $src -or -not (Test-Path $src)) { return $false }
+    try {
+        $in = [System.IO.File]::Open($src, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $out = [System.IO.File]::Create($dst)
+            try { $in.CopyTo($out) } finally { $out.Close() }
+        } finally { $in.Close() }
+        return $true
+    } catch {
+        Write-Host "[longrun] 快照失败 $src => $dst : $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Snapshot-Dbs([int]$round) {
+    if (-not $SnapshotDir) { return }
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $dir = Join-Path $SnapshotDir "r$round-$stamp"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    foreach ($pair in @(@("java", $JavaDb), @("rust", $RustDb))) {
+        $side = $pair[0]; $db = $pair[1]
+        if (-not $db) { continue }
+        $base = Split-Path -Leaf $db
+        $ok = Copy-Shared $db (Join-Path $dir "$side-$base")
+        foreach ($suffix in @("-wal", "-shm")) {
+            $null = Copy-Shared "$db$suffix" (Join-Path $dir "$side-$base$suffix")
+        }
+        Write-Host "[longrun] 快照 $side ($ok) => $dir"
+    }
 }
 
 # 启动 Rust 子进程（崩溃自动拉起）
@@ -72,38 +128,78 @@ function Start-Rust {
 if (-not $NoAutoRestart) { Start-Rust }
 
 $round = 0
-while ($true) {
-    $round += 1
-    $now = (Get-Date).ToUniversalTime().ToString("o")
+try {
+    while ($true) {
+        $round += 1
+        $now = (Get-Date).ToUniversalTime().ToString("o")
 
-    # --- Java 进程 ---
-    $javaProc = $null
-    if ($JavaPid) { $javaProc = Get-Process -Id $JavaPid -ErrorAction SilentlyContinue }
-    else { $javaProc = Get-Process -Name $JavaProcessName -ErrorAction SilentlyContinue | Select-Object -First 1 }
-    $javaSample = Get-ProcSample $javaProc 0.0
+        # --- Java 进程 ---
+        $javaProc = $null
+        if ($JavaPid) { $javaProc = Get-Process -Id $JavaPid -ErrorAction SilentlyContinue }
+        else { $javaProc = Get-Process -Name $JavaProcessName -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        $javaSample = Get-ProcSample $javaProc 0.0
 
-    # --- Rust 进程（崩溃自动拉起） ---
-    if ($rustProc -and $rustProc.HasExited) {
-        Write-Host "[longrun] 警告：Rust 进程已退出（exit=$($rustProc.ExitCode)）"
-        if (-not $NoAutoRestart) { Start-Rust }
+        # --- Rust 进程（崩溃自动拉起） ---
+        if ($rustProc -and $rustProc.HasExited) {
+            Write-Host "[longrun] 警告：Rust 进程已退出（exit=$($rustProc.ExitCode)）"
+            if (-not $NoAutoRestart) { Start-Rust }
+        }
+        $rustSample = Get-ProcSample $rustProc $rustCpuPrev
+        if ($rustSample) { $rustCpuPrev = $rustSample.cpu_sec }
+
+        # --- 磁盘水位 ---
+        $disk = $null
+        $freeGb = $null
+        try {
+            $d = Get-PSDrive -Name ($DiskPath.TrimEnd(':')) -ErrorAction Stop
+            $freeGb = [math]::Round($d.Free / 1GB, 2)
+            $disk = @{
+                drive       = $DiskPath
+                free_gb     = $freeGb
+                low         = ($freeGb -lt $DiskFreeWarnGb)
+            }
+            if ($freeGb -lt $DiskFreeWarnGb) {
+                Write-Host "[longrun] 警告：磁盘剩余 ${freeGb}GB 低于阈值 ${DiskFreeWarnGb}GB"
+            }
+        } catch { }
+
+        $javaDbMb = Get-DbSize $JavaDb
+        $rustDbMb = Get-DbSize $RustDb
+        $dbWarn = @()
+        if ($javaDbMb -and $javaDbMb -gt ($DbSizeWarnGb * 1024)) { $dbWarn += "java" }
+        if ($rustDbMb -and $rustDbMb -gt ($DbSizeWarnGb * 1024)) { $dbWarn += "rust" }
+        if ($dbWarn.Count -gt 0) {
+            Write-Host "[longrun] 警告：数据库体积超阈值（$($dbWarn -join ',')，> ${DbSizeWarnGb}GB）"
+        }
+
+        # --- DB 大小 / 健康 ---
+        $record = [ordered]@{
+            ts          = $now
+            round       = $round
+            java        = $javaSample
+            rust        = $rustSample
+            java_health = Get-Health $JavaPort
+            rust_health = Get-Health $RustPort
+            java_db_mb  = $javaDbMb
+            rust_db_mb  = $rustDbMb
+            disk        = $disk
+            db_warn     = $dbWarn
+        }
+        $record | ConvertTo-Json -Compress | Add-Content -Path $OutFile
+        Write-Host ("[longrun] #{0} java={1}MB rust={2}MB free={3}GB health java={4} rust={5}" -f `
+                $round, $record.java_db_mb, $record.rust_db_mb, $freeGb, $record.java_health, $record.rust_health)
+
+        if ($SnapshotDir -and $SnapshotEveryRounds -gt 0 -and ($round % $SnapshotEveryRounds) -eq 0) {
+            Snapshot-Dbs $round
+        }
+
+        Start-Sleep -Seconds $IntervalSec
     }
-    $rustSample = Get-ProcSample $rustProc $rustCpuPrev
-    if ($rustSample) { $rustCpuPrev = $rustSample.cpu_sec }
-
-    # --- DB 大小 / 健康 ---
-    $record = [ordered]@{
-        ts          = $now
-        round       = $round
-        java        = $javaSample
-        rust        = $rustSample
-        java_health = Get-Health $JavaPort
-        rust_health = Get-Health $RustPort
-        java_db_mb  = Get-DbSize $JavaDb
-        rust_db_mb  = Get-DbSize $RustDb
+} finally {
+    Write-Host "[longrun] 退出：做最终快照"
+    Snapshot-Dbs 0
+    if (-not $NoStopRustOnExit -and $rustProc -and -not $rustProc.HasExited) {
+        Write-Host "[longrun] 结束 Rust 子进程 pid=$($rustProc.Id)"
+        Stop-Process -Id $rustProc.Id -Force -ErrorAction SilentlyContinue
     }
-    $record | ConvertTo-Json -Compress | Add-Content -Path $OutFile
-    Write-Host ("[longrun] #{0} java={1}MB rust={2}MB health java={3} rust={4}" -f `
-            $round, $record.java_db_mb, $record.rust_db_mb, $record.java_health, $record.rust_health)
-
-    Start-Sleep -Seconds $IntervalSec
 }

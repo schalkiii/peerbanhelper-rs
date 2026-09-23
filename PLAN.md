@@ -164,11 +164,15 @@
       SQLite 文件大小、`/health` 状态，追加 JSONL；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
 - [x] **对账工具 `compare_dualrun`**（`pbh-db` 新增 bin）：读两侧 SQLite，比对 `history`
       （封禁历史：IP+端口+ban_at 时间窗匹配）、`alert` 数量与共享表行数摘要，差异输出 CSV + 控制台报告；
-      容忍两侧表结构差异（先 PRAGMA 探测列）。
-- [ ] **在线比对不采用**（决策记录）：时钟漂移 + 重试时序差异会在天级产生大量假阳性；
+      容忍两侧表结构差异（先 PRAGMA 探测列）。**已增强**：IP 文本规范化（Java/Rust 的 IPv6
+      映射写法差异不误报）与**命中模块集合比对**（同址同小时但模块无交集 = 真实行为差异）。
+- [x] **在线比对不采用**（决策记录）：时钟漂移 + 重试时序差异会在天级产生大量假阳性；
       以离线 DB 对账为准，运行期只做健康采样。
-- [ ] **待补**：Java 侧 H2 导出（若部署用 H2 需先转 SQLite）；磁盘水位告警（天级 `history` 增长）；
-      `--dualrun-tag` 身份标记（便于区分两侧记录）。
+- [x] 补齐（2026-09-23）：Java 侧数据库实测为 **SQLite**（`data/persist/peerbanhelper-nt.db`，
+      魔数 `SQLite format 3`），无需 H2 导出；运行中经 `FileShare.ReadWrite` **共享读快照**
+      （主库 + `-wal` + `-shm`）即可离线对账，已内置于 `longrun_sample.ps1`（周期 + 退出快照）；
+      磁盘水位告警（剩余空间 / 单库体积阈值，JSONL 打 flag）；`pbh --tag` 身份标记
+      （写入 `metadata.dualrun_tag` + `dualrun_started_at` + 启动日志）。
 
 ### 4.5 扩展项（超出 v9.5.1 对等范围）
 

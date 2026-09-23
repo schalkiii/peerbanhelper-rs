@@ -50,6 +50,10 @@ struct Args {
     /// （用于与 Java 版并行观察，避免改动下载器状态）
     #[arg(long)]
     dry_run: bool,
+    /// 长时对跑身份标记：写入 `metadata` 表（`dualrun_tag`）并随启动日志输出，
+    /// 便于事后区分/归集两侧记录（对齐 PLAN「长时对跑基建 — --dualrun-tag 身份标记」）
+    #[arg(long)]
+    tag: Option<String>,
 }
 
 #[tokio::main]
@@ -95,6 +99,15 @@ async fn main() -> anyhow::Result<()> {
         db_path.to_str().unwrap_or("peerbanhelper.db"),
     )?);
     info!("SQLite 已打开: {}", db_path.display());
+    if let Some(tag) = &args.tag {
+        // 身份标记 + 启动时间：长时对跑的离线对账按 tag 归集两侧记录
+        let _ = db.set_meta("dualrun_tag", tag);
+        let _ = db.set_meta(
+            "dualrun_started_at",
+            &chrono::Utc::now().timestamp_millis().to_string(),
+        );
+        info!("长时对跑标记: {tag}");
+    }
     if args.dry_run {
         info!("已启用演练模式（--dry-run）：不会向下载器下发封禁/解封/限速");
     }
@@ -161,8 +174,7 @@ async fn main() -> anyhow::Result<()> {
         None
     } else {
         let ipdb_dir = data_dir.join("ipdb");
-        let geoip_task_adapter =
-            Arc::new(pbh_web::GeoIpTaskAdapter::new(background_tasks.clone()));
+        let geoip_task_adapter = Arc::new(pbh_web::GeoIpTaskAdapter::new(background_tasks.clone()));
         let geoip_progress_sink = geoip_task_adapter.sink();
         // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` → `IPDB` 构造函数的
         // 「先 updateMMDB 再 loadMMDB」：更新完成后再加载，本次启动即可用上新库）。
@@ -253,8 +265,8 @@ async fn main() -> anyhow::Result<()> {
         // where blocking is not allowed`），因此这里只传入构造函数。
         // 规则缓存落 SQLite 的 `meta` 表（对齐上游 `metadataDao`；重启后回灌、不重拉）
         let metadata = Arc::new(DbMetadataStore::new(db.clone()));
-        let submit_source: Arc<dyn BtnSubmitSource> = Arc::new(
-            btn_legacy::LegacyAwareSubmitSource::new(
+        let submit_source: Arc<dyn BtnSubmitSource> =
+            Arc::new(btn_legacy::LegacyAwareSubmitSource::new(
                 Arc::new(DbBtnSubmitSource::new(
                     db.clone(),
                     translator.clone(),
@@ -264,8 +276,7 @@ async fn main() -> anyhow::Result<()> {
                 pipeline.ban_list.clone(),
                 translator.clone(),
                 cfg.language.locale.clone(),
-            ),
-        );
+            ));
         let handle = spawn_btn_transport(
             &cfg.btn,
             &pipeline,
