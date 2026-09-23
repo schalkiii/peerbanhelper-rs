@@ -500,7 +500,8 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
    未注入规则时恒 `pass()`（未配置 BTN 服务端的部署与上游行为一致）。
 2. **GeoIP 数据库自动更新已移植**：`pbh-core::geoip_update` 三镜像轮换下载 + XZ 解压 +
    45 天 mtime 间隔 + 校验后原子替换，在 `GeoIpDb::load` 之前接线（对齐上游「先 updateMMDB 再 loadMMDB」）；
-   `auto-update: false`（默认）⇒ 严格 no-op。数据库缺失/损坏或 `pbh.forceDisableIPDB` 时
+   `auto-update: false` 时已存在的库不覆盖、本地缺失的库补下一次（对齐上游 `needUpdateMMDB`
+   对缺失恒 true）。数据库缺失/损坏或 `pbh.forceDisableIPDB` 时
    四个维度全部不命中（对齐上游无库行为）。
 3. **AutoSTUN 次要能力已移植**：UDP NAT 类型探测（对齐 cdnbye/上游 `StunManager`，仅 WebUI/遥测展示）
    与 TCP 转发器 + 端口保活 + 友好回环映射绑定均已实现；`enabled: false`（默认）⇒ 严格 no-op。
@@ -521,8 +522,9 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
 >   用落库的 `TranslationComponent`（JSON）重新本地化；无 key 时回退到服务端渲染文案。
 >   `BanLog` 新增 `rule_key` / `reason_key` 列（含增量迁移），与上游“按请求 locale 本地化”一致。
 
-## 10. 不在本阶段范围（明确边界）
+## 10. 范围外（明确边界）
 
-桌面 GUI、插件系统（WASM/wasmtime）、WebSocket 实时推送、多数据库（MySQL/PostgreSQL）、
-与 Java 版并行灰度（L5 双跑 diff）。
-这些在 PLAN.md 后续阶段定义，不得在未定义契约前提前改变本阶段行为。
+桌面 GUI、插件系统（WASM/wasmtime）、多数据库（MySQL/PostgreSQL）不在当前范围
+（WebSocket 实时推送：上游已弃用，实际以 SSE `/api/logs/live` 对齐；与 Java 版并行灰度 L5 双跑已完成）。
+扩展项与明确不做的事项统一见 PLAN.md「计划与未完成」与「计划不做」；
+新增行为须先在 PLAN 定义契约，不得在未定义前提前实现。

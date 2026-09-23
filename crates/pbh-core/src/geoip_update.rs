@@ -57,8 +57,9 @@
 //      （`account-id` / `license-key` 为上游 `config.yml` 未写出的遗留键，仅在收到 401 时用作
 //       Basic 凭据重试，对齐 `IPDB` 的 OkHttp authenticator。）
 //
-// 【4】若要复刻上游「`auto-update: false` 但本地文件缺失时仍下载一次」的分支，
-//      用 `GeoIpUpdater::with_download_missing(true)`（见 `download_missing` 字段文档）。
+// 【4】上游「`auto-update: false` 但本地文件缺失时仍下载一次」的分支由
+//      `GeoIpUpdater::with_download_missing(true)` 提供；生产接线（`pbh/src/main.rs`）
+//      在 `auto-update: false` 时即以此复刻上游行为（已存在的库不覆盖、缺失的库补下）。
 //
 // 【5】`ok_data_level3.csv`（上游 jar 内资源，GeoCN rev2 的行政区划表）**不属于**本更新器
 //      的下载内容（上游同样不下载它）。移植版按 `geoip.rs` 的约定在
@@ -81,10 +82,11 @@
 //! - 失败策略 ≈ `downloadFile`：镜像逐个轮换（`IPDB_RETRY_WITH_BACKUP_SOURCE`），全部失败后
 //!   目标文件**保持原样**并记录 `IPDB_UPDATE_FAILED` / `IPDB_EXISTS_UPDATE_FAILED`。
 //!
-//! 与上游的四处**有意差异**（都不改变「有可用文件就用、没有就降级」的对外语义）：
-//! 1. `auto-update: false` 时本移植版整体旁路（**不产生任何网络请求**，连本地缺失也不下载）；
-//!    上游 `needUpdateMMDB` 对缺失文件仍返回 true，于是 `auto-update: false` 也会下载一次。
-//!    需要上游行为时用 [`GeoIpUpdater::with_download_missing`] 显式打开该分支。
+//! 与上游的**有意差异**（都不改变「有可用文件就用、没有就降级」的对外语义）：
+//! 1. `auto-update: false` 时本模块默认整体旁路（`SkipReason::AutoUpdateDisabled`，零网络请求）；
+//!    上游 `needUpdateMMDB` 对缺失文件恒返回 true，于是 `auto-update: false` 也会下载一次。
+//!    生产接线（`pbh/src/main.rs`）在 `auto-update: false` 时用
+//!    [`GeoIpUpdater::with_download_missing`] 复刻上游行为：已存在的库不覆盖、缺失的库补下。
 //! 2. 临时文件建在**目标文件同目录**（`.<文件名>.<pid>.<序号>.tmp`），随后 `rename` 原子替换；
 //!    上游在系统临时目录建文件再 `Files.move`。任何一步失败都会删除临时文件，
 //!    绝不出现半成品数据库（上游在「下载失败但目标已存在」时会继续 `Files.move` 一个空临时文件，

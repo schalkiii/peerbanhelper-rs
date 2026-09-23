@@ -159,20 +159,28 @@ async fn main() -> anyhow::Result<()> {
         // GeoIP 数据库自动更新（对齐上游 `IPDBManager#setupIPDB` → `IPDB` 构造函数的
         // 「先 updateMMDB 再 loadMMDB」：更新完成后再加载，本次启动即可用上新库）。
         // 镜像顺序、`.mmdb.xz` + XZ 解压、45 天 mtime 间隔、原子替换均见 `geoip_update`。
-        // `ip-database.auto-update` 为 false 时严格 no-op（连本地缺失也不下载）；
-        // 更新跑在阻塞线程上，因此 `reqwest::blocking` 不会踩到 tokio runtime。
-        if cfg.ip_database.auto_update {
+        // 对齐上游 `IPDB` 构造函数：无论 `auto-update` 开关，启动都先跑一次更新检查——
+        // `auto-update: true` 按 45 天 mtime 周期刷新；`auto-update: false` 时上游对
+        // 「本地缺失」的库仍会下载一次（`needUpdateMMDB` 对缺失恒 true），已存在的库不覆盖；
+        // 库齐全且未过期时零网络请求。更新跑在阻塞线程上，`reqwest::blocking` 不会踩 tokio runtime。
+        {
             let updater_dir = ipdb_dir.clone();
             let updater_config = cfg.ip_database.clone();
             match tokio::task::spawn_blocking(
                 move || -> anyhow::Result<pbh_core::geoip_update::UpdateReport> {
                     let http = pbh_core::geoip_update::ReqwestBlockingHttpClient::new()?;
-                    Ok(pbh_core::geoip_update::GeoIpUpdater::new(
+                    let updater = pbh_core::geoip_update::GeoIpUpdater::new(
                         updater_dir,
-                        updater_config,
+                        updater_config.clone(),
                         &http,
-                    )
-                    .update_if_needed())
+                    );
+                    let updater = if updater_config.auto_update {
+                        updater
+                    } else {
+                        // 上游语义：`auto-update: false` 仍补齐缺失的库（已存在的库不动）
+                        updater.with_download_missing(true)
+                    };
+                    Ok(updater.update_if_needed())
                 },
             )
             .await
