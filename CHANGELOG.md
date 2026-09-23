@@ -5,6 +5,16 @@
 
 ## 未发布（working tree）
 
+### fix(wave): ban wave 完成日志对齐上游文案与计数口径（ProcessingStatistics）
+
+- **计数口径**：`downloaders` / `torrents` 只统计「至少有一个 peer 通过判定」的条目
+  （对齐 `DigestionSession.convertBanDetails` 的 `handled` 映射）——登录成功但 0 peer 的
+  下载器、0 peer 的种子都不计入（实机对照：Java 与 Rust 同报「1 个下载器」，aria2 无 peer 被排除）；
+- **日志文案**改用上游 i18n `BAN_WAVE_CHECK_COMPLETED`（含参数顺序），长时对跑可直接把
+  两侧日志逐行 diff；附加诊断（在线下载器 / 跳过 / 错误数）降级到 DEBUG；
+- 新增 `logger.hide-finish-log` 配置支持（上游语义：`true` 隐藏；下载器列表为空时不打印）；
+- 新增测试 `wave_report_counts_follow_upstream_processing_statistics`。
+
 ### feat(dualrun): 长时对跑基建补齐（快照/水位/身份标记 + 对账增强）
 
 - `longrun_sample.ps1`：新增**共享读 DB 快照**（主库 + `-wal` + `-shm`，`FileShare.ReadWrite`
