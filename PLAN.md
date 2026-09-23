@@ -328,11 +328,14 @@
 ### Phase 4 — 分发与打磨（待办）
 
 - [ ] 插件系统评估（WASM/wasmtime）
-- [~] 性能基准：Java/RSS 同机对照（RSS、单轮耗时、启动）——**已实测**（2026-09-22/23 实机 dry-run
-      对跑：稳态 RSS 102MB vs 851MB≈1/8；单轮 wave 中位 2116ms vs 87ms，慢因已定位为不可达下载器
-      的每轮重连并已修复对齐上游冷却策略）；剩余：CPU/启动耗时对照与 README 实测表回填
+- [x] 性能基准：Java/RSS 同机对照——**已实测并回填 README**（2026-09-22/23 两轮实机 dry-run
+      并行对跑：RSS 36–104MB vs 780–851MB≈1/8~1/20；单轮 wave 中位 4452ms vs 426ms，
+      差异来自不可达下载器的每轮重连——与上游「网络失败不冷却」语义一致，且 Java 同窗口
+      出现 7–9s 更高尖峰；行为侧封禁集合一致）
 - [ ] 跨平台打包（Windows/macOS/Linux 单二进制、Docker scratch/Alpine 镜像）
-- [ ] 与 Java 版并行灰度（L5 双跑 diff）
+- [x] 与 Java 版并行灰度（L5 双跑 diff）——mock 双跑（同 fixture，封禁集合逐 IP diff）
+      与实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）均已跑通，
+      可复现脚本 `java_dualrun.ps1` / `rust_dualrun.ps1` / `prepare_live.ps1` / `live_dualrun.ps1`
 
 ## 4. 风险与对策
 
