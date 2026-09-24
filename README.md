@@ -68,6 +68,8 @@ ban wave 三段式（全部下载器判定 → 统一写封禁表 → 统一下�
 `ip-address-blocker` 的 ASN / 国家地区 / 城市 / 网络类型四维度（对齐 `IPDB` + `GeoCN1|2`）；
 数据库按 `ip-database` 配置自动下载与更新（三镜像轮换 + XZ 解压 + 45 天周期 + 校验后原子替换），
 缺失/损坏或 `pbh.forceDisableIPDB` 时四维度全部不命中。
+GeoCN 省市区解析所用的行政区划表（`ok_data_level3.csv`）已内嵌于二进制（对齐上游 jar 资源），
+ipdb 目录放置同名文件可覆盖（更新区划数据无需重新编译）。
 
 ### AutoSTUN
 

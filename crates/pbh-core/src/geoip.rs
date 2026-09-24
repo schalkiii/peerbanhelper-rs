@@ -85,9 +85,10 @@
 //! 与之配套的 `IPDB#updateMMDB`（mmdb 下载 / XZ 解压 / 原子替换）见 [`crate::geoip_update`]：
 //! 它在 [`GeoIpDb::load`] 之前把下载好的文件放到本模块读取的位置。
 //!
-//! 与上游的一处环境差异：`GeoCN2` 依赖 jar 内资源 `/ok_data_level3.csv`，
-//! 本移植版改为在 ipdb 目录内查找同名文件（见 [`GEOIP_DIVISION_CSV`]）；
-//! 缺失时 rev2 记录按上游「division 表查不到」处理（整条记录丢弃，MaxMind 结果保留）。
+//! 与上游的资源加载对应：`GeoCN2` 依赖 jar 内资源 `/ok_data_level3.csv`，
+//! 本移植版将该表随二进制内嵌（[`EMBEDDED_DIVISION_CSV`]），保证 rev2 记录的
+//! 解析行为与上游一致（division 表永远可用）；同时允许在 ipdb 目录放置同名
+//! 文件覆盖（便于更新区划数据而不必重新编译），外部文件缺失或损坏时回退内嵌表。
 
 use crate::i18n::normalize_locale;
 use maxminddb::geoip2;
@@ -423,6 +424,9 @@ pub const ASN_MMDB: &str = "GeoIP-ASN.mmdb";
 pub const GEOCN_MMDB: &str = "GeoCN.mmdb";
 /// 上游从 jar 内资源 `/ok_data_level3.csv` 读取行政区划表；移植版在 ipdb 目录内查找同名文件
 pub const GEOIP_DIVISION_CSV: &str = "ok_data_level3.csv";
+/// 内嵌的行政区划表（逐字复用上游 jar 资源 `/ok_data_level3.csv`，GPL-3.0）：
+/// 外部文件缺失/损坏时兜底，保证 GeoCN rev2 的省市区解析与上游行为一致。
+const EMBEDDED_DIVISION_CSV: &str = include_str!("../resources/geoip/ok_data_level3.csv");
 
 /// GeoIP 数据库打开失败。拿到 `Err` 的调用方应当**不注入任何 provider**，
 /// 此时四个维度与上游「GeoIP 库不可用」的行为一致：全部不命中。
@@ -470,9 +474,11 @@ impl GeoIpDb {
         let asn = directory.join(ASN_MMDB);
         let geo_cn = directory.join(GEOCN_MMDB);
         let mut db = Self::open_files(Some(&city), Some(&asn), Some(&geo_cn), locales)?;
-        // 行政区划表：优先 geoip 子目录，其次 ipdb 目录
+        // 行政区划表：外部文件（geoip 子目录 → ipdb 目录）优先，缺失/损坏时回退内嵌表
+        //（上游该表打包在 jar 内，永远可用；内嵌保证移植版行为一致）
         db.division = DivisionTable::load(&directory.join(GEOIP_DIVISION_CSV))
-            .or_else(|| DivisionTable::load(&ipdb_dir.as_ref().join(GEOIP_DIVISION_CSV)));
+            .or_else(|| DivisionTable::load(&ipdb_dir.as_ref().join(GEOIP_DIVISION_CSV)))
+            .or_else(|| DivisionTable::parse(EMBEDDED_DIVISION_CSV));
         Ok(db)
     }
 
@@ -848,10 +854,16 @@ struct DivisionTable {
 }
 
 impl DivisionTable {
-    /// 读取失败（文件不存在 / 无法读取 / 表头缺列）时返回 `None`：
-    /// 此时 rev2 记录按上游「division 表查不到」处理。
+    /// 读取外部文件；文件不存在 / 无法读取 / 表头缺列时返回 `None`，
+    /// 由调用方决定回退（[`GeoIpDb::load_with_locales`] 回退内嵌表）。
     fn load(path: &Path) -> Option<Self> {
         let text = std::fs::read_to_string(path).ok()?;
+        Self::parse(&text)
+    }
+
+    /// 解析 CSV 文本；表头缺 `id` / `ext_name` 列时返回 `None`：
+    /// 此时 rev2 记录按上游「division 表查不到」处理（整条记录丢弃）。
+    fn parse(text: &str) -> Option<Self> {
         let mut lines = text.lines();
         let header = parse_csv_line(lines.next()?);
         let id_index = header.iter().position(|column| column == "id")?;
@@ -1048,6 +1060,26 @@ mod tests {
         let network = data.network.unwrap();
         assert_eq!(network.isp.as_deref(), Some("中国电信"));
         assert_eq!(network.net_type.as_deref(), Some("宽带"));
+    }
+
+    #[test]
+    fn embedded_division_table_resolves_city_rule_prefix() {
+        // 回归（长跑对账发现的移植缺口）：上游把 ok_data_level3.csv 打包在 jar 内
+        // 永远可用，移植版此前只在 ipdb 目录查找、缺失时 GeoCN rev2 全部丢弃，
+        // 导致 IpBlacklist 的城市规则（如「浙江省 温州市」）无法命中。
+        // 内嵌表必须能按 12 位区划码逐级命中省、市两级，
+        // 且 join(" ") 拼出的城市名与上游封禁 Reason 一致（contains 匹配依赖该格式）。
+        let table = DivisionTable::parse(EMBEDDED_DIVISION_CSV).expect("内嵌表必须可解析");
+        assert_eq!(
+            table.lookup("330300000000"),
+            vec!["浙江省".to_string(), "温州市".to_string()]
+        );
+        assert_eq!(table.lookup("330300000000").join(" "), "浙江省 温州市");
+    }
+
+    #[test]
+    fn division_parse_rejects_header_without_required_columns() {
+        assert!(DivisionTable::parse("a,b\n1,2").is_none(), "缺 id/ext_name 列");
     }
 
     #[test]

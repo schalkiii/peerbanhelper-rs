@@ -178,12 +178,16 @@ pub fn pagination(params: &HashMap<String, String>) -> (i64, i64) {
     (page, size)
 }
 
-/// 解析 `orderBy`（对齐上游 `Orderable` 的 `field|asc/desc`，可重复）。
+/// 解析 `orderBy`（对齐上游 `Orderable` 的 `field|asc/desc`）。
+///
+/// 上游仅认 `orderBy` 键，经 Javalin `queryParams` 可重复出现、按查询串顺序取值；
+/// 本移植的查询层是 `HashMap`（重复键只剩一个值、无迭代顺序），故按**固定键优先级**
+/// 保证输出确定有序：先 `orderBy`、后 `sorter`（`sorter` 为移植版兼容别名，上游无此键）。
 pub fn parse_order_by_params(params: &HashMap<String, String>) -> Vec<(String, bool)> {
-    params
+    ["orderBy", "sorter"]
         .iter()
-        .filter(|(key, _)| key.as_str() == "orderBy" || key.as_str() == "sorter")
-        .flat_map(|(_, value)| {
+        .filter_map(|key| params.get(*key))
+        .map(|value| {
             let value = crate::percent_decode(value);
             let mut parts = value.split('|');
             let field = parts.next().unwrap_or_default().to_string();
@@ -194,7 +198,7 @@ pub fn parse_order_by_params(params: &HashMap<String, String>) -> Vec<(String, b
                         || direction.eq_ignore_ascii_case("descend"))
                 }
             };
-            vec![(field, asc)]
+            (field, asc)
         })
         .collect()
 }

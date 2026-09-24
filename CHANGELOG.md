@@ -5,6 +5,27 @@
 
 ## 未发布（working tree）
 
+### fix(web): `parse_order_by_params` 输出顺序确定化（pull 自带测试暴露）
+
+- `HashMap` 迭代序不定导致 `orderBy` 与 `sorter` 并存时输出顺序随机（新增测试
+  `parse_order_by_params_keeps_order_and_ignores_others` 间歇性失败）。
+- 对齐上游 `Orderable`（LinkedHashMap 保序、仅认 `orderBy`）：改为固定键优先级
+  先 `orderBy` 后 `sorter`（`sorter` 为移植版兼容别名，上游无此键）；补注释说明
+  `HashMap` 查询层下重复键只剩单值的已知限制。
+
+### fix(geoip): 内嵌行政区划表，修复 GeoCN 城市规则漏封（长跑对账发现）
+
+- **问题**：12 小时双跑对账（`compare_dualrun`）发现 Java 侧 7 条封禁 Rust 全部漏掉，
+  其中「IP 规则: 浙江省 温州市」类（`IPBlackList` 城市维度，对账期间 234 条）Rust 恒不命中。
+- **根因**：`GeoCN2` 解析 rev2 记录依赖 `ok_data_level3.csv` 行政区划表——上游打包在 jar
+  资源里永远可用；移植版只在 ipdb 目录查找，部署环境缺失该文件时 `DivisionTable` 为
+  `None`，rev2 记录整条丢弃，GeoIP 查询结果 `city.name = null`，城市规则无法 contains 匹配。
+- **修复**：将 `ok_data_level3.csv`（上游 jar 资源，GPL-3.0）随二进制内嵌
+  （`include_str!`，对齐上游「jar 内资源永远可用」语义）；ipdb 目录同名文件仍可覆盖
+  （便于更新区划数据），缺失/损坏时回退内嵌表。
+- **回归用例**：`embedded_division_table_resolves_city_rule_prefix`（内嵌表按
+  `330300000000` 逐级命中「浙江省 温州市」，join 格式与上游封禁 Reason 一致）。
+
 ### test(黄金对照): 补充细粒度用例与覆盖未覆盖模块
 
 - **`ip-address-blocker-rules`（`ip_rule_list`）**：新增 `tests/l2_ip_rule_list.rs`，
