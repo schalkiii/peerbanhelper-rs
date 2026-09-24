@@ -671,3 +671,127 @@ fn pipeline_prefers_ban_over_ban_for_disconnect() {
         other => panic!("expected Ban, got {other:?}"),
     }
 }
+
+// ---------- string_blacklist 细粒度（REGEX / LENGTH / data.type 区分） ----------
+
+use pbh_core::rule::RuleSet;
+
+/// REGEX 规则（Java `matcher.matches()` 整段匹配，锚定到首尾）：命中后 `data.type` 为
+/// `peerId`，`data.rule` 为**原始正则模式**（非 peer 值）。
+#[test]
+fn string_blacklist_regex_mode_uses_rule_metadata() {
+    let rules = RuleSet::from_json_text(&[r#"{"method":"REGEX","content":"-hp[0-9]+"}"#.to_string()])
+        .expect("regex rule parse");
+    let m = StringBlacklist::peer_id_with(rules, 123_000);
+    let t = torrent(1_000_000_000, 0, 0);
+    // `-hp[0-9]+` 整段匹配（无后缀），与上游 matches() 语义一致
+    let p = peer(
+        "9.9.9.9",
+        1,
+        Some("-hp001"),
+        Some("qBittorrent"),
+        10,
+        10,
+        0.1,
+    );
+    let r = m.check("d", &t, &p, &ctx(0));
+    assert_eq!(r.action, PeerAction::Ban);
+    assert_eq!(r.data["type"], "peerId", "peer_id 模块的 data.type 必须是 peerId");
+    assert_eq!(
+        r.data["rule"].as_str(),
+        Some("-hp[0-9]+"),
+        "data.rule 为原始正则模式，不是 peer 值"
+    );
+    assert_ne!(r.data["rule"].as_str(), Some("-hp001"));
+
+    // 带后缀的 peer_id 不满足整段匹配 -> 不命中
+    let suffix = peer(
+        "9.9.9.8",
+        1,
+        Some("-hp001-x"),
+        Some("qBittorrent"),
+        10,
+        10,
+        0.1,
+    );
+    assert_eq!(
+        m.check("d", &t, &suffix, &ctx(0)).action,
+        PeerAction::NoAction,
+        "REGEX 为整段匹配，带后缀的 id 不命中"
+    );
+}
+
+/// LENGTH 规则（按 UTF-16 码元，对齐 Java `String.length()`）：长度落在区间内才命中。
+#[test]
+fn string_blacklist_length_mode_bans_ids_in_range() {
+    // 封禁长度在 [10, 100] 码元的 peer_id（含边界）
+    let rules = RuleSet::from_json_text(&[r#"{"method":"LENGTH","min":10,"max":100}"#.to_string()])
+        .expect("length rule parse");
+    let m = StringBlacklist::peer_id_with(rules, 0);
+    let t = torrent(1_000_000_000, 0, 0);
+    // 20 个 ASCII 码元，落在 [10,100] -> 封禁
+    let long = peer(
+        "9.9.9.9",
+        1,
+        Some("-qB5000-000000000000"),
+        Some("qB"),
+        10,
+        10,
+        0.1,
+    );
+    assert_eq!(m.check("d", &t, &long, &ctx(0)).action, PeerAction::Ban);
+    // 边界 10 码元 -> 封禁
+    let boundary = peer("9.9.9.7", 1, Some("-qB5000-x1"), Some("qB"), 10, 10, 0.1);
+    assert_eq!(
+        m.check("d", &t, &boundary, &ctx(0)).action,
+        PeerAction::Ban,
+        "LENGTH 区间含上边界（min=10 应封禁）"
+    );
+    // 9 码元，落在区间外 -> 不封
+    let short = peer("9.9.9.6", 1, Some("-qB5000-x"), Some("qB"), 10, 10, 0.1);
+    assert_eq!(
+        m.check("d", &t, &short, &ctx(0)).action,
+        PeerAction::NoAction,
+        "LENGTH 区间外（< min）不命中"
+    );
+}
+
+/// client_name 模块与 peer_id 模块共享同一判定逻辑，但 `data.type` 必须为 `clientName`。
+#[test]
+fn client_name_module_reports_distinct_data_type() {
+    let rules = RuleSet::from_json_text(&[r#"{"method":"CONTAINS","content":"xfplay"}"#.to_string()])
+        .expect("contains rule parse");
+    let m = StringBlacklist::client_name_with(rules, 0);
+    let t = torrent(1_000_000_000, 0, 0);
+    let p = peer(
+        "7.7.7.7",
+        2,
+        Some("-qB5000-x"),
+        Some("xfplay/9.0"),
+        10,
+        10,
+        0.2,
+    );
+    let r = m.check("d", &t, &p, &ctx(0));
+    assert_eq!(r.action, PeerAction::Ban);
+    assert_eq!(
+        r.data["type"], "clientName",
+        "client_name 模块的 data.type 必须是 clientName"
+    );
+    assert_eq!(r.data["rule"], "xfplay");
+    // 反例：同样的 client_name 规则不会误伤 peer_id 字段
+    let by_id = peer(
+        "7.7.7.6",
+        2,
+        Some("xfplay-evil"),
+        Some("qBittorrent"),
+        10,
+        10,
+        0.2,
+    );
+    assert_eq!(
+        m.check("d", &t, &by_id, &ctx(0)).action,
+        PeerAction::NoAction,
+        "client_name 规则只看 clientName 字段"
+    );
+}

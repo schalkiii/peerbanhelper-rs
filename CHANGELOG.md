@@ -5,6 +5,18 @@
 
 ## 未发布（working tree）
 
+### test(黄金对照): 补充细粒度用例与覆盖未覆盖模块
+
+- **`ip-address-blocker-rules`（`ip_rule_list`）**：新增 `tests/l2_ip_rule_list.rs`，
+  黄金对照解析（DAT/注释累积/尾注释/`level>=128` 丢弃/非对齐区间向下对齐到前缀块）、
+  最长前缀匹配、`rule_key` 取订阅名、`reason` 走 `MODULE_IBL_MATCH_IP_RULE`、更新决策
+  `plan_rule_update` 对齐上游 sha256 比对流程、握手中 peer 跳过。
+- **`string_blacklist`**：细粒度用例补充 REGEX（整段 `matches()` 锚定）模式、
+  `LENGTH`（UTF-16 码元区间含边界）模式，以及 `peer_id`/`client_name` 模块
+  `data.type` 字段区分（`peerId` vs `clientName`）、`data.rule` 为规则串。
+- **`pbh-web` `parse_order_by_params`**：新增单元测试锁定 `field|asc|desc` 解析
+  （此前 BTN 上报误用 `parse_order_by` 导致排序参数恒空）。
+
 ### fix(移植对齐): 全面 review 修复与上游行为不一致
 
 - **Web 鉴权**：`token` 为空时不再放行任何鉴权 API，改为 `303 /init`（对齐上游

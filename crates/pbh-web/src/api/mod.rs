@@ -198,3 +198,54 @@ pub fn parse_order_by_params(params: &HashMap<String, String>) -> Vec<(String, b
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `orderBy`/`sorter` 的值形如 `field|asc|desc`，按值解析（对齐上游 `Orderable`）。
+    /// 此前 BTN 上报误用 `parse_order_by`（吃整段查询串），传值会恒返回空——此处锁定正确行为。
+    #[test]
+    fn parse_order_by_params_decodes_field_and_direction() {
+        let mut p = HashMap::new();
+        p.insert("orderBy".into(), "banAt|desc".into());
+        assert_eq!(parse_order_by_params(&p), vec![("banAt".to_string(), false)]);
+
+        // 缺省方向为 ASC
+        let mut p = HashMap::new();
+        p.insert("orderBy".into(), "banAt".into());
+        assert_eq!(parse_order_by_params(&p), vec![("banAt".to_string(), true)]);
+
+        // 显式 asc
+        let mut p = HashMap::new();
+        p.insert("orderBy".into(), "field|asc".into());
+        assert_eq!(parse_order_by_params(&p), vec![("field".to_string(), true)]);
+
+        // 大小写不敏感，且 `descend` 同样视为降序
+        let mut p = HashMap::new();
+        p.insert("sorter".into(), "ip|DESC".into());
+        assert_eq!(parse_order_by_params(&p), vec![("ip".to_string(), false)]);
+        let mut p = HashMap::new();
+        p.insert("sorter".into(), "ip|descend".into());
+        assert_eq!(parse_order_by_params(&p), vec![("ip".to_string(), false)]);
+    }
+
+    #[test]
+    fn parse_order_by_params_keeps_order_and_ignores_others() {
+        // 可重复出现，按出现顺序作为主次排序键
+        let mut p = HashMap::new();
+        p.insert("orderBy".into(), "banAt|desc".into());
+        p.insert("sorter".into(), "ip|asc".into());
+        p.insert("page".into(), "1".into());
+        p.insert("size".into(), "20".into());
+        assert_eq!(
+            parse_order_by_params(&p),
+            vec![("banAt".to_string(), false), ("ip".to_string(), true)]
+        );
+
+        // 无 orderBy/sorter 键 -> 空
+        let mut p = HashMap::new();
+        p.insert("page".into(), "1".into());
+        assert!(parse_order_by_params(&p).is_empty());
+    }
+}
