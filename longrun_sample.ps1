@@ -48,7 +48,11 @@ param(
     [switch]$NoAutoRestart,
     [switch]$NoStopRustOnExit,
     [string]$OutFile = "longrun_samples.jsonl",
-    [string]$RustLog = "longrun_pbh.log"
+    [string]$RustLog = "longrun_pbh.log",
+    # 冻结看门狗：Rust 超过该秒数未产生新的 `wave#` 行（且进程仍存活、health 200），
+    # 判定为挂死（典型症状：持有 std Mutex 跨 await 死锁，HTTP 仍响应但 wave 不再推进），
+    # 自动杀掉并重启子进程（对账游标存 DB，重启无损）。0 = 关闭。
+    [int]$FreezeTimeoutSec = 600
 )
 
 $ErrorActionPreference = "Continue"
@@ -179,6 +183,32 @@ try {
         }
         $rustSample = Get-ProcSample $rustProc $rustCpuPrev
         if ($rustSample) { $rustCpuPrev = $rustSample.cpu_sec }
+
+        # --- 冻结看门狗：Rust 进程存活但长时间不再推进 wave（死锁征兆）---
+        if ($FreezeTimeoutSec -gt 0 -and $rustProc -and -not $rustProc.HasExited) {
+            $lastWave = $null
+            if (Test-Path $RustLog) {
+                $lastWave = Select-String -Path $RustLog -Pattern 'wave#' -Encoding utf8 |
+                    Select-Object -Last 1
+            }
+            if ($lastWave) {
+                # 行首形如 2026-09-24T00:02:41.143781Z …
+                $tsStr = ($lastWave.Line -split ' ')[0] -replace 'Z$', ''
+                try {
+                    $lastWaveTime = [DateTimeOffset]::Parse($tsStr).ToUnixTimeSeconds()
+                    $stale = ((Get-Date).ToUniversalTime().ToString("o"))
+                    $age = [int](([DateTimeOffset]::Now.UtcDateTime - [DateTimeOffset]::FromUnixTimeSeconds($lastWaveTime).UtcDateTime).TotalSeconds)
+                    if ($age -gt $FreezeTimeoutSec) {
+                        Write-Host "[longrun] 冻结看门狗触发：Rust 自 $tsStr 起已 $age`s 未推进 wave（> $FreezeTimeoutSec`s），杀掉并重启"
+                        try { Stop-Process -Id $rustProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+                        Start-Sleep -Seconds 3
+                        if (-not $NoAutoRestart) { Start-Rust }
+                    }
+                } catch {
+                    Write-Host "[longrun] 解析 wave 时间戳失败：$($_.Exception.Message)"
+                }
+            }
+        }
 
         # --- 磁盘水位 ---
         $disk = $null
