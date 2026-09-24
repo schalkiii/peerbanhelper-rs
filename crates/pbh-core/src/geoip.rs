@@ -489,12 +489,41 @@ impl GeoIpDb {
             locales.to_vec()
         };
         Ok(Self {
-            city: open_reader(city)?,
-            asn: open_reader(asn)?,
-            geo_cn: open_reader(geo_cn)?,
+            // 对齐上游 `IPDB#loadMMDB`：单个库损坏只让该维度失效，其余维度照常
+            city: Self::open_reader_tolerant(city)?,
+            asn: Self::open_reader_tolerant(asn)?,
+            geo_cn: Self::open_reader_tolerant(geo_cn)?,
             division: None,
             locales,
         })
+    }
+
+    /// 容错版 `open_reader`：对齐上游「单个库损坏只让该维度失效，其余维度照常」的语义
+    /// （用例 `missing_database_keeps_other_dimensions` 验证此行为），同时维持本移植
+    /// 「文件/目录不存在 ⇒ 整体返回 Err、由调用方退化为不注入 provider」的契约
+    /// （用例 `load_missing_directory_is_err_and_never_panics`）。
+    ///
+    /// 区分逻辑：路径不存在 ⇒ 按原 `open_reader` 传播 `Err`（维持 Err 契约）；
+    /// 路径存在但解析失败（损坏）⇒ 吸收为 `None`（只废该维度）。
+    fn open_reader_tolerant(path: Option<&Path>) -> Result<Option<Reader<Vec<u8>>>, GeoIpError> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        if !path.exists() {
+            // 文件缺失：维持「缺少即 Err」契约，交给调用方决定降级
+            return open_reader(Some(path));
+        }
+        match Reader::open_readfile(path) {
+            Ok(reader) => Ok(Some(reader)),
+            Err(source) => {
+                tracing::warn!(
+                    "GeoIP 库读取失败，该维度将不可用（其余维度不受影响）：{} ({source})",
+                    path.display(),
+                    source = source
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// 对齐 `IPDB#query`：逐项查询，任一项失败只丢该项，最后对 CN/TW/HK/MO 回填 GeoCN。

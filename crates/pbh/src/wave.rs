@@ -56,7 +56,7 @@ fn java_double_to_string(v: f64) -> String {
         return v.to_string();
     }
     let abs = v.abs();
-    if abs != 0.0 && (abs < 1e-3 || abs >= 1e7) {
+    if abs != 0.0 && !(1e-3..1e7).contains(&abs) {
         let s = format!("{v:e}");
         if let Some((mant, exp)) = s.split_once('e') {
             let mant = if mant.contains('.') {
