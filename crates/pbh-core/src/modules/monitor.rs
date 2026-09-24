@@ -3214,8 +3214,16 @@ mod tests {
         // 直接以 UTF-16 码元序列构造输入，规避源码字面量的编码歧义：
         // a b c [D83D DE00](😀) e f g h i = 10 个码元
         let units: Vec<u16> = vec![
-            b'a' as u16, b'b' as u16, b'c' as u16, 0xD83D, 0xDE00,
-            b'e' as u16, b'f' as u16, b'g' as u16, b'h' as u16, b'i' as u16,
+            b'a' as u16,
+            b'b' as u16,
+            b'c' as u16,
+            0xD83D,
+            0xDE00,
+            b'e' as u16,
+            b'f' as u16,
+            b'g' as u16,
+            b'h' as u16,
+            b'i' as u16,
         ];
         let input = String::from_utf16_lossy(&units);
         // 保留前 8 个码元：索引 0..7 = a b c [D83D DE00] e f g = "abc😀efg"
@@ -3223,8 +3231,14 @@ mod tests {
         assert_eq!(
             got.encode_utf16().collect::<Vec<u16>>(),
             vec![
-                b'a' as u16, b'b' as u16, b'c' as u16, 0xD83D, 0xDE00,
-                b'e' as u16, b'f' as u16, b'g' as u16,
+                b'a' as u16,
+                b'b' as u16,
+                b'c' as u16,
+                0xD83D,
+                0xDE00,
+                b'e' as u16,
+                b'f' as u16,
+                b'g' as u16,
             ],
             "应按 UTF-16 码元（而非 Unicode 标量）截断到 8"
         );

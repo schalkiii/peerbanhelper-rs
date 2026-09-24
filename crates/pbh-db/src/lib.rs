@@ -1830,9 +1830,7 @@ mod tests {
         assert_eq!(trends[1].0 - trends[0].0, 86_400_000, "相邻桶间隔一天");
 
         // 按下载器过滤
-        let scoped = db
-            .ban_trends(0, 2_000_000_000_000, Some("qb"))
-            .unwrap();
+        let scoped = db.ban_trends(0, 2_000_000_000_000, Some("qb")).unwrap();
         assert_eq!(scoped.len(), 2);
         let total: i64 = scoped.iter().map(|(_, n)| *n).sum();
         assert_eq!(total, 3);

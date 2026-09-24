@@ -390,11 +390,7 @@ impl WaveEngine {
     ///
     /// 返回是否真的下发过。对齐上游 `banWave` 暂停分支里的
     /// `if (needReApplyBanList.get()) reApplyBanListForDownloaders();`。
-    pub async fn consume_pending_replay(
-        &self,
-        entries: &[DownloaderEntry],
-        now_ms: i64,
-    ) -> bool {
+    pub async fn consume_pending_replay(&self, entries: &[DownloaderEntry], now_ms: i64) -> bool {
         let force_full = self
             .ban_list()
             .lock()
@@ -430,9 +426,9 @@ impl WaveEngine {
                 continue;
             }
             pcb.on_unban(&record.metadata.downloader.id, &torrent_id, &record.ip);
-            if let Err(e) = self
-                .db
-                .delete_pcb_addr(&record.metadata.downloader.id, &torrent_id, &record.ip)
+            if let Err(e) =
+                self.db
+                    .delete_pcb_addr(&record.metadata.downloader.id, &torrent_id, &record.ip)
             {
                 warn!("删除 PCB 历史失败 ({}): {e}", record.ip);
             }
@@ -604,18 +600,16 @@ impl WaveEngine {
                     },
                     baseline,
                 ),
-                Err(poisoned) => {
-                    poisoned.into_inner().add_record_in_wave(
-                        BannedRecord {
-                            ip: b.entry.ip.clone(),
-                            unban_at_ms,
-                            module: b.module.clone(),
-                            ban_for_disconnect: b.ban_for_disconnect,
-                            metadata,
-                        },
-                        baseline,
-                    )
-                }
+                Err(poisoned) => poisoned.into_inner().add_record_in_wave(
+                    BannedRecord {
+                        ip: b.entry.ip.clone(),
+                        unban_at_ms,
+                        module: b.module.clone(),
+                        ban_for_disconnect: b.ban_for_disconnect,
+                        metadata,
+                    },
+                    baseline,
+                ),
             };
             if duplicate {
                 // 上游为 `log.error(Lang.DUPLICATE_BAN, ...)`
@@ -837,13 +831,11 @@ impl WaveEngine {
                 // `idle-connection-dos-protection` 的 `onPeersRetrieved`：上游由
                 // `DownloaderServerImpl` 逐模块派发，用于剔除已消失的空闲连接
                 //（默认关闭，启用后缺失该调用会让跟踪表只增不减）。
-                if let Some(idle) = pipeline.module_as::<IdleConnectionDosProtection>(
-                    "idle-connection-dos-protection",
-                ) {
-                    let keys: Vec<(String, u16)> = peers
-                        .iter()
-                        .map(|p| (p.ip.clone(), p.port))
-                        .collect();
+                if let Some(idle) = pipeline
+                    .module_as::<IdleConnectionDosProtection>("idle-connection-dos-protection")
+                {
+                    let keys: Vec<(String, u16)> =
+                        peers.iter().map(|p| (p.ip.clone(), p.port)).collect();
                     idle.on_peers_retrieved(&keys);
                 }
                 // BTN 遗留协议 live peers 快照（对齐上游 `DownloaderServer` 的 livePeers）；

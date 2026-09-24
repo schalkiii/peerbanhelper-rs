@@ -588,7 +588,8 @@ impl AppConfig {
             // 上游在初始化向导里设置 token，空 token 会让所有鉴权 API 返回 303 /init；
             // 本移植暂无向导，因此在这里生成，避免出厂配置直接把写接口暴露给匿名访问。
             let token = generate_server_token();
-            let text = DEFAULT_CONFIG_YAML.replacen("token: \"\"", &format!("token: \"{token}\""), 1);
+            let text =
+                DEFAULT_CONFIG_YAML.replacen("token: \"\"", &format!("token: \"{token}\""), 1);
             std::fs::write(&path, &text)?;
             let mut cfg: AppConfig = serde_yaml::from_str(&text)?;
             if cfg.server.token.is_empty() {

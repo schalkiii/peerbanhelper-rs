@@ -362,7 +362,11 @@ async fn auth_middleware(
         return (
             StatusCode::SEE_OTHER,
             [(axum::http::header::LOCATION, "/init")],
-            std_resp(false, Some("WEBAPI_NEED_INIT"), json!({ "location": "/init" })),
+            std_resp(
+                false,
+                Some("WEBAPI_NEED_INIT"),
+                json!({ "location": "/init" }),
+            ),
         )
             .into_response();
     }

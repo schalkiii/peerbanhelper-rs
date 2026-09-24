@@ -102,10 +102,7 @@ impl RuleModule for StringBlacklist {
             //   reason    = MODULE_CNB_MATCH_CLIENT_NAME(comment)   （comment 即 matcherName 组件）
             //   data.rule = matchResult.rule().metadata()           （命中的规则串，如 `-hp`，
             //             而非 peer 自身的值——当前实现错把 peer 值写进了 data.rule）
-            let matched = self
-                .rules
-                .rules
-                .get(result.index.max(0) as usize);
+            let matched = self.rules.rules.get(result.index.max(0) as usize);
             let rule_name = matched
                 .map(|m| m.name_component())
                 .unwrap_or_else(|| TranslationComponent::new(""));

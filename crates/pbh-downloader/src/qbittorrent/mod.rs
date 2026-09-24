@@ -354,10 +354,7 @@ impl Downloader for QBittorrentDownloader {
                 //（DOWNLOADER_QB_FAILED_REQUEST_TORRENT_LIST）；缺了这一步，会话过期
                 // 或 5xx 会被静默当成「没有种子」。
                 if !(200..300).contains(&resp.status) {
-                    anyhow::bail!(
-                        "request torrent list failed: statusCode={}",
-                        resp.status
-                    );
+                    anyhow::bail!("request torrent list failed: statusCode={}", resp.status);
                 }
                 let batch: Vec<QBittorrentTorrent> =
                     serde_json::from_str(&resp.body).unwrap_or_default();
@@ -510,10 +507,7 @@ impl Downloader for QBittorrentDownloader {
             let resp = self.post_form("/app/setPreferences", form).await?;
             // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_FAILED_SAVE_BANLIST` 并抛异常
             if !(200..300).contains(&resp.status) {
-                anyhow::bail!(
-                    "save qBittorrent banlist error: statusCode={}",
-                    resp.status
-                );
+                anyhow::bail!("save qBittorrent banlist error: statusCode={}", resp.status);
             }
             Ok(())
         })

@@ -336,7 +336,11 @@ impl ProgressCheatBlocker {
         };
         store
             .addr
-            .remove(&(downloader_id.to_string(), torrent_id.to_string(), ip.to_string()))
+            .remove(&(
+                downloader_id.to_string(),
+                torrent_id.to_string(),
+                ip.to_string(),
+            ))
             .is_some()
     }
 }
