@@ -29,6 +29,17 @@
     （尾冒号），其余为 dualrun 场景 BTN 输入不对齐。
 - **工具**：`crates/pbh-mockqb/gen_replay_fixture.py`（从 Java 快照合成重放
   fixture；输出含真实 IP，默认落 gitignore 区不入库）。
+- **回归用例扩展**（`eac0623`）：
+  - `modules_matrix.json`：IP CIDR/单 IP/端口/城市（GeoCN 双温州 IP）/
+    client-name REGEX/PeerId/握手豁免对照/不命中对照，10 个 peer 一次覆盖
+    6 类判定路径；配 `inject_test_profile.py` 向两侧配置注入同一规则集
+    （幂等、跟随序列既有缩进，避免 snakeyaml 因缩进不一致拒载整个 profile）。
+  - `pcb_desync.json`：deSync 开窗跨波状态机（差值 20% 开窗 → 30s 窗口过期封禁）。
+  - `auto_range_ban.json`：wave0 单 IP 封禁 → wave1 同 /30 peer AutoRangeBan 连锁。
+  - `java/rust_dualrun.ps1`：修复 Java 慢启动下 profile.yml 未生成时注入静默
+    失败的时序竞争（等待生成 + 失败即中止）。
+  - 五个场景实测全部两侧封禁集合逐字一致；握手豁免（up/dl 全 0 跳过判定）
+    与 REGEX 整段 matches() 语义两侧一致，均属上游行为。
 
 ### fix(web): `parse_order_by_params` 输出顺序确定化（pull 自带测试暴露）
 
