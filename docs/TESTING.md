@@ -70,17 +70,40 @@ client-name REGEX `^EvilClient.*`），幂等、缩进跟随序列既有项。
 
 | 编号 | 事项 | 状态 |
 |---|---|---|
-| pending-1 | **PCB 过量下载累计在 `BAN_FOR_DISCONNECT` 后翻倍**：`pcb_excessive` 场景中
-   `.92`（uploaded 恒 0.9G）wave1 命中 fastPcbTest（BanForDisconnect，不下发），
-   wave2 起 Rust 以累计 1.8G 判 excessive 封禁并下发，Java 保留基线（0.9G）不封。
-   疑点在 wave 层对 `BanForDisconnect` 的处理链（`on_unban` 删实体重建后
-   `last_report_uploaded` 归零 → 恒定 uploaded 被重复累计）。真实流量（uploaded 单调递增）
-   下的严重度待评估 | 待查（`crates/pbh/src/wave.rs` 断连处理链）|
-| pending-2 | `idle_protection` 无对跑用例（需跨波 idle 计时 fixture，输入含 flags/速度演化）| 待补 |
+| ~~pending-1~~ | ~~PCB 过量下载累计在 `BanForDisconnect` 后翻倍~~ **已解除（2026-09-25）**：
+   补充取证证实 **Java 同样封禁 `.92`**（经全量重放下发，`BanForDisconnect` 静默不打
+   封禁日志导致此前误判"Java 不封"）。1.8G = fastPcbTest 断开重连后重计的
+   **共同上游语义**，两侧封禁集合逐字一致 | ✅ 已验证一致 |
+| pending-2 | `idle_protection` 对跑：fixture 与注入已就绪（`idle_protection.json` +
+   加速参数注入），但 **Java OOBE 会把运行时模块开关还原为默认**（`enabled:false`），
+   对跑结果不稳定；L1/L2 已有 6 个用例覆盖全分支，待 pending-3 修复后启用 | 🟡 基建受限 |
 | pending-3 | Java dualrun 的 OOBE 时序竞态：OOBE 正常完成会以内存默认覆盖已注入的
    profile.yml（NPE 轮反而保留）；已加「等待生成 + 失败即中止」，注入移到 OOBE 后
-   的方案待做 | 待补 |
-| pending-4 | `ptr_blacklist` 无对跑用例（需 PTR 服务器 mock，成本较高、单元已覆盖解析与缓存）| 待补 |
+   （依赖 simplereloadlib 热重载或二段启动）的方案待做 | 🟡 待补 |
+| pending-4 | `ptr_blacklist` 无对跑用例（需 PTR 服务器 mock，成本较高、单元已覆盖解析与缓存）| 🟡 待补 |
+
+## 5. 生产部署替代 Java 版评估（2026-09-25）
+
+**结论：核心封禁判定链路已具备生产替代条件，建议以「灰度并行」方式迁移。**
+
+| 能力面 | 状态 | 说明 |
+|---|---|---|
+| 规则模块（13 个）| ✅ | 全部移植；判定保真经 mock 对跑（6 场景）+ 真实数据重放（99.3%）双验证 |
+| 下载器（6 种）| ✅ | qBittorrent/Transmission/aria2/BiglyBT/BitComet/Deluge，L3 载荷级测试 |
+| 数据库 | ✅ | 与上游同 schema，可直接共用 Java 的 data 目录（含 history/PCB 状态） |
+| 配置 | ✅ | 兼容上游 `config/config.yml + profile.yml` 双文件布局与单文件布局 |
+| GeoIP | ✅ | 三镜像自动更新 + GeoCN 区划内嵌（城市规则已对齐） |
+| 推送（6 渠道）| ✅ | SMTP/Gotify/Ntfy/PushPlus/PushDeer/Bark |
+| BTN | ✅ | 传输层/ability/上报 61 用例；长跑实机启用中 |
+| WebUI | ✅/🟡 | 后端 API + 静态托管已就绪；**前端需复制上游 `webui/dist` 到 `data/static`**（部署步骤，非代码缺口） |
+| 迁移方式 | ✅ | 复制 Java `data` 目录 → 替换进程；配置/DB/GeoIP 库原样可用 |
+| 稳定性 | 🟡 | 实机长跑 13.6h+ 无冻结/无泄漏迹象；数月级长周期验证建议并行观察 |
+| 自更新 | ❌ | PBH 自身更新器未移植（Java 有），需手动替换二进制 |
+| OOBE 向导 | 🟡 | Rust 无向导页（首启生成 token），迁移场景不受影响 |
+
+**建议迁移步骤**：① 停 Java → ② 复制 `data` 目录 → ③ 放置 `webui/dist` 到
+`data/static` → ④ 启动 Rust（`pbh.exe --data <dir>`）→ ⑤ 与 Java 并行期用
+`--dry-run` 或备份实例观察一周 → ⑥ 切换。
 
 ## 5. 已固化的行为语义（对跑沉淀，两侧一致属上游行为）
 

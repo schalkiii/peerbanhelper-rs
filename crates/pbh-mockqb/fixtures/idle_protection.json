@@ -1,0 +1,41 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "EE77EE77EE77EE77EE77EE77EE77EE77EE77EE77",
+      "name": "Ubuntu Server 24.04 live (seeding, idle peer)",
+      "progress": 1.0,
+      "total_size": 3000000000,
+      "piece_size": 16384,
+      "pieces_have": 183107,
+      "dlspeed": 0,
+      "upspeed": 0,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "EE77EE77EE77EE77EE77EE77EE77EE77EE77EE77": [
+      {
+        "ip": "203.0.113.50",
+        "port": 6881,
+        "client": "IdleProbe/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 0,
+        "uploaded": 0,
+        "connection": "TCP"
+      }
+    ]
+  },
+  "waves": [
+    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
+    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
+    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
+    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } }
+  ]
+}

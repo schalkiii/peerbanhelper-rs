@@ -16,6 +16,10 @@ IPS = ["203.0.114.0/24", "198.51.100.200"]
 PORT = "39999"
 CITY = "浙江省 温州市"
 REGEX_RULE = '{"method":"REGEX","content":"^EvilClient.*"}'
+# idle 防护的加速参数：速度阈值放大到「任意速度都算空闲」、空闲上限缩到 3s，
+# 使对跑在 2~3 波内即可命中 idleTimeout（判定路径与默认配置完全一致）
+IDLE_SPEED = "1000000000"
+IDLE_MAX = "3000"
 
 
 def inject_ips(text):
@@ -79,6 +83,32 @@ def inject_client_regex(text):
     return re.sub(r"([ \t]+)banned-client-name:(?=\r?\n)", repl, text, count=1)
 
 
+def inject_idle(text):
+    """idle-connection-dos-protection 启用 + 加速：速度阈值 64 → 1e9、
+    max-allowed-idle-time 300000 → 3000（上游默认 enabled: false，须一并启用）。"""
+    if "1000000000" in text:
+        return text
+    text = re.sub(
+        r"([ \t]+idle-connection-dos-protection:\r?\n[ \t]+enabled: )false",
+        lambda m: f"{m.group(1)}true",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"([ \t]+idle-speed-threshold: )\d+",
+        lambda m: f"{m.group(1)}{IDLE_SPEED}",
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r"([ \t]+max-allowed-idle-time: )\d+",
+        lambda m: f"{m.group(1)}{IDLE_MAX}",
+        text,
+        count=1,
+    )
+    return text
+
+
 def main():
     changed = 0
     for arg in sys.argv[1:]:
@@ -88,6 +118,7 @@ def main():
         new = inject_ports(new)
         new = inject_cities(new)
         new = inject_client_regex(new)
+        new = inject_idle(new)
         if new != text:
             path.write_text(new, encoding="utf-8")
             changed += 1

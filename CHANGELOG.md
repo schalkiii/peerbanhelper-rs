@@ -12,8 +12,15 @@
   8 个 mock 对跑 fixture 的场景与断言清单、4 项已知缺口（pending）与
   对跑沉淀的 4 条上游行为语义。
 - 本次覆盖率梳理的实测产出：`anti_vampire` / `pcb_desync` / `auto_range_ban` /
-  `modules_matrix` 四个新对跑场景全部两侧一致；发现并记录 pending-1
-  （PCB 过量下载累计在 BanForDisconnect 后翻倍，待查 wave 层断连处理链）。
+  `modules_matrix` 四个新对跑场景全部两侧一致；pending-1（PCB 过量下载累计在
+  BanForDisconnect 后翻倍）经补充取证解除——Java 同样封禁（全量重放下发，
+  BanForDisconnect 静默不打日志），1.8G 为 fastPcbTest 断开重连后重计的共同上游语义。
+- 新增 `idle_protection.json` 对跑场景与 idle 加速参数注入（速度阈值 1e9、
+  空闲上限 3s）；Java OOBE 会还原模块开关导致对跑不稳定，与注入时序一并
+  列为 pending-2/3。
+- 新增「生产部署替代 Java 版评估」（TESTING.md §5）：核心链路具备替代条件，
+  前端复用上游 `webui/dist`、迁移即复制 data 目录；缺自更新器与数月级长周期数据，
+  建议灰度并行迁移。
 
 ### test(mockqb): 多波 fixture 支持 + 确定性双跑基建参数化（行为类保真验证）
 

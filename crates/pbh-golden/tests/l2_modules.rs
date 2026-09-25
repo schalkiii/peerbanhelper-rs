@@ -293,6 +293,35 @@ fn pcb_desync_waits_one_window_then_bans() {
 }
 
 #[test]
+fn pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded() {
+    // 回归（mock 对跑 pcb_excessive 场景暴露）：wave1 命中 fastPcbTest
+    // （BanForDisconnect，不下发）后，last_report_uploaded 已随 finally 更新，
+    // wave2 的同值 uploaded 增量应为 0——不得把恒定 uploaded 重复累计成 1.8G
+    // 触发 excessiveMaxDownloadThreshold（Java 侧同输入不封）。
+    let pcb = ProgressCheatBlocker::default(); // fast-pcb-test-percentage 0.1
+    let t = torrent(1_000_000_000, 16_384, 61_036); // 做种：completed = 1e9
+    let p = peer(
+        "9.9.9.9",
+        8,
+        Some("-qB4500-y"),
+        Some("qBittorrent/4.5.0"),
+        1000,
+        900_000_000,
+        0.90,
+    );
+    let r1 = pcb.check("d", &t, &p, &ctx(0));
+    assert_eq!(r1.action, PeerAction::BanForDisconnect, "wave1 命中 fastPcbTest");
+    let r2 = pcb.check("d", &t, &p, &ctx(5_000));
+    assert_eq!(
+        r2.action,
+        PeerAction::NoAction,
+        "wave2 不得翻倍触发 excessive；实际 {:?} {}",
+        r2.action,
+        r2.reason
+    );
+}
+
+#[test]
 fn pcb_rewind_banned() {
     let pcb = ProgressCheatBlocker::new(PcbConfig {
         fast_pcb_test_percentage: 0.0,
