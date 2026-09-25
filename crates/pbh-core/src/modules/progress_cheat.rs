@@ -399,17 +399,6 @@ impl RuleModule for ProgressCheatBlocker {
         }
 
         // 上传增量（处理回绕）
-        // 临时取证：pcb_excessive 场景 .92 累计翻倍排查（调试完删除）
-        if std::env::var("PBH_DEBUG_PCB").is_ok() {
-            tracing::debug!(
-                peer = %peer.ip,
-                uploaded = peer.uploaded,
-                last = addr.last_report_uploaded,
-                addr_tracking = addr.tracking_uploaded_increase_total,
-                range_tracking = range.tracking_uploaded_increase_total,
-                "pcb increment"
-            );
-        }
         let computed_incremental = if peer.uploaded < addr.last_report_uploaded {
             peer.uploaded
         } else {
