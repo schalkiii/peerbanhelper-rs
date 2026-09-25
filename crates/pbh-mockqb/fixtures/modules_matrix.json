@@ -1,0 +1,152 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "DD44DD44DD44DD44DD44DD44DD44DD44DD44DD44",
+      "name": "Fedora 41 Workstation x86_64 ISO",
+      "progress": 1.0,
+      "total_size": 2200000000,
+      "piece_size": 16384,
+      "pieces_have": 134278,
+      "dlspeed": 0,
+      "upspeed": 0,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "DD44DD44DD44DD44DD44DD44DD44DD44DD44DD44": [
+      {
+        "ip": "203.0.114.10",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "203.0.115.10",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.51.100.201",
+        "port": 39999,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "240e:393:3408:1831::8d5",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "2409:8a28:3c61:fce0:26cf:24ff:fec5:a949",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "223.5.5.5",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "203.0.113.30",
+        "port": 6881,
+        "client": "EvilClient/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "203.0.113.31",
+        "port": 6881,
+        "client": "GoodClient/2.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 100000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "203.0.113.98",
+        "port": 6881,
+        "client": "HandshakeProbe/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 0,
+        "uploaded": 0,
+        "connection": "TCP"
+      },
+      {
+        "ip": "203.0.113.99",
+        "port": 6881,
+        "client": "Normal/1.0",
+        "peer_id_client": "-HP001-abcdefghijkl",
+        "progress": 0.5,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 0,
+        "uploaded": 0,
+        "connection": "TCP"
+      }
+    ]
+  }
+}

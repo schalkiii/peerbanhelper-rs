@@ -34,6 +34,13 @@ $cfg = $cfg -replace 'http://127.0.0.1:9898', "http://127.0.0.1:$webPort"
 $cfg = $cfg -replace 'http: 9898', "http: $webPort"
 Set-Content $cfgPath -Value $cfg -Encoding utf8
 Remove-Item -Recurse -Force "$dir\ipdb" -ErrorAction SilentlyContinue
+# 2.5) 注入确定性回归规则集（ip 黑名单 CIDR/单 IP/端口、城市、client-name REGEX；与 Rust 侧一致）
+# Java 慢启动时 20 秒可能尚未生成 profile.yml，先等待再注入，失败即中止（避免静默丢规则）
+$deadline = (Get-Date).AddSeconds(30)
+while (-not (Test-Path "$dir\config\profile.yml") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+if (-not (Test-Path "$dir\config\profile.yml")) { throw "首启 30 秒内未生成 profile.yml，无法注入测试规则" }
+python crates\pbh-mockqb\inject_test_profile.py "$cfgPath" "$dir\config\profile.yml"
+if ($LASTEXITCODE -ne 0) { throw "规则注入失败" }
 # 复用 Java 现役 GeoIP 库（避免首启触发缓慢的在线下载；两侧 GeoIP 输入保持一致）
 $geoSrc = 'C:\CommonTools\PeerBanHelper\data\ipdb\geoip'
 if (Test-Path $geoSrc) {

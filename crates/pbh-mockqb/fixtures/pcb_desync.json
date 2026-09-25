@@ -1,0 +1,45 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "EE55EE55EE55EE55EE55EE55EE55EE55EE55EE55",
+      "name": "OpenSUSE Leap 15.6 DVD",
+      "progress": 1.0,
+      "total_size": 1000000000,
+      "piece_size": 0,
+      "pieces_have": 0,
+      "dlspeed": 0,
+      "upspeed": 1000,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "EE55EE55EE55EE55EE55EE55EE55EE55EE55EE55": [
+      {
+        "ip": "198.51.100.88",
+        "port": 51413,
+        "client": "qBittorrent/4.5.0",
+        "peer_id_client": "-qB4500-abcdefghijkl",
+        "progress": 0.20,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 400000000,
+        "connection": "TCP"
+      }
+    ]
+  },
+  "waves": [
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } },
+    { "peers": { "EE55EE55EE55EE55EE55EE55EE55EE55EE55": [ { "ip": "198.51.100.88", "port": 51413, "client": "qBittorrent/4.5.0", "peer_id_client": "-qB4500-abcdefghijkl", "progress": 0.20, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 1000, "uploaded": 400000000, "connection": "TCP" } ] } }
+  ]
+}

@@ -19,6 +19,8 @@ $cfg = Get-Content 'crates\pbh\src\default-config.yml' -Raw
 $cfg = $cfg -replace 'auto-update: true', 'auto-update: false'
 $cfg = $cfg -replace 'http://127.0.0.1:8080', "http://127.0.0.1:$qbPort"
 Set-Content "$rustDir\config.yml" -Value $cfg -Encoding utf8
+# 注入确定性回归规则集（与 Java 侧一致）
+python crates\pbh-mockqb\inject_test_profile.py "$rustDir\config.yml"
 
 $mock = Start-Process -FilePath 'd:\workspace\peerbanhelper-rs\target\debug\mockqb.exe' `
     -ArgumentList '--port', $qbPort, '--fixture', "crates\pbh-mockqb\fixtures\$Fixture", '--record', $record `
