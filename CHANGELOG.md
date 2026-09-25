@@ -5,6 +5,31 @@
 
 ## 未发布（working tree）
 
+### test(mockqb): 多波 fixture 支持 + 确定性双跑基建参数化（行为类保真验证）
+
+- **背景**：真实流量双跑存在架构性观测干扰（Java 先封禁 → qB 断开 peer → Rust
+  永远看不到），只能验证长期稳定性，不能验证逐条判定保真。保真验证改用
+  mockqb 确定性对跑：两侧连同一 mock 服务（peer 恒定在线、不真封禁），逐条比对。
+- **mockqb 多波序列**：fixture 新增可选 `waves: [{torrents?, peers?}, ...]`，
+  按 `torrentPeers` 请求次数轮转（超界恒用最后一份，未给出的沿用当前值），
+  覆盖 PCB 进度回退 / 多拨累计等**跨波状态**场景；无 `waves` 时行为不变。
+- **双跑脚本参数化**：`java_dualrun.ps1` / `rust_dualrun.ps1` 支持
+  `-Fixture` / `-Tag`（录制文件按场景区分）；两侧复用 Java 现役 GeoIP 库
+  （缺失时 Rust 启动会被在线补下阻塞）；diff 增加 IP 归一化（增量 raw_ip
+  带端口 vs 全量不带端口，语义等价）。
+- **三场景实测结论**：
+  - 静态基线（sample）：判定集合完全一致（多拨 3 + PeerId 1）；暴露全量下发
+    mapped 变体格式差异 → fix(remap) 修复。
+  - PCB 进度回退（pcb_rewind，跨波 0.90→0.45）：两侧同波封禁、同模块
+    （rewindProgress）、同格式，**跨波状态判定一致**。
+  - 真实数据重放（Java history 3097 封禁 peer 回放）：**99.3%（954/961）一致**；
+    仅 Rust 103 个全部为多拨子网收敛路径差异（上游 ForkJoinPool 并发竞态 +
+    有限波数，上游注释明示「其他 IP 会在下一周期被封禁」，Rust 串行逐波补封
+    即设计意图）；仅 Java 7 个中 4 个为 Java history 表自身的 IPv6 截断脏数据
+    （尾冒号），其余为 dualrun 场景 BTN 输入不对齐。
+- **工具**：`crates/pbh-mockqb/gen_replay_fixture.py`（从 Java 快照合成重放
+  fixture；输出含真实 IP，默认落 gitignore 区不入库）。
+
 ### fix(web): `parse_order_by_params` 输出顺序确定化（pull 自带测试暴露）
 
 - `HashMap` 迭代序不定导致 `orderBy` 与 `sorter` 并存时输出顺序随机（新增测试

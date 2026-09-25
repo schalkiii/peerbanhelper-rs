@@ -1,3 +1,8 @@
+param(
+    # fixture 文件名（crates\pbh-mockqb\fixtures\ 下）；录制文件按 Tag 区分
+    [string]$Fixture = 'sample.json',
+    [string]$Tag = 'sample'
+)
 Set-Location 'd:\workspace\peerbanhelper-rs'
 $java = 'C:\CommonTools\PeerBanHelper\jre\bin\java.exe'
 $jar = 'C:\CommonTools\PeerBanHelper\PeerBanHelper.jar'
@@ -6,8 +11,9 @@ $dir = "$root\java"
 $qbPort = '18080'
 # 9899 已被长跑 Rust 实例占用，Java 临时实例改用 9896
 $webPort = '9896'
-$record = "$root\bans-java.txt"
-Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+$record = "$root\bans-java-$Tag.txt"
+Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+Remove-Item -Force $record -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
 # 1) 首次启动：让 PBH 生成默认 config.yml / profile.yml
@@ -28,10 +34,16 @@ $cfg = $cfg -replace 'http://127.0.0.1:9898', "http://127.0.0.1:$webPort"
 $cfg = $cfg -replace 'http: 9898', "http: $webPort"
 Set-Content $cfgPath -Value $cfg -Encoding utf8
 Remove-Item -Recurse -Force "$dir\ipdb" -ErrorAction SilentlyContinue
+# 复用 Java 现役 GeoIP 库（避免首启触发缓慢的在线下载；两侧 GeoIP 输入保持一致）
+$geoSrc = 'C:\CommonTools\PeerBanHelper\data\ipdb\geoip'
+if (Test-Path $geoSrc) {
+    New-Item -ItemType Directory -Force -Path "$dir\ipdb\geoip" | Out-Null
+    Copy-Item "$geoSrc\*.mmdb" "$dir\ipdb\geoip" -Force
+}
 
 # 3) 启动 mock qB（录制收到的封禁下发）
 $mock = Start-Process -FilePath 'd:\workspace\peerbanhelper-rs\target\debug\mockqb.exe' `
-    -ArgumentList '--port', $qbPort, '--fixture', 'crates\pbh-mockqb\fixtures\sample.json', '--record', $record `
+    -ArgumentList '--port', $qbPort, '--fixture', "crates\pbh-mockqb\fixtures\$Fixture", '--record', $record `
     -RedirectStandardOutput "$root\mock.log" -PassThru
 Start-Sleep -Seconds 2
 

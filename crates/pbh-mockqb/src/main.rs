@@ -101,6 +101,38 @@ struct Fixture {
     /// hash -> 该 torrent 的 peers 列表
     #[serde(default)]
     peers: HashMap<String, Vec<Peer>>,
+    /// 多波演化（可选）：`waves[k]` 是第 `k+1` 次 `torrentPeers` 请求后的生效快照。
+    ///
+    /// 覆盖语义：`torrents` / `peers` 均可选，给出的部分**替换**基础段（peers 按 hash
+    /// 整组替换）；未给出的沿用当前值。请求次数超过 waves 长度时恒用最后一份——
+    /// 使「进度回退 → 稳定」之类的有状态场景（PCB / 多拨累计）在长跑中保持稳定。
+    /// 无 `waves` 时与旧行为一致（恒返回基础段）。
+    #[serde(default)]
+    waves: Vec<Wave>,
+}
+
+/// 单个波次的覆盖快照。
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Wave {
+    #[serde(default)]
+    torrents: Option<Vec<Torrent>>,
+    #[serde(default)]
+    peers: Option<HashMap<String, Vec<Peer>>>,
+}
+
+impl Fixture {
+    /// 第 `request_no` 次（从 1 起）`torrentPeers` 请求时 `hash` 对应的 peers：
+    /// 基础段依次被 `waves[0..min(request_no-1, len)]` 中给出该 hash 的波覆盖。
+    fn peers_at(&self, hash: &str, request_no: u64) -> Option<&Vec<Peer>> {
+        let mut current = self.peers.get(hash);
+        let take = (request_no.saturating_sub(1) as usize).min(self.waves.len());
+        for wave in &self.waves[..take] {
+            if let Some(group) = wave.peers.as_ref().and_then(|m| m.get(hash)) {
+                current = Some(group);
+            }
+        }
+        current
+    }
 }
 
 fn default_version() -> String {
@@ -113,6 +145,8 @@ struct AppState {
     /// 对跑录制文件：把收到的封禁下发（增量 `banPeers` 与全量 `banned_IPs`）
     /// 逐 IP 追加写入，使 Java 与 Rust 两版的封禁集合可直接做跨版本 diff。
     record: Option<Arc<Mutex<std::fs::File>>>,
+    /// 每 hash 的 `torrentPeers` 请求次数（驱动 waves 波次轮转）
+    wave_counter: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 #[derive(Parser, Debug)]
@@ -278,8 +312,18 @@ async fn torrent_peers(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let hash = params.get("hash").cloned().unwrap_or_default();
+    // 波次推进：第 k 次请求返回 base ⊕ waves[0..min(k-1, len)]
+    let request_no = {
+        let mut counter = state
+            .wave_counter
+            .lock()
+            .expect("wave_counter poisoned");
+        let entry = counter.entry(hash.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
     let empty = Vec::new();
-    let peers = state.fixture.peers.get(&hash).unwrap_or(&empty);
+    let peers = state.fixture.peers_at(&hash, request_no).unwrap_or(&empty);
     let mut map = serde_json::Map::new();
     for p in peers {
         let key = format!(
@@ -341,11 +385,13 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         fixture: Arc::new(fixture),
         record,
+        wave_counter: Arc::new(Mutex::new(HashMap::new())),
     };
     println!(
-        "[mockqb] 载入 fixture: {} 个 torrent, {} 个有 peers 的 torrent",
+        "[mockqb] 载入 fixture: {} 个 torrent, {} 个有 peers 的 torrent, {} 个波次",
         state.fixture.torrents.len(),
-        state.fixture.peers.len()
+        state.fixture.peers.len(),
+        state.fixture.waves.len()
     );
 
     let app = Router::new()
@@ -367,4 +413,52 @@ async fn main() -> anyhow::Result<()> {
     println!("[mockqb] 监听 http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waves_rotate_by_request_number_and_stick_to_last() {
+        let f: Fixture = serde_json::from_str(
+            r#"{
+                "peers": { "H": [ {"ip":"1.1.1.1","port":1,"progress":0.9} ] },
+                "waves": [
+                    { "peers": { "H": [ {"ip":"1.1.1.1","port":1,"progress":0.45} ] } },
+                    { "peers": { "H": [ {"ip":"1.1.1.1","port":1,"progress":0.45} ] } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let prog = |n: u64| f.peers_at("H", n).unwrap()[0].progress;
+        assert_eq!(prog(1), 0.9, "第 1 次请求返回基础段");
+        assert_eq!(prog(2), 0.45, "第 2 次请求返回 waves[0]");
+        assert_eq!(prog(3), 0.45, "第 3 次请求返回 waves[1]");
+        assert_eq!(prog(9), 0.45, "超出波次后恒用最后一份");
+    }
+
+    #[test]
+    fn missing_wave_entries_fall_through_to_current() {
+        // waves[0] 未给出 hash "X" 的 peers -> 沿用当前值；waves[1] 给出 -> 覆盖
+        let f: Fixture = serde_json::from_str(
+            r#"{
+                "peers": { "X": [ {"ip":"3.3.3.3","port":3} ] },
+                "waves": [ {"peers": {"H": []}}, {"peers": {"X": [ {"ip":"4.4.4.4","port":4} ]}} ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(f.peers_at("X", 1).unwrap()[0].ip.as_deref(), Some("3.3.3.3"));
+        assert_eq!(f.peers_at("X", 2).unwrap()[0].ip.as_deref(), Some("3.3.3.3"));
+        assert_eq!(f.peers_at("X", 3).unwrap()[0].ip.as_deref(), Some("4.4.4.4"));
+    }
+
+    #[test]
+    fn no_waves_keeps_legacy_behavior() {
+        let f: Fixture =
+            serde_json::from_str(r#"{"peers": {"H": [{"ip":"1.1.1.1","port":1}]}}"#).unwrap();
+        for n in 1..=5u64 {
+            assert_eq!(f.peers_at("H", n).unwrap()[0].ip.as_deref(), Some("1.1.1.1"));
+        }
+    }
 }
