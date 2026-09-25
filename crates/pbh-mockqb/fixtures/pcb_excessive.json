@@ -1,0 +1,48 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "CC99CC99CC99CC99CC99CC99CC99CC99CC99CC99",
+      "name": "Alpine Linux 3.21 standard x86_64 ISO",
+      "progress": 1.0,
+      "total_size": 1000000000,
+      "piece_size": 16384,
+      "pieces_have": 61036,
+      "dlspeed": 0,
+      "upspeed": 1000,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "CC99CC99CC99CC99CC99CC99CC99CC99CC99CC99": [
+      {
+        "ip": "198.51.100.91",
+        "port": 51413,
+        "client": "qBittorrent/4.5.0",
+        "peer_id_client": "-qB4500-abcdefghijkl",
+        "progress": 0.85,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 2000000000,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.51.100.92",
+        "port": 51413,
+        "client": "qBittorrent/4.5.0",
+        "peer_id_client": "-qB4500-abcdefghijkl",
+        "progress": 0.9,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 900000000,
+        "connection": "TCP"
+      }
+    ]
+  }
+}

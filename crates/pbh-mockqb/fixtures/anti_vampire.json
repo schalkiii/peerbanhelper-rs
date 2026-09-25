@@ -1,0 +1,100 @@
+{
+  "version": "5.0.0",
+  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
+  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "torrents": [
+    {
+      "hash": "AA77AA77AA77AA77AA77AA77AA77AA77AA77AA77",
+      "name": "Arch Linux 2024.11 x86_64 ISO (seeding)",
+      "progress": 1.0,
+      "total_size": 1200000000,
+      "piece_size": 16384,
+      "pieces_have": 73242,
+      "dlspeed": 0,
+      "upspeed": 0,
+      "is_private": false
+    },
+    {
+      "hash": "BB88BB88BB88BB88BB88BB88BB88BB88BB88BB88",
+      "name": "NixOS 24.11 minimal ISO (downloading)",
+      "progress": 0.4,
+      "total_size": 1200000000,
+      "piece_size": 16384,
+      "pieces_have": 24300,
+      "dlspeed": 0,
+      "upspeed": 0,
+      "is_private": false
+    }
+  ],
+  "peers": {
+    "AA77AA77AA77AA77AA77AA77AA77AA77AA77AA77": [
+      {
+        "ip": "198.51.100.61",
+        "port": 15000,
+        "client": "XL0010",
+        "peer_id_client": "-XL0010-abcdefghijkl",
+        "progress": 1.0,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 0,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.51.100.62",
+        "port": 15000,
+        "client": "Xunlei 0.0.1.9",
+        "peer_id_client": "-XL0019-abcdefghijkl",
+        "progress": 1.0,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 0,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.51.100.63",
+        "port": 15000,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 1.0,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 0,
+        "connection": "TCP"
+      }
+    ],
+    "BB88BB88BB88BB88BB88BB88BB88BB88BB88BB88": [
+      {
+        "ip": "198.51.100.64",
+        "port": 15000,
+        "client": "Thunder bolt 4.0",
+        "peer_id_client": "-XL0019-zzzzzzzzzzzz",
+        "progress": 0.4,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 0,
+        "connection": "TCP"
+      },
+      {
+        "ip": "198.51.100.65",
+        "port": 15000,
+        "client": "Normal/1.0",
+        "peer_id_client": "-ND100-abcdefghijkl",
+        "progress": 0.4,
+        "flags": "",
+        "dl_speed": 0,
+        "downloaded": 0,
+        "up_speed": 1000,
+        "uploaded": 0,
+        "connection": "TCP"
+      }
+    ]
+  }
+}

@@ -155,7 +155,8 @@ cargo test --workspace
 ```
 
 黄金测试位于 `crates/pbh-golden/`（夹具在 `tests/fixtures/`）；`pbh-mockqb` 提供 mock qBittorrent
-服务（对跑/基准夹具）。
+服务（对跑/基准夹具）。模块 × 层级的覆盖矩阵、mock 对跑用例清单与已知缺口见
+[docs/TESTING.md](docs/TESTING.md)。
 
 ---
 

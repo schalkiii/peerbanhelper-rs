@@ -5,6 +5,16 @@
 
 ## 未发布（working tree）
 
+### docs(test): 新增测试覆盖矩阵与用例清单文档
+
+- 新增 `docs/TESTING.md`：分层模型（L1 单元 / L2 模块与解析黄金 / L3 下载器集成 /
+  L4 端到端 / L5 mock 对跑）、23 个测试目标 587 个用例的模块 × 覆盖矩阵、
+  8 个 mock 对跑 fixture 的场景与断言清单、4 项已知缺口（pending）与
+  对跑沉淀的 4 条上游行为语义。
+- 本次覆盖率梳理的实测产出：`anti_vampire` / `pcb_desync` / `auto_range_ban` /
+  `modules_matrix` 四个新对跑场景全部两侧一致；发现并记录 pending-1
+  （PCB 过量下载累计在 BanForDisconnect 后翻倍，待查 wave 层断连处理链）。
+
 ### test(mockqb): 多波 fixture 支持 + 确定性双跑基建参数化（行为类保真验证）
 
 - **背景**：真实流量双跑存在架构性观测干扰（Java 先封禁 → qB 断开 peer → Rust
