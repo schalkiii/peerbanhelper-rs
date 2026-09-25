@@ -1242,7 +1242,7 @@ mod tests {
         // remapBanListAddress(addr) → supportRangeBan = true：去重 + IPv6 /52 网段
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(req.body.as_deref().unwrap()).unwrap(),
-            serde_json::json!({ "ips": ["1.2.3.4", "::ffff:1.2.3.4", "2001:db8::1", "2001:db8::/52"] })
+            serde_json::json!({ "ips": ["1.2.3.4", "::ffff:102:304", "2001:db8::1", "2001:db8::/52"] })
         );
     }
 
@@ -1261,7 +1261,7 @@ mod tests {
         // 字段与顺序对齐 `BanListReplacementBean` 的 Gson 输出
         assert_eq!(
             req.body.as_deref().unwrap(),
-            r#"{"replaceWith":["1.2.3.4","::ffff:1.2.3.4","2001:db8::1","2001:db8::/52"],"includeNonPBHEntries":false}"#
+            r#"{"replaceWith":["1.2.3.4","::ffff:102:304","2001:db8::1","2001:db8::/52"],"includeNonPBHEntries":false}"#
         );
     }
 

@@ -17,17 +17,19 @@ fn cfg() -> RemapConfig {
 #[test]
 fn ipv4_always_pairs_with_its_ipv4_mapped_ipv6_form() {
     // 上游 `generateRemappedPairIfPossible` 对 IPv4 恒附带 IPv6 映射写法，
-    // 使下载器在 IPv6 栈上也能阻断同一主机；与是否开启网段重映射无关
+    // 使下载器在 IPv6 栈上也能阻断同一主机；与是否开启网段重映射无关。
+    // 字符串化对齐 `IPAddress.toCompressedString()`：mapped 段用纯 hex 压缩
+    // （`::ffff:102:304`），而非 Rust `Display` 的点分混合（`::ffff:102:304`）
     assert_eq!(
         remap_ban_list_address("1.2.3.4", true, &cfg()),
-        vec!["1.2.3.4", "::ffff:1.2.3.4"]
+        vec!["1.2.3.4", "::ffff:102:304"]
     );
     // 显式开启 IPv4 重映射后额外生成 /30 网段
     let mut c = cfg();
     c.banlist_remapping.ipv4.enabled = true;
     assert_eq!(
         remap_ban_list_address("1.2.3.4", true, &c),
-        vec!["1.2.3.4", "1.2.3.4/30", "::ffff:1.2.3.4"]
+        vec!["1.2.3.4", "1.2.3.4/30", "::ffff:102:304"]
     );
 }
 
@@ -51,10 +53,10 @@ fn remote_downloader_without_range_ban_capability_gets_single_addresses() {
 #[test]
 fn ipv4_mapped_ipv6_is_normalized_to_ipv4_then_paired_back() {
     // `getIPAddress` 先把 IPv4-mapped IPv6 归一为 IPv4，
-    // 再由 `generateRemappedPairIfPossible` 把映射写法补回来
+    // 再由 `generateRemappedPairIfPossible` 把映射写法补回来（hex 压缩格式）
     assert_eq!(
-        remap_ban_list_address("::ffff:1.2.3.4", true, &cfg()),
-        vec!["1.2.3.4", "::ffff:1.2.3.4"]
+        remap_ban_list_address("::ffff:102:304", true, &cfg()),
+        vec!["1.2.3.4", "::ffff:102:304"]
     );
 }
 
@@ -81,7 +83,7 @@ fn peer_address_translation_follows_upstream_order() {
     let c = IpRemapConfig::default();
     // IPv4-mapped IPv6 -> IPv4
     assert_eq!(
-        translate_peer_ip("::ffff:1.2.3.4", 6881, &c),
+        translate_peer_ip("::ffff:102:304", 6881, &c),
         ("1.2.3.4".to_string(), 6881)
     );
     // NAT64 -> 内嵌 IPv4（端口不变）

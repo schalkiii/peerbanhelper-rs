@@ -4,7 +4,8 @@ $jar = 'C:\CommonTools\PeerBanHelper\PeerBanHelper.jar'
 $root = 'd:\workspace\peerbanhelper-rs\target\dualrun'
 $dir = "$root\java"
 $qbPort = '18080'
-$webPort = '9899'
+# 9899 已被长跑 Rust 实例占用，Java 临时实例改用 9896
+$webPort = '9896'
 $record = "$root\bans-java.txt"
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $dir | Out-Null

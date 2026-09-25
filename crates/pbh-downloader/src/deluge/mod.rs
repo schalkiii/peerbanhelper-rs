@@ -910,7 +910,7 @@ mod tests {
         // remapBanListAddress(addr, supportRangeBan=true)：去重 + IPv6 /52 网段
         assert_eq!(
             mock.params_of(M_BAN_IPS),
-            json!([["1.2.3.4", "::ffff:1.2.3.4", "2001:db8::1", "2001:db8::/52"]])
+            json!([["1.2.3.4", "::ffff:102:304", "2001:db8::1", "2001:db8::/52"]])
         );
     }
 
@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_REPLACE_BLOCKLIST]);
         assert_eq!(
             mock.params_of(M_REPLACE_BLOCKLIST),
-            json!([["1.2.3.4", "::ffff:1.2.3.4", "2001:db8::1", "2001:db8::/52"]])
+            json!([["1.2.3.4", "::ffff:102:304", "2001:db8::1", "2001:db8::/52"]])
         );
     }
 

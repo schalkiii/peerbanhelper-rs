@@ -11,10 +11,11 @@
 //! 内置 NAT（AutoSTUN）翻译实现在 [`crate::auto_stun`]；默认 `auto-stun.enabled=false` 时
 //! 注册表为空，`translate_peer_ip` 与移植前逐位一致（严格直通）。
 //!
-//! 关于输出格式：上游用 inet.ipaddr 的 `toCompressedString()`，IPv6 采用其压缩写法；
-//! 本实现采用 RFC 5952（Rust `Ipv6Addr` 的 `Display`），两者的**实际封禁集合等价**。
-//! 另外，上游会为 IPv4 地址附带其 IPv4-mapped IPv6 写法（`::ffff:a.b.c.d`），
-//! 对下载器而言该写法不会命中真实 IPv4 peer，属于空操作，故本实现不生成（见 SPEC §3.4）。
+//! 关于输出格式：对齐上游 inet.ipaddr 的 `toCompressedString()`——IPv6 采用纯 hex 压缩
+//! 写法（IPv4-mapped 输出 `::ffff:c612:b` 而非 Rust `Display` 的点分混合 `::ffff:198.18.0.11`；
+//! 其余地址两种写法相同）。双跑实测（mockqb 对跑录制）证实两侧下发的封禁列表字符串
+//! 必须逐字一致，否则 diff 会被格式噪声淹没；IPv4 与映射变体成对输出（对齐
+//! `generateRemappedPairIfPossible`，见 SPEC §3.4）。
 
 pub use crate::auto_stun::{AutoStun, AutoStunConfig};
 use crate::iputil::parse_addr;
@@ -181,9 +182,59 @@ fn prefix_of_v6(addr: Ipv6Addr, len: u8) -> Option<String> {
         .map(|n| n.trunc().to_string())
 }
 
+/// 对齐上游 `IPAddress.toCompressedString()` 的字符串化：
+/// IPv4 输出点分；IPv6 输出纯 hex 压缩（最长零段折叠为 `::`，段小写无前导零），
+/// **不使用** Rust `Display` 对 IPv4-mapped 地址的点分混合写法（`::ffff:198.18.0.11`）。
+/// 其余 IPv6 地址两种写法一致，此差异仅出现在 IPv4-mapped/compatible 段。
+pub fn to_compressed_string(addr: IpAddr) -> String {
+    match addr {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            // 找最长零段（长度 > 1 才折叠，取最先出现者）
+            let mut best: Option<(usize, usize)> = None;
+            let mut i = 0;
+            while i < 8 {
+                if seg[i] == 0 {
+                    let start = i;
+                    while i < 8 && seg[i] == 0 {
+                        i += 1;
+                    }
+                    let len = i - start;
+                    if len > 1 && best.is_none_or(|(_, bl)| len > bl) {
+                        best = Some((start, len));
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            let hex = |slice: &[u16]| -> String {
+                slice
+                    .iter()
+                    .map(|s| format!("{s:x}"))
+                    .collect::<Vec<_>>()
+                    .join(":")
+            };
+            match best {
+                None => hex(&seg),
+                Some((start, len)) => {
+                    let head = hex(&seg[..start]);
+                    let tail = hex(&seg[start + len..]);
+                    match (head.is_empty(), tail.is_empty()) {
+                        (true, true) => "::".to_string(),
+                        (true, false) => format!("::{tail}"),
+                        (false, true) => format!("{head}::"),
+                        (false, false) => format!("{head}::{tail}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 生成某个地址的「等价写法」集合，对齐上游 `generateRemappedPairIfPossible`
 ///（分支顺序与上游一致，IPv4 分支优先）：
-/// - IPv4 → 附带 IPv4-mapped IPv6 写法（`::ffff:a.b.c.d`）。qB 的封禁名单按地址族匹配，
+/// - IPv4 → 附带 IPv4-mapped IPv6 写法（hex 压缩 `::ffff:c612:b`）。qB 的封禁名单按地址族匹配，
 ///   缺少该变体时，同一主机改走 IPv6 栈连入将不会被阻断。
 /// - NAT64 → 附带内嵌 IPv4
 /// - Teredo → 附带内嵌客户端 IPv4（上游此处**不检查** `ip-remapping.teredo` 开关）
@@ -218,7 +269,7 @@ pub fn remap_ban_list_address(ip: &str, support_range_ban: bool, cfg: &RemapConf
         }
     };
 
-    push(addr.to_string());
+    push(to_compressed_string(addr));
 
     // NAT64 提取（默认开启）
     let nat64 = match addr {
@@ -226,7 +277,7 @@ pub fn remap_ban_list_address(ip: &str, support_range_ban: bool, cfg: &RemapConf
         IpAddr::V4(_) => None,
     };
     if let Some(v4) = nat64 {
-        push(v4.to_string());
+        push(to_compressed_string(IpAddr::V4(v4)));
     }
 
     let range = &cfg.banlist_remapping;
@@ -255,7 +306,7 @@ pub fn remap_ban_list_address(ip: &str, support_range_ban: bool, cfg: &RemapConf
 
     // generateRemappedPairIfPossible(banAddress)
     for extra in equivalent_forms(addr, nat64) {
-        push(extra.to_string());
+        push(to_compressed_string(extra));
     }
 
     out
@@ -328,6 +379,41 @@ mod tests {
             translate_peer_ip("not-an-ip", 1, &cfg.ip_remapping),
             ("not-an-ip".to_string(), 1)
         );
+    }
+
+    /// 回归（mockqb 双跑实测暴露）：IPv4 封禁的全量列表必须成对输出
+    /// 「点分 + hex 压缩 mapped 变体」，与上游 `IPAddress.toCompressedString()`
+    /// 逐字一致——Rust `Display` 的点分混合写法（`::ffff:198.18.0.11`）会让
+    /// Java/Rust 对跑 diff 被格式噪声淹没。
+    #[test]
+    fn ban_list_output_matches_upstream_compressed_format() {
+        let cfg = RemapConfig::default();
+        assert_eq!(
+            remap_ban_list_address("198.18.0.11", false, &cfg),
+            vec!["198.18.0.11".to_string(), "::ffff:c612:b".to_string()]
+        );
+        assert_eq!(
+            remap_ban_list_address("203.0.113.10", false, &cfg),
+            vec!["203.0.113.10".to_string(), "::ffff:cb00:710a".to_string()]
+        );
+    }
+
+    /// `to_compressed_string` 与 Rust `Display` 仅在 IPv4-mapped 段不同；
+    /// 其余地址（含 `::` / `::1` / 常规单播）两种写法相同。
+    #[test]
+    fn compressed_string_matches_display_except_mapped() {
+        for (ip, expected) in [
+            ("::", "::"),
+            ("::1", "::1"),
+            ("2001:db8::1", "2001:db8::1"),
+            ("64:ff9b::102:304", "64:ff9b::102:304"),
+            ("::ffff:198.18.0.11", "::ffff:c612:b"),
+            ("::ffff:203.0.113.10", "::ffff:cb00:710a"),
+            ("198.18.0.11", "198.18.0.11"),
+        ] {
+            let addr: IpAddr = ip.parse().unwrap();
+            assert_eq!(to_compressed_string(addr), expected, "输入 {ip}");
+        }
     }
 
     /// 回归：`auto-stun.enabled` 默认 false（且未挂载注册表）时，`translate_peer_ip`

@@ -87,10 +87,11 @@ async fn ban_and_replace_payloads() {
     let last = prefs.last().unwrap();
     let v: serde_json::Value = serde_json::from_str(last).unwrap();
     // IPv4 封禁地址会附带 IPv4-mapped IPv6 变体（对齐上游 generateRemappedPairIfPossible），
+    // 字符串化对齐 `toCompressedString()`（hex 压缩）；
     // 全量列表按字符串排序后 IPv4 在前、映射形式在后
     assert_eq!(
         v["banned_IPs"],
-        "1.1.1.1\n2.2.2.2\n::ffff:1.1.1.1\n::ffff:2.2.2.2"
+        "1.1.1.1\n2.2.2.2\n::ffff:101:101\n::ffff:202:202"
     );
 }
 
