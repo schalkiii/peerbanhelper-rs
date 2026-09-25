@@ -60,6 +60,8 @@ $j = Start-Process -FilePath $java -ArgumentList "-Dpbh.datadir=$dir", '-jar', $
 Start-Sleep -Seconds 20
 
 # 5) OOBE 初始化：设置 server.token 并注册指向 mock 的下载器
+#    body 必须带 basic-auth 对象（空 user/pass 也可），否则 QBittorrentConfigImpl.saveToYaml
+#    会因 basicAuth 为 null 抛 NPE，下载器无法持久化（重启即丢）
 $body = @{
     token      = 'dualrun-token'
     downloader = @{
@@ -72,6 +74,7 @@ $body = @{
             password         = 'adminadmin'
             'ignore-private' = $true
             'increment-ban'  = $true
+            basicAuth        = @{ user = ''; pass = '' }
         }
     }
 } | ConvertTo-Json -Depth 5
@@ -84,7 +87,15 @@ catch {
     Write-Output "OOBE failed: $_"
 }
 
-# 6) 让 ban wave 跑若干轮
+# 5.5) OOBE 会以内存默认覆盖 profile.yml 的模块段：停掉首段实例，重新注入后再启动
+Stop-Process -Id $j.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+python crates\pbh-mockqb\inject_test_profile.py "$cfgPath" "$dir\config\profile.yml"
+if ($LASTEXITCODE -ne 0) { throw "规则注入失败" }
+
+# 6) 二次启动：读入注入后配置 + 已持久化的下载器，跑 45 秒 ban wave
+$j = Start-Process -FilePath $java -ArgumentList "-Dpbh.datadir=$dir", '-jar', $jar `
+    -WorkingDirectory $dir -RedirectStandardOutput "$dir\stdout.log" -RedirectStandardError "$dir\stderr.log" -PassThru
 Start-Sleep -Seconds 45
 Stop-Process -Id $j.Id -Force -ErrorAction SilentlyContinue
 Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue

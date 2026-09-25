@@ -1,7 +1,12 @@
 {
   "version": "5.0.0",
-  "buildinfo": { "libtorrent": "1.2.19.0", "qt": "6.5.0" },
-  "preferences": { "enable_multi_connections_from_same_ip": true },
+  "buildinfo": {
+    "libtorrent": "1.2.19.0",
+    "qt": "6.5.0"
+  },
+  "preferences": {
+    "enable_multi_connections_from_same_ip": true
+  },
   "torrents": [
     {
       "hash": "EE77EE77EE77EE77EE77EE77EE77EE77EE77EE77",
@@ -22,7 +27,7 @@
         "port": 6881,
         "client": "IdleProbe/1.0",
         "peer_id_client": "-ND100-abcdefghijkl",
-        "progress": 0.5,
+        "progress": 0.0,
         "flags": "",
         "dl_speed": 0,
         "downloaded": 0,
@@ -33,9 +38,81 @@
     ]
   },
   "waves": [
-    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
-    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
-    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } },
-    { "peers": { "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [ { "ip": "203.0.113.50", "port": 6881, "client": "IdleProbe/1.0", "peer_id_client": "-ND100-abcdefghijkl", "progress": 0.5, "flags": "", "dl_speed": 0, "downloaded": 0, "up_speed": 0, "uploaded": 0, "connection": "TCP" } ] } }
+    {
+      "peers": {
+        "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [
+          {
+            "ip": "203.0.113.50",
+            "port": 6881,
+            "client": "IdleProbe/1.0",
+            "peer_id_client": "-ND100-abcdefghijkl",
+            "progress": 0.0,
+            "flags": "",
+            "dl_speed": 0,
+            "downloaded": 0,
+            "up_speed": 0,
+            "uploaded": 0,
+            "connection": "TCP"
+          }
+        ]
+      }
+    },
+    {
+      "peers": {
+        "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [
+          {
+            "ip": "203.0.113.50",
+            "port": 6881,
+            "client": "IdleProbe/1.0",
+            "peer_id_client": "-ND100-abcdefghijkl",
+            "progress": 0.0,
+            "flags": "",
+            "dl_speed": 0,
+            "downloaded": 0,
+            "up_speed": 0,
+            "uploaded": 0,
+            "connection": "TCP"
+          }
+        ]
+      }
+    },
+    {
+      "peers": {
+        "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [
+          {
+            "ip": "203.0.113.50",
+            "port": 6881,
+            "client": "IdleProbe/1.0",
+            "peer_id_client": "-ND100-abcdefghijkl",
+            "progress": 0.0,
+            "flags": "",
+            "dl_speed": 0,
+            "downloaded": 0,
+            "up_speed": 0,
+            "uploaded": 0,
+            "connection": "TCP"
+          }
+        ]
+      }
+    },
+    {
+      "peers": {
+        "EE77EE77EE77EE77EE77EE77EE77EE77EE77": [
+          {
+            "ip": "203.0.113.50",
+            "port": 6881,
+            "client": "IdleProbe/1.0",
+            "peer_id_client": "-ND100-abcdefghijkl",
+            "progress": 0.0,
+            "flags": "",
+            "dl_speed": 0,
+            "downloaded": 0,
+            "up_speed": 0,
+            "uploaded": 0,
+            "connection": "TCP"
+          }
+        ]
+      }
+    }
   ]
 }

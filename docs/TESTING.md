@@ -74,17 +74,21 @@ client-name REGEX `^EvilClient.*`），幂等、缩进跟随序列既有项。
    补充取证证实 **Java 同样封禁 `.92`**（经全量重放下发，`BanForDisconnect` 静默不打
    封禁日志导致此前误判"Java 不封"）。1.8G = fastPcbTest 断开重连后重计的
    **共同上游语义**，两侧封禁集合逐字一致 | ✅ 已验证一致 |
-| pending-2 | `idle_protection` 对跑：fixture 与注入已就绪（`idle_protection.json` +
-   加速参数注入），但 **Java OOBE 会把运行时模块开关还原为默认**（`enabled:false`），
-   对跑结果不稳定；L1/L2 已有 6 个用例覆盖全分支，待 pending-3 修复后启用 | 🟡 基建受限 |
-| pending-3 | Java dualrun 的 OOBE 时序竞态：OOBE 正常完成会以内存默认覆盖已注入的
-   profile.yml（NPE 轮反而保留）；已加「等待生成 + 失败即中止」，注入移到 OOBE 后
-   （依赖 simplereloadlib 热重载或二段启动）的方案待做 | 🟡 待补 |
+| ~~pending-2~~ | ~~`idle_protection` 对跑~~ **已补齐并一致（2026-09-25）**：
+   `idle_protection.json`（做种 torrent + 恒 0 速度 + 恒 progress，加速参数
+   speed 1e9 / max-idle 3s 注入），两侧同波命中 `idleTimeout`，封禁集合一致。
+   教训：fixture 需遵守模块前置语义——progress 非 0 会在
+   `reset-on-status-change` 量纲（×100）下每波重置计时 | ✅ 一致 |
+| ~~pending-3~~ | ~~Java OOBE 覆盖注入的 profile~~ **已根治（2026-09-25）**：
+   双修复——① OOBE body 缺 `basicAuth` 对象导致
+   `QBittorrentConfigImpl.saveToYaml` NPE、下载器无法持久化（补空对象）；
+   ② 改为二段启动（OOBE 完成后停 Java → 重新注入 → 二段启动跑波，
+   顺序消除 OOBE 的 profile 覆盖）| ✅ 已根治 |
 | pending-4 | `ptr_blacklist` 无对跑用例（需 PTR 服务器 mock，成本较高、单元已覆盖解析与缓存）| 🟡 待补 |
 
 ## 5. 生产部署替代 Java 版评估（2026-09-25）
 
-**结论：核心封禁判定链路已具备生产替代条件，建议以「灰度并行」方式迁移。**
+**结论：核心封禁判定链路已具备生产替代条件，建议以「灰度并行」方式迁移。**（2026-09-25 更新：mock 对跑 7 场景全部一致，pending-1/2/3 已收敛，仅剩 pending-4）
 
 | 能力面 | 状态 | 说明 |
 |---|---|---|

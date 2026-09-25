@@ -89,7 +89,7 @@ def inject_idle(text):
     if "1000000000" in text:
         return text
     text = re.sub(
-        r"([ \t]+idle-connection-dos-protection:\r?\n[ \t]+enabled: )false",
+        r"([ \t]+idle-connection-dos-protection:[ \t]*\r?\n(?:[ \t]*#[^\n]*\r?\n)*[ \t]+enabled: )false",
         lambda m: f"{m.group(1)}true",
         text,
         count=1,
