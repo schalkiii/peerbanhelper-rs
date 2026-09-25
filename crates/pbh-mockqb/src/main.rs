@@ -133,6 +133,19 @@ impl Fixture {
         }
         current
     }
+
+    /// 第 `request_no` 次（从 1 起）`torrents/info` 的生效种子列表（覆盖语义同上，
+    /// 波内未给出 `torrents` 时沿用当前值；`None` 表示无种子）。
+    fn torrents_at(&self, request_no: u64) -> &Vec<Torrent> {
+        let take = (request_no.saturating_sub(1) as usize).min(self.waves.len());
+        let mut current = &self.torrents;
+        for wave in &self.waves[..take] {
+            if let Some(ts) = wave.torrents.as_ref() {
+                current = ts;
+            }
+        }
+        current
+    }
 }
 
 fn default_version() -> String {
@@ -147,6 +160,8 @@ struct AppState {
     record: Option<Arc<Mutex<std::fs::File>>>,
     /// 每 hash 的 `torrentPeers` 请求次数（驱动 waves 波次轮转）
     wave_counter: Arc<Mutex<HashMap<String, u64>>>,
+    /// `torrents/info` 的调用次数（与 wave 同频，驱动种子列表轮转）
+    torrents_counter: Arc<Mutex<u64>>,
 }
 
 #[derive(Parser, Debug)]
@@ -259,8 +274,17 @@ fn record_ip(state: &AppState, ip: &str) {
 }
 
 async fn torrents_info(State(state): State<AppState>) -> Response {
+    // 波次推进：PBH 每波调用一次 torrents/info，与 torrentPeers 的 per-hash 计数同频
+    let request_no = {
+        let mut counter = state
+            .torrents_counter
+            .lock()
+            .expect("torrents_counter poisoned");
+        *counter += 1;
+        *counter
+    };
     let mut list = Vec::new();
-    for t in &state.fixture.torrents {
+    for t in state.fixture.torrents_at(request_no) {
         list.push(json!({
             "hash": t.hash,
             "name": t.name,
@@ -386,6 +410,7 @@ async fn main() -> anyhow::Result<()> {
         fixture: Arc::new(fixture),
         record,
         wave_counter: Arc::new(Mutex::new(HashMap::new())),
+        torrents_counter: Arc::new(Mutex::new(0)),
     };
     println!(
         "[mockqb] 载入 fixture: {} 个 torrent, {} 个有 peers 的 torrent, {} 个波次",
