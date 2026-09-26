@@ -17,18 +17,22 @@ fn main() -> ExitCode {
     let mut rust_db = String::new();
     let mut since = String::new();
     let mut out_csv = String::new();
+    // `--ip-only`：键只保留 IP（去掉端口）。长跑对账中同一 IP 两侧常封到不同端口的
+    // 连接（判定语义按 IP 封禁），按 `ip:port` 粒度比对会产生大量伪差异。
+    let mut ip_only = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--since" => since = iter.next().cloned().unwrap_or_default(),
             "--out" => out_csv = iter.next().cloned().unwrap_or_default(),
+            "--ip-only" => ip_only = true,
             other if java_db.is_empty() => java_db = other.to_string(),
             other => rust_db = other.to_string(),
         }
     }
     if java_db.is_empty() || rust_db.is_empty() {
         eprintln!(
-            "用法: compare_dualrun <java.db> <rust.db> [--since YYYY-MM-DD] [--out diff.csv]"
+            "用法: compare_dualrun <java.db> <rust.db> [--since YYYY-MM-DD] [--out diff.csv] [--ip-only]"
         );
         return ExitCode::from(2);
     }
@@ -40,11 +44,13 @@ fn main() -> ExitCode {
         }
     };
 
-    println!("== 对账：java={java_db} rust={rust_db} since={since:?} ==");
+    println!(
+        "== 对账：java={java_db} rust={rust_db} since={since:?} ip_only={ip_only} =="
+    );
     shared_row_counts(&java, "Java", &java_db);
     shared_row_counts(&rust, "Rust", &rust_db);
 
-    let report = compare_history(&java, &rust, &since);
+    let report = compare_history(&java, &rust, &since, ip_only);
     println!(
         "history: Java {} 条独有 / Rust {} 条独有 / {} 条同址不同模块",
         report.only_java.len(),
@@ -140,8 +146,10 @@ impl Report {
     }
 }
 
-fn compare_history(java: &Connection, rust: &Connection, since: &str) -> Report {
-    // 键 = `规范化IP:端口@小时桶`；值 = 该键上命中的模块集合（两侧同用 Java 类全名）
+fn compare_history(java: &Connection, rust: &Connection, since: &str, ip_only: bool) -> Report {
+    // 键 = `规范化IP:端口@小时桶`（`--ip-only` 时去掉端口）；值 = 该键上命中的模块集合
+    // （两侧同用 Java 类全名）。长跑中同一 IP 两侧常封到不同端口的连接（封禁语义按 IP），
+    // `--ip-only` 用于消除该端口粒度伪差异。
     let read_side =
         |conn: &Connection| -> Option<BTreeMap<String, std::collections::BTreeSet<String>>> {
             if !table_exists(conn, "history") {
@@ -175,9 +183,13 @@ fn compare_history(java: &Connection, rust: &Connection, since: &str) -> Report 
                     bucket
                 };
                 let module: String = row.get(3).unwrap_or_default();
-                map.entry(format!("{}:{port}@{bucket}", normalize_ip(&ip)))
-                    .or_default()
-                    .insert(module);
+                let ip_norm = normalize_ip(&ip);
+                let key = if ip_only {
+                    format!("{ip_norm}@{bucket}")
+                } else {
+                    format!("{ip_norm}:{port}@{bucket}")
+                };
+                map.entry(key).or_default().insert(module);
             }
             Some(map)
         };
@@ -299,7 +311,7 @@ mod tests {
     fn identical_histories_have_no_diff() {
         let a = memory_history();
         let b = memory_history();
-        let r = compare_history(&a, &b, "");
+        let r = compare_history(&a, &b, "", false);
         assert!(r.is_consistent());
     }
 
@@ -312,7 +324,7 @@ mod tests {
              INSERT INTO history (ip, port, ban_at, module_name) VALUES ('1.2.3.4', 51413, 1789000000000, 'com.ghostchu.peerbanhelper.module.impl.rule.PeerIdBlacklist');",
         )
         .unwrap();
-        let r = compare_history(&a, &b, "");
+        let r = compare_history(&a, &b, "", false);
         assert_eq!(r.only_java.len(), 1, "Java 独有：5.6.7.8");
         assert!(r.only_rust.is_empty());
         assert!(r.module_mismatch.is_empty());
@@ -328,7 +340,7 @@ mod tests {
                ('1.2.3.4', 51413, 1789000060000, 'com.ghostchu.peerbanhelper.module.impl.rule.MultiDialingBlocker');",
         )
         .unwrap();
-        let r = compare_history(&a, &b, "");
+        let r = compare_history(&a, &b, "", false);
         // 1.2.3.4 两侧都封了（同小时桶），但模块无交集 → 记一条模块不一致
         assert_eq!(r.module_mismatch.len(), 1);
         assert!(r.module_mismatch[0].contains("PeerIdBlacklist"));
@@ -360,7 +372,7 @@ mod tests {
             ))
             .unwrap();
         }
-        let r = compare_history(&a, &b, "");
+        let r = compare_history(&a, &b, "", false);
         assert!(r.is_consistent(), "等价 IPv6 写法不应被记为差异");
     }
 }
