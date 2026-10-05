@@ -106,7 +106,17 @@ Rust 16 条封禁 vs Java 差异 11+9+1（端口粒度）/ 9+7+1（`--ip-only`�
 **稳定性结论更新**：**10.9 天连续运行**（wave#7853）无冻结、无重启、双 200，
 数月级稳定性风险大幅收敛；内存/句柄无泄漏迹象（采样持续记录 RSS）。
 
-### 4.2 已知缺口与 pending
+### 4.2 外部仓库 workflow 处置（2026-10-05）
+
+`schalkiii/PeerBanHelper`（Java 版 fork）的「Update IPDB on COS」定时任务连续失败：
+① `ljxi/GeoCN` 上游取消 `Latest` release tag → GeoCN.mmdb 下载 404（已修复：
+改用 `releases/latest/download/` 动态路径，commit e32e080）；② fork 不继承上游
+Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败（该任务
+为上游维护者更新自家镜像用，fork 无需）→ 已禁用该 workflow（`gh workflow disable`，
+保留文件可随时重新启用）。**本项目 Rust 的 GeoIP 更新走官方
+`PBH-BTN/GeoLite.mmdb` + 上游维护者镜像，不受影响。**
+
+### 4.3 已知缺口与 pending
 
 | 编号 | 事项 | 状态 |
 |---|---|---|
