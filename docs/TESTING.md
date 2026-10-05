@@ -151,7 +151,7 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | BTN | ✅ | 传输层/ability/上报 61 用例；长跑实机启用中 |
 | WebUI | ✅/🟡 | 后端 API + 静态托管已就绪；**前端需复制上游 `webui/dist` 到 `data/static`**（部署步骤，非代码缺口） |
 | 迁移方式 | ✅ | 复制 Java `data` 目录 → 替换进程；配置/DB/GeoIP 库原样可用 |
-| 稳定性 | 🟡 | 实机长跑 13.6h+ 无冻结/无泄漏迹象；数月级长周期验证建议并行观察 |
+| 稳定性 | 🟡 | 实机长跑 10.9 天中发生两次冻结（8.5h 已修；36h 新发：整进程 CPU 归零但 web 线程存活，minidump 已取证 	arget/live/pbh-frozen-1006-001212.dmp）；冻结根因分析为生产替代前置项，已用含修复的 release 重启 |
 | 自更新 | ❌ | PBH 自身更新器未移植（Java 有），需手动替换二进制 |
 | OOBE 向导 | 🟡 | Rust 无向导页（首启生成 token），迁移场景不受影响 |
 
