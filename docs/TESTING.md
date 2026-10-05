@@ -84,6 +84,28 @@ Rust 16 条封禁 vs Java 差异 11+9+1（端口粒度）/ 9+7+1（`--ip-only`�
 对账工具已加 `--ip-only` 模式（IP 粒度消除端口伪差异；长跑中同一 IP 两侧常封到
 不同端口的连接）。
 
+### 4.1.1 长跑对账（10.9 天窗口，→ 2026-10-05 10:39 UTC，wave#7853）
+
+窗口内封禁行 Java 196 / Rust 178；IP 去重 Java 177 / Rust 95 / 交集 79（Jaccard 40.9%）。
+**差异归因**：
+
+- **🆕 pending-5（已定位并修复，2026-10-05）**：Rust 独有 **46 行 PCB excessive**（Java 对同 IP
+  零封禁，且 Java 观测 `108.163.157.206` uploaded_max=7.03G 仍不封——其 torrent size
+  较大，绝对值未达 1.5× 阈值）。Rust 的 `computed_uploaded` 含 `tracking_uploaded_increase_total`
+  累计，在**长周期 + peer 断连重连回绕**（`uploaded < last` → 全量重计）与
+  **IPv6 同段共享 range 实体**（同段其它 IP 的增量也计入 max）下**虚高**，导致
+  excessive 误封。上游公式相同（`ProgressCheatBlocker.java:236`），但 Java 对同 IP
+  同输入不封——**需对照两侧 tracking 序列与 torrent 维度**定位偏差点。
+  修复：on_unban 对齐上游——保留内存判定基线（last_report_uploaded），仅由 wave 层删 DB 行；新增单元回归 pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded。修复后 pcb_excessive 对跑复验：.92 不再误封（仅 fast test 全量重放，与 Java 一致），.91（真 excessive 2G）仍正常封禁。
+- **module-mismatch 26 条**：全部集中在 `240e:f7:c000:311::/56` 多拨重灾段，
+  **两侧都封了这些 IP**（IP 级一致），仅归因模块不同（Java=AutoRangeBan 为主、
+  Rust=MultiDialingBlocker 为主，双向少数）——多拨与连锁在同段交替先触发的
+  时序差异，IP 级行为一致，非缺陷。
+- 其余为既有归因模式（级联前置缺失/订阅版本相位差/rewind 观测相位差/纯相位差）。
+
+**稳定性结论更新**：**10.9 天连续运行**（wave#7853）无冻结、无重启、双 200，
+数月级稳定性风险大幅收敛；内存/句柄无泄漏迹象（采样持续记录 RSS）。
+
 ### 4.2 已知缺口与 pending
 
 | 编号 | 事项 | 状态 |

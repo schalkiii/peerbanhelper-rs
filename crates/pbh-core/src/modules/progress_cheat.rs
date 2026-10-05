@@ -324,24 +324,25 @@ impl ProgressCheatBlocker {
         addr.ban_delay_window_end_ms = 0;
     }
 
-    /// 解封回调：删除该 `(downloader, torrent, ip)` 的 IP 实体。
-    ///
-    /// 对齐上游 `@Subscribe onPeerUnBan(PeerUnbanEvent)` →
-    /// `pcbAddressDao.deleteEntry(torrentId, addr)`：peer 解封后立即清空它的进度历史，
-    /// 下次重连时重新累计上传增量并重新获得宽限窗口。前缀（range）实体上游不动。
+    /// 解封回调：对齐上游 `@Subscribe onPeerUnBan(PeerUnbanEvent)` →
+    /// `pcbAddressDao.deleteEntry(torrentId, addr)`——**只删持久层行，内存判定状态
+    /// （`last_report_uploaded` 等基线）保留**。上游判定读内存 `addrCache`（180s TTL
+    /// 后才从 DB reload），解封不清内存；若本实现连内存一起删，重连后会把已计入的
+    /// `uploaded` 全量重计，`tracking_uploaded_increase_total` 虚高进而误判
+    /// excessive（10.9 天对跑实测 46 行误封，见 docs/TESTING.md pending-5）。
+    /// 返回该 IP 是否有内存实体（供调用方记日志）。
     pub fn on_unban(&self, downloader_id: &str, torrent_id: &str, ip: &str) -> bool {
-        let mut store = match self.store.lock() {
+        let store = match self.store.lock() {
             Ok(s) => s,
             Err(poisoned) => poisoned.into_inner(),
         };
         store
             .addr
-            .remove(&(
+            .contains_key(&(
                 downloader_id.to_string(),
                 torrent_id.to_string(),
                 ip.to_string(),
             ))
-            .is_some()
     }
 }
 
