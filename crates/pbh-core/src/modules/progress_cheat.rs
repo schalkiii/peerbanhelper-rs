@@ -157,8 +157,14 @@ impl PcbPersistRow {
     }
 }
 
-/// 前缀实体键：`(downloader, torrent, prefix)` —— 对齐 Java `CacheKeyPrefix`。
-type RangeKey = (String, String, String);
+/// 前缀实体键：`(downloader, torrent, prefix, ip)` —— 对齐上游缓存键
+/// （`ProgressCheatBlocker.java:220` 的 5 元组含 `peerIp` 与 port）。
+///
+/// **语义要点**：上游的 range 实体是「每 IP 独立副本」（缓存键含 ip/port），同 prefix
+/// 的不同 IP 各自累加各自的副本，flush 时后写覆盖 `pcb_range` 的同 prefix 行；
+/// 若按纯前缀共享实体，多拨段下 `computed_uploaded`（max 三者）会被同段其它 IP 的
+/// 上传增量推高，造成 excessive 误判（10.9 天对跑实测 46 行误封）。
+type RangeKey = (String, String, String, String);
 /// IP 实体键：`(downloader, torrent, ip)` —— 对齐 Java `CacheKeyAddr`。
 ///
 /// 注意：**上游的键不含端口**。若把端口计入键，同一 IP 的不同端口会被当作不同实体，
@@ -194,6 +200,11 @@ impl PcbStore {
     }
 
     /// 从持久化行恢复状态（对齐 `loadFromDatabase` 命中数据库的分支）。
+    ///
+    /// range 行只按 prefix 持久化（无 ip 列），而运行态 RangeKey 含 ip 分量——
+    /// 无法还原 per-IP 副本键，故 **跳过 range 行**：重启后 range 从零重计
+    /// （对齐上游 addrCache 180s TTL 过期后重载的行为），判定连续性由 addr 行
+    /// （含 `last_report_uploaded` 基线）保障。
     pub fn load(&mut self, rows: impl IntoIterator<Item = PcbPersistRow>) {
         for row in rows {
             let entity = row.to_entity();
@@ -203,8 +214,7 @@ impl PcbStore {
                         .insert((row.downloader_id, row.torrent_id, row.key), entity);
                 }
                 PcbEntityKind::Range => {
-                    self.range
-                        .insert((row.downloader_id, row.torrent_id, row.key), entity);
+                    // 键含 ip 分量而持久化行无 ip，跳过（见方法注释）
                 }
             }
         }
@@ -213,7 +223,7 @@ impl PcbStore {
     /// 取出并清除所有「自上次落库后变更过」的实体（对齐 `batchFlushBackDatabase*` 的 `isDirty` 过滤）。
     pub fn dirty_rows(&mut self) -> Vec<PcbPersistRow> {
         let mut out = Vec::new();
-        for ((dl, torrent, key), entity) in self.range.iter_mut() {
+        for ((dl, torrent, key, _ip), entity) in self.range.iter_mut() {
             if entity.dirty {
                 out.push(PcbPersistRow::from_entity(
                     PcbEntityKind::Range,
@@ -373,10 +383,15 @@ impl RuleModule for ProgressCheatBlocker {
 
         let prefix_string = prefix_block(&peer.ip, c.ipv4_prefix_length, c.ipv6_prefix_length)
             .unwrap_or_else(|| peer.ip.clone());
+        // 对齐上游缓存键（`ProgressCheatBlocker.java:220` 的 5 元组含 ip/port）：
+        // range 实体是「每 IP 独立副本」而非同段共享——否则多拨段下 computed_uploaded
+        // 会被同段其它 IP 的上传增量推高（10.9 天对跑实测 46 行 excessive 误封）。
+        // DB 仍按 prefix 行存储（`pcb_range`），副本 flush 时后写覆盖，对齐上游。
         let range_key = (
             downloader_id.to_string(),
             torrent.id().to_string(),
             prefix_string,
+            peer.ip.clone(),
         );
         let addr_key = (
             downloader_id.to_string(),

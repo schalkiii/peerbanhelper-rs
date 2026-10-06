@@ -96,7 +96,7 @@ Rust 16 条封禁 vs Java 差异 11+9+1（端口粒度）/ 9+7+1（`--ip-only`�
   **IPv6 同段共享 range 实体**（同段其它 IP 的增量也计入 max）下**虚高**，导致
   excessive 误封。上游公式相同（`ProgressCheatBlocker.java:236`），但 Java 对同 IP
   同输入不封——**需对照两侧 tracking 序列与 torrent 维度**定位偏差点。
-  修复：on_unban 对齐上游——保留内存判定基线（last_report_uploaded），仅由 wave 层删 DB 行；新增单元回归 pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded。修复后 pcb_excessive 对跑复验：.92 不再误封（仅 fast test 全量重放，与 Java 一致），.91（真 excessive 2G）仍正常封禁。
+  修复（两处，2026-10-06）：① on_unban 对齐上游——保留内存判定基线（last_report_uploaded），仅由 wave 层删 DB 行；② **RangeKey 加 ip 分量**（对齐上游缓存键 ProgressCheatBlocker.java:220 含 ip/port）——range 实体为「每 IP 独立副本」而非同段共享，否则多拨段下 computed_uploaded 被同段其它 IP 的增量推高（此为 46 行误封的主因）；持久化加载跳过 range 行（无 ip 列无法还原副本键，重启后 range 从零重计，对齐上游 cache TTL 行为）。新增单元回归 pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded。修复后 pcb_excessive 对跑复验：.92 不再误封（仅 fast test 全量重放，与 Java 一致），.91（真 excessive 2G）仍正常封禁。
 - **module-mismatch 26 条**：全部集中在 `240e:f7:c000:311::/56` 多拨重灾段，
   **两侧都封了这些 IP**（IP 级一致），仅归因模块不同（Java=AutoRangeBan 为主、
   Rust=MultiDialingBlocker 为主，双向少数）——多拨与连锁在同段交替先触发的
