@@ -112,6 +112,18 @@ release）窗口 11.3h 对账——**module-mismatch 为 0**（修复前 26 条�
 **稳定性结论更新**：**10.9 天连续运行**（wave#7853）无冻结、无重启、双 200，
 数月级稳定性风险大幅收敛；内存/句柄无泄漏迹象（采样持续记录 RSS）。
 
+**冻结静态审计（2026-10-06，排除清单）**：
+- HTTP 超时齐备：下载器 `connect_timeout + timeout`（http.rs:118-119）、
+  BTN `callTimeout 60s`（btn_transport.rs:282）——排除「无超时 HTTP 永久阻塞」
+- 清理分支锁序干净：pcb 清理（main.rs:654-667）`store.lock` 与 `db.cleanup_pcb`
+  不嵌套；无 conn → store 反向嵌套
+- record_bans 锁序干净：`insert_history`（conn）与 `ban_list().lock` 不嵌套
+- PCB store 仅在 progress_cheat.rs 内部使用，不与 conn 交叉
+→ 静态审计未发现死锁环；根因定位需 dump 线程栈分析（pending-6，
+  `pbh-frozen-1006-001212.dmp`）。另疑点：冻结时点 16:11 与 8h 周期的
+  PCB 清理调度启动时刻吻合（16:21 前的周期为 08:21/16:21/00:21），
+  但清理分支锁序干净，更可能是同时刻的其它定时任务交错，待 dump 确认。
+
 ### 4.2 外部仓库 workflow 处置（2026-10-05）
 
 `schalkiii/PeerBanHelper`（Java 版 fork）的「Update IPDB on COS」定时任务连续失败：
