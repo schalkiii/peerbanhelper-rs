@@ -148,6 +148,24 @@ pbh --data ./data --dry-run
 首次启动在 `data/` 生成 `config.yml`（字段对齐上游 config.yml / profile.yml），浏览器打开
 `http://127.0.0.1:9898`。WebUI 静态资源放入 `data/static/`（复用上游 `webui/dist` 构建产物）。
 
+### 原生 GUI（Tauri 托盘壳，可选）
+
+`pbh-gui` 是独立 crate（不在主 workspace 内，避免 Tauri 系统库污染 CI/容器构建）：
+
+```bash
+cd crates/pbh-gui && cargo build --release
+# 产物：crates/pbh-gui/target/release/pbh-gui.exe（约 5 MB）
+```
+
+用法：`pbh-gui [--pbh-path <pbh.exe>] [--data-dir <dir>] [--port 9898]`
+
+- 以子进程拉起 `pbh`（崩溃自动重启，日志重定向到 `pbh-gui.log`）；
+  若 `--port` 已有服务监听则为**附加模式**（只开壳，不再拉起子进程）；
+- 系统托盘：显示主窗口 / 浏览器打开 WebUI / 退出（结束子进程）；关闭窗口即隐藏到托盘；
+- WebView 指向 `http://127.0.0.1:<port>`，复用上游 WebUI dist，不重写前端。
+
+Windows 需 WebView2 Runtime（Win11 自带；Win10 需单独安装）；Linux 需 `webkit2gtk`。
+
 ### 测试
 
 ```bash
