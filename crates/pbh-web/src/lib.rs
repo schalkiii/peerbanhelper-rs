@@ -87,6 +87,23 @@ pub struct DownloaderStatus {
     pub kind: String,
     pub online: bool,
     pub version: String,
+    /// 本轮 wave 该下载器的活跃种子/peer 计数（对齐上游 `DownloaderStatusDTO`
+    /// 的 `activeTorrents` / `activePeers` 数据源）
+    #[serde(default)]
+    pub torrents: u64,
+    #[serde(default)]
+    pub peers: u64,
+}
+
+/// 下载器元数据：编辑表单与状态页的数据源。
+/// 对齐上游 `DownloaderWrapperDTO.endpoint` 与 `DownloaderStatusDTO.config`
+/// （`saveDownloaderJson()`）——WebUI 前端编辑下载器时读取 `config` 填充表单，
+/// 缺失会导致编辑弹窗全空；状态显示依赖 `lastStatus` 枚举。
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DownloaderMeta {
+    pub endpoint: String,
+    pub paused: bool,
+    pub config: serde_json::Value,
 }
 
 const PLACEHOLDER: &str = "<!doctype html><html><head><meta charset='utf-8'><title>PeerBanHelper-RS</title></head>\
@@ -315,6 +332,23 @@ async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
             }
         }
     }
+    // SPA history 路由回退：WebUI 的前端子路由（如「封禁名单」「统计」的路径）
+    // 在磁盘上并无同名文件，刷新时必须回退到 index.html 交给前端路由接管——
+    // 对齐上游 Jetty 静态服务的 SPA fallback 语义，否则子路由刷新会落到占位页
+    // （占位页仅用于「前端尚未安装」的首次部署场景）
+    let index = safe_join(&dir, "index.html");
+    if let Some(path) = index {
+        if path.is_file() {
+            if let Ok(bytes) = tokio::fs::read(&path).await {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "text/html; charset=utf-8")
+                    .header("Cache-Control", "no-cache")
+                    .body(Body::from(bytes))
+                    .unwrap_or_else(|_| placeholder_response());
+            }
+        }
+    }
     placeholder_response()
 }
 
@@ -527,7 +561,24 @@ async fn downloaders(State(state): State<AppState>) -> Response {
         .lock()
         .map(|d| d.clone())
         .unwrap_or_default();
-    (StatusCode::OK, std_resp(true, None, json!(list))).into_response()
+    // 对齐上游 `DownloaderWrapperDTO(id, name, endpoint, type, paused)`：
+    // WebUI 卡片的编辑入口需要 endpoint，状态显示需要 paused
+    let items: Vec<Value> = list
+        .iter()
+        .map(|s| {
+            let meta = state.backend.downloader_meta(&s.id);
+            json!({
+                "id": s.id,
+                "name": s.name,
+                "type": s.kind,
+                "online": s.online,
+                "version": s.version,
+                "endpoint": meta.as_ref().map(|m| m.endpoint.clone()).unwrap_or_default(),
+                "paused": meta.as_ref().map(|m| m.paused).unwrap_or(false),
+            })
+        })
+        .collect();
+    (StatusCode::OK, std_resp(true, None, json!(items))).into_response()
 }
 
 // ===========================================================================
@@ -752,6 +803,10 @@ mod tests {
     /// 测试用空实现：所有能力返回默认/空值（端点路由不依赖具体后端）。
     struct NoopBackend;
     impl crate::backend::WebBackend for NoopBackend {
+    fn downloader_meta(&self, _id: &str) -> Option<DownloaderMeta> {
+        None
+    }
+
         fn installation_id(&self) -> String {
             "test-install".into()
         }

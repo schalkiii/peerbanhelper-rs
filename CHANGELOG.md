@@ -5,6 +5,26 @@
 
 ## 未发布（working tree）
 
+### fix(web): SPA 子路由回退 + 下载器 list/status 对齐上游 DTO（WebUI 三缺陷）
+
+- **GUI/子路由刷新显示占位页**：static_handler 对未命中路径一律返回
+  「静态资源未安装」占位页——WebUI 是 history 路由 SPA，前端子路由
+  （封禁名单/统计等）在磁盘无同名文件，刷新必中占位页；对齐上游 Jetty 的
+  SPA fallback 语义：未命中回退 index.html（占位页仅用于前端未安装场景）。
+- **下载器卡片状态「未知」**：上游 `DownloaderStatusDTO(lastStatus 枚举,
+  lastStatusMessage, activeTorrents, activePeers, config, paused)`，前端状态
+  文案读 `lastStatus`（HEALTHY/PAUSED/ERROR/…）；Rust 原 status 响应只有
+  `{id, name, type, online, version}`，无该字段 → 显示 UNKNOWN。
+- **编辑下载器弹窗全空**：前端从 status 响应的 `config`（上游
+  `saveDownloaderJson()`）填充表单；Rust 缺失 → 弹窗空白。
+- **修复**：`DownloaderStatus` 补 `torrents/peers` 计数（wave 聚合后回填）；
+  `WebBackend` 新增 `downloader_meta(id)`（endpoint/配置快照，serde 序列化
+  `DownloaderConfig` 保证与 PATCH 回写无损往返）；list 响应补 `endpoint/paused`
+  （对齐 `DownloaderWrapperDTO`）；status 响应按 DTO 逐字段对齐
+  （实测：`lastStatus=HEALTHY`、`activeTorrents=9`、`config` 完整）。
+
+### fix(web): 登录下发会话 cookie，修复 WebUI 空白（数据全 0/骨架屏）
+
 ### fix(web): 登录下发会话 cookie，修复 WebUI 空白（数据全 0/骨架屏）
 
 - **现象**：WebUI 页面外壳正常渲染但所有 API 数据为空——前端登录后全部请求 401。

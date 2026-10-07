@@ -80,6 +80,11 @@ pub async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> Re
 }
 
 /// `GET /api/downloaders/{id}/status`：单下载器详细状态。
+///
+/// 对齐上游 `DownloaderStatusDTO(lastStatus, lastStatusMessage, activeTorrents,
+/// activePeers, config, paused)`：WebUI 首页卡片的状态文案读 `lastStatus` 枚举、
+/// **编辑弹窗从 `config` 填充表单**（上游数据源为 `saveDownloaderJson()`）——
+/// 缺失会让卡片显示「未知」、编辑弹窗全空。
 pub async fn status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let statuses = state
         .downloaders
@@ -87,13 +92,36 @@ pub async fn status(State(state): State<AppState>, Path(id): Path<String>) -> Re
         .map(|s| s.clone())
         .unwrap_or_default();
     if let Some(status) = statuses.iter().find(|s| s.id == id) {
+        let meta = state.backend.downloader_meta(&id);
+        let (config, paused) = meta
+            .as_ref()
+            .map(|m| (m.config.clone(), m.paused))
+            .unwrap_or((Value::Null, false));
+        // 上游 DownloaderLastStatus 枚举：HEALTHY/PAUSED/NEED_TAKE_ACTION/ERROR/UNKNOWN
+        let (last_status, last_status_message) = if paused {
+            ("PAUSED", "PAUSED")
+        } else if status.online {
+            ("HEALTHY", "OK")
+        } else {
+            ("ERROR", "ERROR")
+        };
+        let body = json!({
+            "id": status.id,
+            "name": status.name,
+            "type": status.kind,
+            "online": status.online,
+            "version": status.version,
+            "lastStatus": last_status,
+            "lastStatusMessage": last_status_message,
+            "activeTorrents": status.torrents,
+            "activePeers": status.peers,
+            "config": config,
+            "paused": paused,
+            "endpoint": meta.as_ref().map(|m| m.endpoint.clone()).unwrap_or_default(),
+        });
         (
             StatusCode::OK,
-            crate::std_resp(
-                true,
-                Some("OK"),
-                serde_json::to_value(status).unwrap_or(Value::Null),
-            ),
+            crate::std_resp(true, Some("OK"), body),
         )
             .into_response()
     } else {

@@ -171,6 +171,10 @@ pub trait WebBackend: Send + Sync {
     // —— 下载器管理 ----
     /// 下载器列表（含运行时状态，供 `/api/downloaders`）。
     fn downloaders(&self) -> Vec<Value>;
+    /// 下载器元数据（endpoint/配置快照）——对齐上游 `DownloaderWrapperDTO.endpoint`
+    /// 与 `DownloaderStatusDTO.config`（`saveDownloaderJson()`）。
+    /// WebUI 编辑下载器时从 status 响应的 `config` 填充表单，缺失则弹窗全空。
+    fn downloader_meta(&self, id: &str) -> Option<crate::DownloaderMeta>;
     /// 按 id 取下载器 live 句柄（供 `/torrents` `/peers` 实时查询）。
     fn downloader(&self, id: &str) -> Option<Arc<dyn Downloader>>;
     /// 创建下载器（写入配置并热加载）。

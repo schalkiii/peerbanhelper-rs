@@ -315,6 +315,8 @@ impl WaveEngine {
                         kind: entry.downloader.downloader_type().to_string(),
                         online: false,
                         version: String::new(),
+                        torrents: 0,
+                        peers: 0,
                     });
                     report.errors.push(e);
                 }
@@ -786,6 +788,8 @@ impl WaveEngine {
             kind: dl.downloader_type().to_string(),
             online: login.success,
             version: login.version.clone(),
+            torrents: 0,
+            peers: 0,
         };
         if !login.success {
             status.online = false;
@@ -932,6 +936,10 @@ impl WaveEngine {
                 agg.bans.extend(o.bans);
             }
         }
+        // 对齐上游 `DownloaderStatusDTO` 的 `activeTorrents`/`activePeers` 数据源：
+        // 状态接口直接读本结构，避免 WebUI 侧再发 N 个请求
+        agg.status.torrents = agg.torrents as u64;
+        agg.status.peers = agg.peers as u64;
         Ok(agg)
     }
 }

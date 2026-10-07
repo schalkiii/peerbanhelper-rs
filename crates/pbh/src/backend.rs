@@ -18,7 +18,7 @@ use pbh_downloader::http::{HttpFetcher, ReqwestFetcher};
 use pbh_downloader::qbittorrent::{QBConfig, QBittorrentDownloader};
 use pbh_downloader::transmission::{TRConfig, TransmissionDownloader};
 use pbh_downloader::Downloader;
-use pbh_web::{ModuleRecord, ReloadEntry, WebBackend};
+use pbh_web::{DownloaderMeta, ModuleRecord, ReloadEntry, WebBackend};
 use rand::distributions::Alphanumeric;
 use rand::Rng as _;
 use serde_json::{json, Value};
@@ -151,6 +151,22 @@ impl PbhBackend {
 }
 
 impl WebBackend for PbhBackend {
+    fn downloader_meta(&self, id: &str) -> Option<DownloaderMeta> {
+        let cfg = self.snapshot();
+        let d = cfg
+            .downloaders
+            .iter()
+            .find(|d| d.resolved_id() == id || d.name == id)?;
+        // 对齐上游 `saveDownloaderJson()`：serde 序列化 DownloaderConfig
+        //（字段名与 PATCH 回写解析一致，编辑表单可无损往返）
+        let config = serde_json::to_value(d).unwrap_or(serde_json::Value::Null);
+        Some(DownloaderMeta {
+            endpoint: d.endpoint.clone(),
+            paused: false,
+            config,
+        })
+    }
+
     fn installation_id(&self) -> String {
         self.install_id.clone()
     }
