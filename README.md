@@ -166,6 +166,9 @@ cd crates/pbh-gui && cargo build --release
 
 Windows 需 WebView2 Runtime（Win11 自带；Win10 需单独安装）；Linux 需 `webkit2gtk`。
 
+生产环境用 Rust 版替换 Java 版（含 GUI 用法、数据目录复用、灰度切换与回退）见
+[docs/DEPLOY.md](docs/DEPLOY.md)。
+
 ### 测试
 
 ```bash
