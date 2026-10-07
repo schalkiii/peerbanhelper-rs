@@ -16,7 +16,13 @@ pub struct LoginBody {
     token: Option<String>,
 }
 
-/// `POST /api/auth/login`：校验 token；校验通过返回 200，失败返回 401。
+/// `POST /api/auth/login`：校验 token；校验通过返回 200 + 会话 cookie。
+///
+/// 上游为 Javalin 服务端会话（`sessionAttribute("authenticated", token)` +
+/// JSESSIONID cookie 由浏览器自动携带）；WebUI 前端**没有任何手动凭据存储**
+/// （无 localStorage/拦截器），登录后全靠 cookie 维持会话。Rust 版以无状态
+/// cookie 等价实现：`PBH_SESSION=<token>`（HttpOnly，值即凭据，与 Bearer 同权），
+/// 缺失会导致登录成功后所有 API 仍 401、WebUI 空白。
 ///
 /// 与上游的差异（未移植）：token 为空时上游抛出 `NeedInitException` 让前端跳转
 /// `/init` 初始化向导页面；Rust 版默认总会生成 token，此处同样以 303 提示前端走初始化。
@@ -34,7 +40,16 @@ pub async fn login(
         .or_else(|| query.get("token").cloned())
         .unwrap_or_default();
     if given.trim() == expected.trim() {
-        crate::std_resp(true, Some("WEBAPI_AUTH_OK"), Value::Null).into_response()
+        let cookie = format!(
+            "PBH_SESSION={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",
+            expected.trim()
+        );
+        (
+            StatusCode::OK,
+            [("Set-Cookie", cookie.as_str())],
+            crate::std_resp(true, Some("WEBAPI_AUTH_OK"), Value::Null),
+        )
+            .into_response()
     } else {
         (
             StatusCode::UNAUTHORIZED,
@@ -44,7 +59,13 @@ pub async fn login(
     }
 }
 
-/// `POST /api/auth/logout`。
+/// `POST /api/auth/logout`：清除会话 cookie（对齐上游 `sessionAttribute(null)`）。
 pub async fn logout() -> Response {
-    crate::std_resp(true, Some("success"), json!("OK")).into_response()
+    let expired = "PBH_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+    (
+        StatusCode::OK,
+        [("Set-Cookie", expired)],
+        crate::std_resp(true, Some("success"), json!("OK")),
+    )
+        .into_response()
 }

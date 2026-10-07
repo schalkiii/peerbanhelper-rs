@@ -5,6 +5,19 @@
 
 ## 未发布（working tree）
 
+### fix(web): 登录下发会话 cookie，修复 WebUI 空白（数据全 0/骨架屏）
+
+- **现象**：WebUI 页面外壳正常渲染但所有 API 数据为空——前端登录后全部请求 401。
+- **根因**：上游为 Javalin 服务端会话（`sessionAttribute("authenticated", token)` +
+  JSESSIONID cookie 由浏览器自动携带），且 WebUI 前端**没有任何手动凭据存储**
+  （无 localStorage/请求拦截器，登录后完全依赖 cookie）；Rust 版 `auth/login`
+  只校验返回 200、不下发任何 cookie，`auth_middleware` 也只认 Bearer/`?token=`，
+  登录成功后后续 API 依然全部 401。
+- **修复**：login 成功下发 `PBH_SESSION=<token>`（HttpOnly/Path=/，值即凭据，
+  与 Bearer 同权；token 为 hex 无需编码）；middleware 增加会话 cookie 验证通道；
+  logout 清除 cookie（对齐 `sessionAttribute(null)`）。
+- **实测**：登录 → Set-Cookie → 带 cookie 调 `/api/metrics/general` 返回真实数据。
+
 ### docs(test): 新增测试覆盖矩阵与用例清单文档
 
 - 新增 `docs/TESTING.md`：分层模型（L1 单元 / L2 模块与解析黄金 / L3 下载器集成 /

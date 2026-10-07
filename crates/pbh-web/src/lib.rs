@@ -355,6 +355,19 @@ async fn auth_middleware(
         .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
         .map(|p| p.trim_start_matches("token=") == token)
         .unwrap_or(false);
+    // 会话 cookie：对齐上游 Javalin session（WebUI 前端登录后仅靠浏览器自动携带
+    // 的 cookie 维持会话，无手动凭据存储）——`POST /api/auth/login` 下发
+    // `PBH_SESSION=<token>`，此处验证之
+    let cookie_ok = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| {
+            c.split(';')
+                .map(str::trim)
+                .find(|p| p.starts_with("PBH_SESSION="))
+                .map(|p| p["PBH_SESSION=".len()..].trim() == token)
+        })
+        .unwrap_or(false);
     if token.is_empty() {
         // 上游 `JavalinWebContainer`：token 为空表示尚未完成初始化向导，
         // 此时任何鉴权 API 都重定向到 `/init`（`WEBAPI_NEED_INIT`）。
@@ -370,7 +383,7 @@ async fn auth_middleware(
         )
             .into_response();
     }
-    if header_ok || query_ok {
+    if header_ok || query_ok || cookie_ok {
         next.run(req).await
     } else {
         (
