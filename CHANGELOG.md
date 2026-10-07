@@ -5,6 +5,24 @@
 
 ## 未发布（working tree）
 
+### test(core/mockqb): 覆盖矩阵最后缺口消除——BTN L5 对跑实现、ptr L5 定性 n/a
+
+- **BTN L5 对跑（矩阵 ❌ → ✅）**：mockqb 新增 BTN mock——`/btn/config` 返回
+  协议 20/20 的 ability 清单（heartbeat/submit_bans/ip_denylist，endpoint 回指
+  自身、random_initial_delay=1000——0 会使 Java `nextLong(0)` 崩溃）、上报事件
+  录制进对跑 diff（`BTN:<事件>` 行，Sort-Unique 去重后自然比对）。注入脚本
+  `inject_btn` 把两侧 `btn.config-url` 指向 mock 并启用模块。实测对跑：
+  CONFIG_REQUESTED / heartbeat 上报（20B 逐字）/ IP_DENYLIST_SYNCED 三类事件
+  全部「共有」——两侧 BTN 客户端行为完全一致。
+- **ptr_blacklist L5 定性 n/a（非缺口）**：上游 `PeerBanHelper.java` 中
+  `moduleClasses.add(PTRBlacklist.class)` 被注释——Java 生产不存在该判定，
+  对跑无从比对。Rust 默认 `enabled: false` 与上游行为一致；L1/L2 已覆盖
+  规则匹配与缓存。矩阵图例补充注⁴。
+- 教训沉淀：nested group 的 re.sub 替换串不得重复拼接 group（group1 已含
+  group2/3，重复拼接产生 `enabled:   enabled: true` 的 YAML 损坏）。
+
+### test(web): WebUI 契约测试集——把每个生产缺陷变成回归用例
+
 ### test(web): WebUI 契约测试集——把每个生产缺陷变成回归用例
 
 - **背景**：单元/黄金测试全绿但实机部署后前端大面积不可用——缺陷集中在

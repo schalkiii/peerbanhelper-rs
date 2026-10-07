@@ -20,6 +20,9 @@ REGEX_RULE = '{"method":"REGEX","content":"^EvilClient.*"}'
 # 使对跑在 2~3 波内即可命中 idleTimeout（判定路径与默认配置完全一致）
 IDLE_SPEED = "1000000000"
 IDLE_MAX = "3000"
+# BTN mock：config-url 指向 mockqb 的 /btn/config（ability endpoint 回指自身，
+# 上报回流到 mockqb 录制——两侧 configSuccess 与上报行为可对跑比对）
+BTN_CONFIG_URL = "http://127.0.0.1:18080/btn/config"
 
 
 def inject_ips(text):
@@ -109,6 +112,25 @@ def inject_idle(text):
     return text
 
 
+def inject_btn(text):
+    """btn.config-url → mockqb 的 /btn/config（BTN L5 对跑：两侧连同一 mock BTN）；
+    btn.enabled 若为 false 一并启用（锚定 btn: 段内，避免误改其它模块开关）。"""
+    if "18080/btn/config" in text:
+        return text
+    text = re.sub(
+        r"([ \t]*btn:[ \t]*\r?\n((?:[ \t]*#[^\n]*\r?\n)*)([ \t]+enabled: ))false",
+        lambda m: f"{m.group(1)}true",
+        text,
+        count=1,
+    )
+    return re.sub(
+        r"([ \t]+config-url: )[^\r\n]*",
+        lambda m: f"{m.group(1)}{BTN_CONFIG_URL}",
+        text,
+        count=1,
+    )
+
+
 def main():
     changed = 0
     for arg in sys.argv[1:]:
@@ -119,6 +141,7 @@ def main():
         new = inject_cities(new)
         new = inject_client_regex(new)
         new = inject_idle(new)
+        new = inject_btn(new)
         if new != text:
             path.write_text(new, encoding="utf-8")
             changed += 1

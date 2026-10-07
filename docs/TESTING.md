@@ -22,7 +22,7 @@
 
 | 模块 | L1 单元 | L2 黄金 | L3/L4 | L5 对跑 | 小计 |
 |---|---|---|---|---|---|
-| btn（传输层/ability/上报）| ✅ 56 | — | — | ❌ | 61 |
+| btn（传输层/ability/上报）| ✅ 56 | — | — | ✅ btn mock（新增）| 61 |
 | monitor（监控模块宿主）| ✅ 45 | — | — | n/a¹ | 45 |
 | downloader（qb/tr/aria2/biglybt/bitcomet/deluge）| ✅ 91+ | — | ✅ 20 | ✅ sample | 118 |
 | geoip（IPDB/GeoCN/更新器）| ✅ 37 | — | — | n/a² | 37 |
@@ -35,7 +35,7 @@
 | progress_cheat（PCB）| ✅ 1 | ✅ 11 | — | ✅ rewind/desync/excessive | 12 |
 | expression_engine | ✅ 11 | ✅ 6 | — | n/a³ | 17 |
 | ip_blacklist | ✅ 9 | ✅ 1 | — | ✅ matrix | 10 |
-| ptr_blacklist | ✅ 9 | ✅ 1 | — | ❌ | 10 |
+| ptr_blacklist | ✅ 9 | ✅ 1 | — | n/a⁴ | 10 |
 | mockqb（波次轮转）| ✅ 3 | — | — | 载体 | 3 |
 | downloader-tr av 脚本 | — | ✅ 10 | — | — | 10 |
 | ip_rule_list | ✅ 内嵌 | ✅ 22 | — | ✅ sample（all-in-one）| 22+ |
@@ -48,6 +48,12 @@
 
 ¹ 监控模块不参与 peer 判定，对跑无意义。² GeoIP 由城市/ASN 场景间接覆盖（matrix 城市 IP）。
 ³ 表达式脚本无上游 Java 对应启用场景，对跑默认关闭。
+⁴ 上游 `PeerBanHelper.java` 中 PTR 模块注册被注释（`//moduleClasses.add(PTRBlacklist.class)`），
+Java 侧不存在该判定——对跑无从比对；L1/L2 已覆盖规则匹配与缓存，Rust 默认 `enabled: false`
+与上游一致。
+⁵ BTN 对跑经 mockqb 的 BTN mock 完成：注入 `btn.config-url → http://127.0.0.1:18080/btn/config`，
+mockqb 提供 config（protocol 20/20、heartbeat/submit_bans/ip_denylist 三个 ability、endpoint 回指
+自身）并录制上报事件；对跑断言两侧 config 请求、heartbeat 上报（20B 逐字）、denylist 同步全部「共有」。
 
 ## 3. mock 对跑用例清单（`crates/pbh-mockqb/fixtures/`）
 
@@ -62,6 +68,7 @@
 | `auto_range_ban.json`（新增）| wave0 单 IP 封禁 → wave1 同 /30 连锁 | 4/4 全「共有」 | ✅ 一致 |
 | `replay_real.json`（生成器 `gen_replay_fixture.py`，产物不入库）| Java history 真实封禁 peer 重放 | 99.3%（954/961）一致 | ✅ 见既有归因 |
 | `idle_protection.json` | 空闲连接（IdleProbe，速度 0 跨波存活，加速参数 3s 上限）vs 活跃对照 | 封禁集合一致（idleTimeout，含 mapped 变体逐字）| ✅ 一致 |
+| `idle_protection.json` + BTN 注入 | BTN mock：config 拉取、heartbeat 上报（20B 逐字）、ip_denylist 同步 | 三类事件全部「共有」 | ✅ 一致（见注⁵）|
 
 规则注入：`inject_test_profile.py` 向两侧配置写入同一测试规则集
 （CIDR `203.0.114.0/24`、单 IP `198.51.100.200`、端口 `39999`、城市 `浙江省 温州市`、

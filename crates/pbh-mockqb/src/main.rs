@@ -7,7 +7,7 @@
 //!
 //! fixture 字段对齐 `crates/pbh-downloader/src/qbittorrent/dto.rs` 的 DTO。
 
-use axum::extract::{Form, Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -158,6 +158,8 @@ struct AppState {
     /// 对跑录制文件：把收到的封禁下发（增量 `banPeers` 与全量 `banned_IPs`）
     /// 逐 IP 追加写入，使 Java 与 Rust 两版的封禁集合可直接做跨版本 diff。
     record: Option<Arc<Mutex<std::fs::File>>>,
+    /// mockqb 自身监听端口（BTN ability endpoint 回指自身）
+    port: u16,
     /// 每 hash 的 `torrentPeers` 请求次数（驱动 waves 波次轮转）
     wave_counter: Arc<Mutex<HashMap<String, u64>>>,
     /// `torrents/info` 的调用次数（与 wave 同频，驱动种子列表轮转）
@@ -271,6 +273,61 @@ fn record_ip(state: &AppState, ip: &str) {
             let _ = guard.flush();
         }
     }
+}
+
+/// 把 BTN 事件追加到录制文件（`BTN:<事件>`；diff 的 Sort-Unique 天然去重，
+/// 两侧都请求过 config 则各产生一行相同记录 → diff 显示「共有」）。
+fn record_btn(state: &AppState, event: &str) {
+    if let Some(file) = &state.record {
+        if let Ok(mut guard) = file.lock() {
+            let _ = writeln!(guard, "BTN:{event}");
+            let _ = guard.flush();
+        }
+    }
+}
+
+// ---- BTN mock（对跑 L5：config-url 指向 mockqb，ability endpoint 回指自身）----
+
+async fn btn_config(State(state): State<AppState>) -> Response {
+    record_btn(&state, "CONFIG_REQUESTED");
+    let base = format!("http://127.0.0.1:{}", state.port);
+    Json(json!({
+        "min_protocol_version": 20,
+        "max_protocol_version": 20,
+        "ability": {
+            "heartbeat": {
+                "endpoint": format!("{base}/btn/heartbeat"),
+                "interval": 5000, "random_initial_delay": 1000,
+                "pow_captcha": false, "multi_if": false,
+            },
+            "submit_bans": {
+                "endpoint": format!("{base}/btn/submit_bans"),
+                "interval": 5000, "random_initial_delay": 1000,
+                "pow_captcha": false, "multi_if": false,
+            },
+            "ip_denylist": {
+                "endpoint": format!("{base}/btn/ip_denylist"),
+                "interval": 5000, "random_initial_delay": 1000,
+                "pow_captcha": false, "multi_if": false,
+            },
+        }
+    }))
+    .into_response()
+}
+
+async fn btn_receive(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+    body: String,
+) -> Response {
+    record_btn(&state, &format!("{kind}:{}B", body.len()));
+    (StatusCode::OK, Json(json!(null))).into_response()
+}
+
+async fn btn_ip_denylist(State(state): State<AppState>) -> Response {
+    record_btn(&state, "IP_DENYLIST_SYNCED");
+    // 上游 BtnAbilityIPDenyList.load 期望纯文本（每行一个 IP/CIDR）；空文本 = 0 条规则
+    text("")
 }
 
 async fn torrents_info(State(state): State<AppState>) -> Response {
@@ -409,6 +466,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         fixture: Arc::new(fixture),
         record,
+        port: args.port,
         wave_counter: Arc::new(Mutex::new(HashMap::new())),
         torrents_counter: Arc::new(Mutex::new(0)),
     };
@@ -431,6 +489,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v2/torrents/properties", get(torrent_properties))
         .route("/api/v2/sync/maindata", get(maindata))
         .route("/api/v2/sync/torrentPeers", get(torrent_peers))
+        // BTN mock：config-url 指向 /btn/config，ability endpoint 回指自身（上报录制）
+        .route("/btn/config", get(btn_config))
+        .route("/btn/{kind}", post(btn_receive))
+        .route("/btn/ip_denylist", get(btn_ip_denylist))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
