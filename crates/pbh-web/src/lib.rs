@@ -121,6 +121,15 @@ pub(crate) fn std_resp(success: bool, message: Option<&str>, data: Value) -> Jso
     Json(json!({ "success": success, "message": message, "data": data }))
 }
 
+/// `/api` 未命中端点的 404（JSON——不得落回 SPA 的 index.html）。
+async fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        std_resp(false, Some("API_NOT_FOUND"), Value::Null),
+    )
+        .into_response()
+}
+
 pub fn build_router(state: AppState) -> Router {
     // 需要 Token 鉴权的 API（对齐上游 Role.USER_READ / USER_WRITE 分组）
     let api_authed = api::api_routes().layer(middleware::from_fn_with_state(
@@ -129,6 +138,10 @@ pub fn build_router(state: AppState) -> Router {
     ));
     // 无需鉴权的 API（Role.ANYONE：登录、manifest、初始化状态）
     let api_public = api::public_routes();
+    // /api 未命中端点必须返回 404 JSON——此前未命中会冒泡到 SPA fallback
+    // 返回 index.html（假 200），前端拿到 HTML 当 JSON 解析失败，还会掩盖
+    // 「后端缺端点」的事实（2026-10-07 生产教训）
+    let api = api_public.merge(api_authed).fallback(api_not_found);
 
     Router::new()
         .route("/health", get(health))
@@ -136,8 +149,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/blocklist/p2p-plain-format", get(blocklist_p2p_plain))
         .route("/blocklist/ip", get(blocklist_ip))
         .route("/blocklist/dat-emule", get(blocklist_dat_emule))
-        .nest("/api", api_public)
-        .nest("/api", api_authed)
+        .nest("/api", api)
         .fallback(static_handler)
         .with_state(state)
 }
@@ -1191,5 +1203,265 @@ mod tests {
             "zh-CN",
         );
         assert_eq!(cn, "Peer handshaking");
+    }
+
+    // ===========================================================================
+    // WebUI 契约测试（生产事故回归集，2026-10-07）
+    //
+    // 背景：单元/黄金测试全绿，但实机部署后前端大面积不可用——缺陷全部集中在
+    // 「API 表面契约」：端点缺失/硬编码占位、响应结构与前端期望不符、认证流程
+    // 断裂、/api 未命中被 SPA fallback 兜成假 200。本组测试逐条断言该契约，
+    // 每条对应一个已发生的生产缺陷。
+    // ===========================================================================
+
+    /// 发起不带认证的请求（模拟首次访问/GUI 未登录）。
+    async fn raw_get(state: AppState, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+        let request = Request::builder()
+            .uri(uri)
+            // 契约测试聚焦「响应结构」；认证流程由独立用例覆盖
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn btn_status_contract() {
+        // 缺陷回归：/api/modules/btn 曾是硬编码占位（无 enabled 字段），
+        // BTN 实际运行时设置页仍显示「未启用」。
+        let (status, _, body) = raw_get(test_state(Arc::new(Database::open_in_memory().unwrap())), "/api/modules/btn").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        assert!(data.get("enabled").and_then(|v| v.as_bool()).is_some(), "必须含布尔 enabled 字段");
+        assert!(data.get("abilities").and_then(|v| v.as_array()).is_some(), "必须含 abilities 数组");
+        assert!(data.get("configSuccess").is_some(), "必须含 configSuccess");
+    }
+
+    #[tokio::test]
+    async fn general_status_contract() {
+        // 缺陷回归：general/status 的 jvm.memory 为空对象（首页 0 Bytes 红点）、
+        // compile_time=0（显示 1970）、无 btn 段（设置页显示 BTN 未启用）。
+        let (status, _, body) = raw_get(test_state(Arc::new(Database::open_in_memory().unwrap())), "/api/general/status").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        let available = data
+            .pointer("/jvm/memory/heap/available")
+            .and_then(|v| v.as_u64())
+            .expect("jvm.memory.heap.available 必须为数字（驱动首页「X 可用」）");
+        assert!(available > 0, "available 不应为 0");
+        let compile_time = data
+            .pointer("/peerbanhelper/compile_time")
+            .and_then(|v| v.as_i64())
+            .expect("compile_time 必须为毫秒时间戳");
+        assert!(compile_time > 1_600_000_000_000, "不得为 1970（占位 0）");
+        let btn = data.get("btn").expect("必须含 btn 段（设置页 BTN 状态数据源）");
+        assert!(btn.get("enabled").and_then(|v| v.as_bool()).is_some());
+        let net = data.pointer("/system/network").expect("必须含 system.network");
+        assert!(net.get("internet_access").is_some(), "必须含 internet_access");
+        assert!(net.get("use_proxy").is_some(), "必须含 use_proxy");
+    }
+
+    #[tokio::test]
+    async fn pbhplus_status_contract() {
+        // 缺陷回归：/api/pbhplus/* 完全缺失（被 SPA fallback 兜成假 200 的 HTML），
+        // 前端以 enabledFeatures 门控页面功能，空列表导致各处显示升级卡。
+        let (status, _, body) = raw_get(test_state(Arc::new(Database::open_in_memory().unwrap())), "/api/pbhplus/status").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        let features = data
+            .get("enabledFeatures")
+            .and_then(|v| v.as_array())
+            .expect("必须含 enabledFeatures 数组");
+        let names: Vec<&str> = features.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"basic"), "必须含 basic（页面可用性门控）");
+        assert!(names.contains(&"paid"), "必须含 paid（Plus 按钮门控）");
+        assert!(data.get("licenses").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[tokio::test]
+    async fn downloaders_list_contract() {
+        // 缺陷回归：list 响应缺 endpoint/paused（对齐上游 DownloaderWrapperDTO），
+        // 编辑下载器弹窗全空。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        *state.downloaders.lock().unwrap() = vec![DownloaderStatus {
+            id: "d1".to_string(),
+            name: "qBittorrent".to_string(),
+            kind: "qbittorrent".to_string(),
+            online: true,
+            version: "4.6.7".to_string(),
+            torrents: 3,
+            peers: 12,
+        }];
+        let (status, _, body) = raw_get(state, "/api/downloaders").await;
+        assert_eq!(status, StatusCode::OK);
+        let item = body
+            .pointer("/data/0")
+            .expect("至少一个下载器条目");
+        for field in ["id", "name", "type", "online", "version", "endpoint", "paused"] {
+            assert!(item.get(field).is_some(), "list 条目缺字段 {field}");
+        }
+    }
+
+    #[tokio::test]
+    async fn downloader_status_contract() {
+        // 缺陷回归：status 响应缺 lastStatus/activeTorrents/activePeers/config/paused
+        // （对齐上游 DownloaderStatusDTO）——首页显示「未知」、编辑弹窗全空。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        *state.downloaders.lock().unwrap() = vec![DownloaderStatus {
+            id: "d1".to_string(),
+            name: "qBittorrent".to_string(),
+            kind: "qbittorrent".to_string(),
+            online: true,
+            version: "4.6.7".to_string(),
+            torrents: 3,
+            peers: 12,
+        }];
+        let (status, _, body) = raw_get(state, "/api/downloaders/d1/status").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        for field in [
+            "lastStatus",
+            "lastStatusMessage",
+            "activeTorrents",
+            "activePeers",
+            "config",
+            "paused",
+        ] {
+            assert!(data.get(field).is_some(), "status 响应缺字段 {field}");
+        }
+        assert_eq!(
+            data.get("activeTorrents").and_then(|v| v.as_u64()),
+            Some(3),
+            "activeTorrents 来自 wave 聚合计数"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_sets_session_cookie_and_authorizes() {
+        // 缺陷回归：login 只校验不下发 cookie，登录成功后所有 API 仍 401
+        // （前端仅靠浏览器自动携带的会话 cookie 维持会话）。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let router = build_router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"token":"test-token"}"#))
+            .expect("请求构造");
+        let response = router.clone().oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie = response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .find_map(|v| v.to_str().ok()?.split(';').next().map(str::to_string))
+            .expect("登录必须下发 PBH_SESSION cookie");
+        assert!(cookie.starts_with("PBH_SESSION="), "cookie 名必须为 PBH_SESSION：{cookie}");
+        // 会话 cookie 调受保护端点必须通过
+        let request = Request::builder()
+            .uri("/api/statistic/counter")
+            .header("Cookie", &cookie)
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "会话 cookie 必须通过认证");
+    }
+
+    #[tokio::test]
+    async fn silent_login_flow_sets_cookie_via_document() {
+        // 缺陷回归：静默登录豁免最初挂在 /api middleware 上，而文档请求（GET /）
+        // 不经过它——cookie 永远种不下，GUI 骨架屏。闭环必须是：文档入口
+        // 校验 ?silentLogin= → 302 + Set-Cookie → 页面 API 由浏览器携带 cookie。
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        state.silent_login = "test-silent-token".to_string();
+        let router = build_router(state.clone());
+        let request = Request::builder()
+            .uri("/?silentLogin=test-silent-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.clone().oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::FOUND, "文档入口应 302");
+        let cookie = response
+            .headers()
+            .get_all(axum::http::header::SET_COOKIE)
+            .iter()
+            .find_map(|v| v.to_str().ok()?.split(';').next().map(str::to_string))
+            .expect("静默登录必须下发会话 cookie");
+        // 种下的 cookie 调受保护端点必须通过
+        let request = Request::builder()
+            .uri("/api/statistic/counter")
+            .header("Cookie", &cookie)
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "静默登录的会话必须通过认证");
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_and_api_404() {
+        // 缺陷回归（两向）：
+        // ① SPA history 路由刷新曾落入「未安装」占位页 → 未命中路径必须回退 html；
+        // ② /api 未命中端点曾同样兜成 index.html（假 200 掩盖缺失端点）→ 必须 404 JSON。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let router = build_router(state);
+        // ① SPA 回退：html（占位也是 html，content-type 断言足够区分 JSON）
+        for path in ["/", "/some/spa/route"] {
+            let request = Request::builder().uri(path).body(Body::empty()).expect("请求构造");
+            let response = router.clone().oneshot(request).await.expect("路由调用");
+            assert_eq!(response.status(), StatusCode::OK, "{path} 应回退 html");
+            let ct = response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert!(ct.starts_with("text/html"), "{path} 必须回退 html，实际 {ct}");
+        }
+        // ② /api 未命中：404 JSON（不得是 index.html 假 200）
+        let request = Request::builder()
+            .uri("/api/nonexistent-endpoint")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "/api 未命中必须 404");
+        let ct = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.starts_with("application/json"), "/api 404 必须是 JSON，实际 {ct}");
+    }
+
+    #[tokio::test]
+    async fn counter_reads_accumulated_metrics() {
+        // 缺陷回归：counter 读 Metrics 的累计字段（checks/peer_bans/peer_unbans），
+        // 但 wave 从未累加——首页「共检查/封禁/解封」恒为 0。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        *state.metrics.lock().unwrap() = Metrics {
+            checks: 7,
+            peer_bans: 3,
+            peer_unbans: 1,
+            ..Default::default()
+        };
+        let request = Request::builder()
+            .uri("/api/statistic/counter")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let data = body.get("data").expect("data 字段");
+        assert_eq!(data.get("checkCounter").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(data.get("peerBanCounter").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(data.get("peerUnbanCounter").and_then(|v| v.as_u64()), Some(1));
     }
 }

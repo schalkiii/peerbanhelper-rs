@@ -5,6 +5,29 @@
 
 ## 未发布（working tree）
 
+### test(web): WebUI 契约测试集——把每个生产缺陷变成回归用例
+
+- **背景**：单元/黄金测试全绿但实机部署后前端大面积不可用——缺陷集中在
+  「API 表面契约」（端点缺失/占位、响应结构与前端期望不符、认证流程断裂、
+  `/api` 未命中被 SPA fallback 兜成假 200），属于既有测试的盲区：单测验证
+  实现内部逻辑，不验证 API 表面与前端/上游的契约。
+- **新增 9 条契约测试**（`lib.rs` tests mod，每条对应一个已发生的生产缺陷）：
+  `btn_status_contract`（enabled/abilities/configSuccess 字段）、
+  `general_status_contract`（btn 段/堆内存 available/compile_time/network）、
+  `pbhplus_status_contract`（enabledFeatures 含 basic+paid）、
+  `downloaders_list_contract`（endpoint/paused）、`downloader_status_contract`
+  （lastStatus/activeTorrents/activePeers/config/paused）、
+  `login_sets_session_cookie_and_authorizes`（login→Set-Cookie→cookie 过认证）、
+  `silent_login_flow_sets_cookie_via_document`（文档入口 302+Set-Cookie 闭环）、
+  `spa_fallback_and_api_404`（SPA 回退 html + /api 未命中 404）、
+  `counter_reads_accumulated_metrics`（counter 读累计字段）。
+- **配套修复**：`/api` 未命中端点改为 404 JSON（`api_not_found`）——此前冒泡
+  到 SPA fallback 返回 index.html（假 200），掩盖后端缺端点。
+- **教训**：改完源码后 `cargo build --release` 必须重跑——test profile 的
+  验证不会更新 release 产物（本轮部署遗漏即此原因）。
+
+### fix(web): general/status 占位字段填充 + pbhplus 端点（设置页运行状态修复）
+
 ### fix(web): general/status 占位字段填充 + pbhplus 端点（设置页运行状态修复）
 
 - **设置页「网络/运行时信息/BTN 状态」大量占位**：`jvm.memory` 为空对象
