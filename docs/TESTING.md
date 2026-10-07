@@ -31,7 +31,7 @@
 | db（schema/history/torrents/统计）| ✅ 26 | — | — | ✅ compare_dualrun | 31 |
 | config（AppConfig/上游布局）| ✅ 15 | ✅ 1 | ✅ 2 | — | 18 |
 | string_blacklist（client/peer-id）| ✅ 3 | ✅ 12 | — | ✅ matrix | 15 |
-| web（API/鉴权/任务）| ✅ 14 | — | — | n/a | 14 |
+| web（API/鉴权/任务/契约）| ✅ 35（含 23 契约）| — | — | n/a | 35 |
 | progress_cheat（PCB）| ✅ 1 | ✅ 11 | — | ✅ rewind/desync/excessive | 12 |
 | expression_engine | ✅ 11 | ✅ 6 | — | n/a³ | 17 |
 | ip_blacklist | ✅ 9 | ✅ 1 | — | ✅ matrix | 10 |
@@ -40,7 +40,7 @@
 | downloader-tr av 脚本 | — | ✅ 10 | — | — | 10 |
 | ip_rule_list | ✅ 内嵌 | ✅ 22 | — | ✅ sample（all-in-one）| 22+ |
 | multi_dialing | ✅ 1 | ✅ 5 | — | ✅ sample/replay | 6 |
-| idle_protection | — | ✅ 6 | — | ❌ 待补 | 6 |
+| idle_protection | — | ✅ 6 | — | ✅ idle（新增）| 6+ |
 | banlist | ✅ 4 | ✅ 1 | — | 间接 | 5 |
 | pipeline（顺序/聚合）| ✅ 2 | ✅ 3 | — | 间接 | 5 |
 | anti_vampire | — | ✅ 2（分支全覆盖）| — | ✅ vampire（新增）| 2+ |
@@ -61,6 +61,7 @@
 | `anti_vampire.json`（新增）| 迅雷 preset 全分支：非 0019 封 / 0019+做种封 / 0019 下载中放行 / 对照 | 集合一致 | ✅ 一致 |
 | `auto_range_ban.json`（新增）| wave0 单 IP 封禁 → wave1 同 /30 连锁 | 4/4 全「共有」 | ✅ 一致 |
 | `replay_real.json`（生成器 `gen_replay_fixture.py`，产物不入库）| Java history 真实封禁 peer 重放 | 99.3%（954/961）一致 | ✅ 见既有归因 |
+| `idle_protection.json` | 空闲连接（IdleProbe，速度 0 跨波存活，加速参数 3s 上限）vs 活跃对照 | 封禁集合一致（idleTimeout，含 mapped 变体逐字）| ✅ 一致 |
 
 规则注入：`inject_test_profile.py` 向两侧配置写入同一测试规则集
 （CIDR `203.0.114.0/24`、单 IP `198.51.100.200`、端口 `39999`、城市 `浙江省 温州市`、

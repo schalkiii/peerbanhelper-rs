@@ -897,10 +897,22 @@ mod tests {
             vec![]
         }
         fn read_config(&self, _name: &str) -> Result<Value, String> {
-            Err("CONFIG_NOT_FOUND: test".into())
+            // 最小 profile 结构：ipblacklist CRUD 契约测试依赖此段存在
+            Ok(serde_json::json!({
+                "module": {
+                    "ip-address-blocker": {
+                        "ips": ["0.0.0.0"],
+                        "ports": [0],
+                        "asns": ["0"],
+                        "regions": ["0"],
+                        "cities": ["示例海南"],
+                        "net_type": { "wideband": false },
+                    }
+                }
+            }))
         }
         fn write_config(&self, _name: &str, _data: &Value) -> Result<(), String> {
-            Err("CONFIG_NOT_FOUND: test".into())
+            Ok(())
         }
         fn ban_peers(&self, _ips: &[String]) -> Result<(), String> {
             Ok(())
@@ -915,13 +927,13 @@ mod tests {
             None
         }
         fn add_downloader(&self, _config: &Value) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn update_downloader(&self, _id: &str, _config: &Value) -> Result<(), String> {
             Err("TEST_ONLY".into())
         }
         fn remove_downloader(&self, _id: &str) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn test_downloader(&self, _config: &Value) -> Result<(), String> {
             Err("TEST_ONLY".into())
@@ -1463,5 +1475,195 @@ mod tests {
         assert_eq!(data.get("checkCounter").and_then(|v| v.as_u64()), Some(7));
         assert_eq!(data.get("peerBanCounter").and_then(|v| v.as_u64()), Some(3));
         assert_eq!(data.get("peerUnbanCounter").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    // ---- 契约测试第二批：覆盖矩阵 web 层剩余端点 ----
+
+    #[tokio::test]
+    async fn ipblacklist_crud_roundtrip() {
+        // NoopBackend.read_config 返回最小 profile，CRUD 全链路可断言
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (_, body) = get_json(&state, "/api/modules/ipblacklist/ip").await;
+        assert_eq!(body.pointer("/data/ip/0").and_then(|v| v.as_str()), Some("0.0.0.0"));
+        // PUT 追加
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/api/modules/ipblacklist/ip")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"ip":"203.0.114.55"}"#))
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::CREATED, "PUT 应 201");
+        // DELETE 移除
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/api/modules/ipblacklist/ip")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"ip":"203.0.114.55"}"#))
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "DELETE 应 200");
+        // netType 读（对象→数组推导）
+        let (_, body) = get_json(&state, "/api/modules/ipblacklist/netType").await;
+        assert!(body.pointer("/data/netType").and_then(|v| v.as_array()).is_some());
+    }
+
+    #[tokio::test]
+    async fn general_global_get_and_patch() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (_, body) = get_json(&state, "/api/general/global").await;
+        assert_eq!(body.pointer("/data/globalPaused").and_then(|v| v.as_bool()), Some(false));
+        let request = Request::builder()
+            .method("PATCH")
+            .uri("/api/general/global")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"globalPaused":true}"#))
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "PATCH 应 200");
+    }
+
+    #[tokio::test]
+    async fn bans_logs_and_ranks_endpoints() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, _) = get_json(&state, "/api/bans/logs").await;
+        assert_eq!(status, StatusCode::OK, "bans/logs 必须 200");
+        let (status, _) = get_json(&state, "/api/bans/ranks").await;
+        assert_eq!(status, StatusCode::OK, "bans/ranks 必须 200");
+    }
+
+    #[tokio::test]
+    async fn push_channels_endpoint() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, body) = get_json(&state, "/api/push").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("data").is_some(), "push 响应必须含 data");
+    }
+
+    #[tokio::test]
+    async fn sub_rules_without_module_returns_404() {
+        // sub_module=None 的契约：404（前端据此显示「未启用」而非空白）
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, _) = get_json(&state, "/api/sub/rules").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn charts_endpoints_return_200() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        for path in [
+            "/api/chart/geoIpInfo",
+            "/api/chart/trend",
+            "/api/chart/traffic",
+            "/api/chart/sessionAnalyse",
+        ] {
+            let (status, _) = get_json(&state, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} 必须 200");
+        }
+    }
+
+    #[tokio::test]
+    async fn statistics_endpoints_return_200() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        for path in [
+            "/api/statistic/analysis/date",
+            "/api/statistic/analysis/banTrends",
+            "/api/statistic/rules",
+        ] {
+            let (status, _) = get_json(&state, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} 必须 200");
+        }
+    }
+
+    #[tokio::test]
+    async fn logs_history_and_manifest() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, body) = get_json(&state, "/api/logs/history").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("data").is_some());
+        let (status, body) = get_json(&state, "/api/metadata/manifest").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("data").is_some());
+    }
+
+    #[tokio::test]
+    async fn oobe_status_and_logout() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (_, body) = get_json(&state, "/api/init/token").await;
+        assert_eq!(
+            body.pointer("/data/initialized").and_then(|v| v.as_bool()),
+            Some(true),
+            "token 已配置时 initialized 必须为 true"
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/logout")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_requests_rejected() {
+        // 认证契约：无凭据访问受保护端点必须 401（不得裸奔/不得 302 丢响应体）
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let request = Request::builder()
+            .uri("/api/statistic/counter")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state).oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn downloader_missing_returns_404() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, _) = get_json(&state, "/api/downloaders/no-such-id/status").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "不存在的下载器必须 404");
+    }
+
+    #[tokio::test]
+    async fn downloaders_put_delete_roundtrip() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let request = Request::builder()
+            .method("PUT")
+            .uri("/api/downloaders")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"id":"new1","config":{"type":"qbittorrent","endpoint":"http://127.0.0.1:9091"}}"#))
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "PUT 下载器应 200");
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/api/downloaders/new1")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = build_router(state)
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "DELETE 下载器应 200");
     }
 }
