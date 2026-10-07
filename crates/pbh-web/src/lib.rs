@@ -277,10 +277,20 @@ async fn blocklist_dat_emule(State(state): State<AppState>) -> impl IntoResponse
     )
 }
 
+/// 占位页响应：`no-store` 防止浏览器/WebView 缓存占位内容——否则前端部署后
+/// 普通刷新仍显示旧占位页（2026-10-07 生产教训）。
+fn placeholder_response() -> Response {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(PLACEHOLDER),
+    )
+        .into_response()
+}
+
 async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
     let dir = state.static_dir.lock().ok().and_then(|d| d.clone());
     let Some(dir) = dir else {
-        return Html(PLACEHOLDER).into_response();
+        return placeholder_response();
     };
     let rel = uri.path().trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
@@ -289,15 +299,23 @@ async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
         if path.is_file() {
             if let Ok(bytes) = tokio::fs::read(&path).await {
                 let ct = mime_for(&path);
+                // SPA 缓存策略：入口 html 每次回源（部署更新立即生效，规避启发式缓存）；
+                // 其余静态资源（assets 带内容哈希）日级缓存
+                let cache = if ct.starts_with("text/html") {
+                    "no-cache"
+                } else {
+                    "public, max-age=86400"
+                };
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", ct)
+                    .header("Cache-Control", cache)
                     .body(Body::from(bytes))
-                    .unwrap_or_else(|_| Html(PLACEHOLDER).into_response());
+                    .unwrap_or_else(|_| placeholder_response());
             }
         }
     }
-    Html(PLACEHOLDER).into_response()
+    placeholder_response()
 }
 
 /// 防目录穿越的路径拼接。
