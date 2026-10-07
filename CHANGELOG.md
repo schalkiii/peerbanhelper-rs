@@ -5,6 +5,32 @@
 
 ## 未发布（working tree）
 
+### fix(web): general/status 占位字段填充 + pbhplus 端点（设置页运行状态修复）
+
+- **设置页「网络/运行时信息/BTN 状态」大量占位**：`jvm.memory` 为空对象
+  （首页显示「0 Bytes 可用」红点）、`compile_time: 0`（显示 1970-01-01）、
+  `internet_access` 硬编码 false、`nat_type: unknown`、**无 `btn` 段**
+  （设置页 BTN 状态读这里，显示「未启用」）。
+- **修复**：
+  - `jvm.memory.heap/non_heap`：系统物理内存（windows-sys 的
+    `GlobalMemoryStatusEx`，`max/committed/used/available/init`；无 JVM 堆
+    概念，用系统内存近似驱动「X 可用」显示）
+  - `compile_time`：exe 修改时间戳（否则 1970）
+  - `internet_access`：真实 TCP 探针（国内 baidu.com:443 / 国际
+    cloudflare.com:443，900ms 超时，对齐上游内外网语义）；补
+    `use_proxy/reverse_proxy/client_ip` 字段
+  - 新增 `btn` 段：与 `/api/modules/btn` 同源（提取共享函数
+    `btn::btn_status_data`）
+- **Plus 订阅**：新增 `/api/pbhplus/status|key`（对齐上游 `PBHPlusController`）。
+  上游为付费许可体系（`enabledFeatures` 由 license 聚合，前端以
+  `enabledFeatures.includes('basic'/'paid')` 门控页面可用性）；Rust 版按用户
+  要求**默认开启全部功能**：`enabledFeatures` 恒返回 `["basic", "paid"]`，
+  `licenses` 为空。
+- 实测：`heap.available≈1.94GB`；`internet_access={国内 true, 国际 false}`；
+  `btn.enabled=True`；`compile_time=2026-10-07`；`enabledFeatures=[basic, paid]`。
+
+### fix(web): 静默登录闭环修正——文档入口种会话 cookie（GUI 骨架屏根治）
+
 ### fix(web): 静默登录闭环修正——文档入口种会话 cookie（GUI 骨架屏根治）
 
 - **headless Chrome 自主复现用户视角**：全新 profile 打开 `/?silentLogin=` 仍为

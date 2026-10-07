@@ -16,6 +16,7 @@ pub mod ipblacklist;
 pub mod logs;
 pub mod manifest;
 pub mod peers;
+pub mod pbhplus;
 pub mod push;
 pub mod statistics;
 pub mod sub;
@@ -149,6 +150,12 @@ pub fn api_routes() -> Router<crate::AppState> {
                 .delete(ipblacklist::delete_rule),
         )
         .route("/modules/ipblacklist/ip/test", post(ipblacklist::test_ip))
+        // —— PeerBanHelper Plus（Rust 版默认开启全部功能）——
+        .route(
+            "/pbhplus/status",
+            get(pbhplus::status).put(pbhplus::put_key).delete(pbhplus::delete_key),
+        )
+        .route("/pbhplus/key", put(pbhplus::put_key).delete(pbhplus::delete_key))
         .route(
             "/modules/auto-stun-port-forwarding",
             get(btn::auto_stun_status),

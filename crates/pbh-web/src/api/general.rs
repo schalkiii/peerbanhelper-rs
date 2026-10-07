@@ -11,15 +11,28 @@ use crate::AppState;
 
 /// `GET /api/general/status`：整体运行信息（含 JVM→运行时约定、内存由系统层填充）。
 pub async fn status(State(state): State<AppState>) -> Response {
-    let backend = state.backend.as_ref();
     let uptime = state.started.elapsed().as_secs();
+    // 编译时间：exe 修改时间（对齐上游「构建时间戳」展示语义；Rust 无稳定的
+    // 编译期内嵌时间戳手段，运行时取二进制 mtime 等价——否则前端显示 1970）
+    let compile_time = std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let (china_ok, global_ok) = network_reachability();
+    let memory = system_memory();
+    let (_, btn_data) = crate::api::btn::btn_status_data(&state);
     let data = json!({
         "jvm": {
-            "version": "Rust ",
+            "version": "Rust",
             "vendor": "rustc",
-            "runtime": std::env::var("RUST_BACKTRACE").unwrap_or_default(),
+            "runtime": "rustc",
             "bitness": if std::mem::size_of::<usize>() == 8 { 64 } else { 32 },
-            "memory": { "heap": {}, "non_heap": {} },
+            // WebUI 首页「堆内存信息」：无 JVM 堆概念，用系统物理内存近似
+            // （空对象会让前端显示「0 Bytes 可用」红点）
+            "memory": { "heap": memory, "non_heap": memory },
         },
         "system": {
             "os": std::env::consts::OS,
@@ -28,21 +41,75 @@ pub async fn status(State(state): State<AppState>) -> Response {
             "cores": std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1),
             "load": 0,
             "network": {
-                "internet_access": { "accessToChinaNetwork": false, "accessToGlobalNetwork": false },
+                "internet_access": {
+                    "accessToChinaNetwork": china_ok,
+                    "accessToGlobalNetwork": global_ok,
+                },
                 "nat_type": "unknown",
+                "use_proxy": false,
+                "reverse_proxy": false,
+                "client_ip": "",
             },
         },
+        // 设置页「BTN 状态」直接读本段（与 /api/modules/btn 同源）
+        "btn": btn_data,
         "peerbanhelper": {
             "version": env!("CARGO_PKG_VERSION"),
             "commit_id": option_env!("GIT_COMMIT").unwrap_or("unknown"),
-            "compile_time": 0,
+            "compile_time": compile_time,
             "release": "Rust",
             "uptime": uptime,
             "token": "REDACTED",
         },
     });
-    let _ = backend;
     (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
+}
+
+/// 网络可达性探针（对齐上游 `HTTPUtil.getNetworkReachability` 的内外网语义）：
+/// 国内探针 baidu.com:443、国际探针 cloudflare.com:443，短超时 TCP 连接测试。
+fn network_reachability() -> (bool, bool) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let probe = |host: &str| {
+        (host, 443u16)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addrs| addrs.next())
+            .and_then(|addr| TcpStream::connect_timeout(&addr, Duration::from_millis(900)).ok())
+            .is_some()
+    };
+    (probe("www.baidu.com"), probe("www.cloudflare.com"))
+}
+
+/// 系统物理内存（字节）：`{max, committed, used, available, init}`。
+/// WebUI 的「堆内存信息」直接消费（`available` 驱动「X 可用」显示）。
+#[cfg(windows)]
+fn system_memory() -> Value {
+    use windows_sys::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
+    unsafe {
+        let mut ms: MEMORYSTATUSEX = std::mem::zeroed();
+        ms.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if GlobalMemoryStatusEx(&mut ms) != 0 {
+            let total = ms.ullTotalPhys as u64;
+            let available = ms.ullAvailPhys as u64;
+            let used = total.saturating_sub(available);
+            return json!({
+                "max": total,
+                "committed": used,
+                "used": used,
+                "available": available,
+                "init": used,
+            });
+        }
+    }
+    json!({"max": 0, "committed": 0, "used": 0, "available": 0, "init": 0})
+}
+
+#[cfg(not(windows))]
+fn system_memory() -> Value {
+    json!({"max": 0, "committed": 0, "used": 0, "available": 0, "init": 0})
 }
 
 /// `GET /api/general/global`：全局配置（暂停 / 匿名统计）。

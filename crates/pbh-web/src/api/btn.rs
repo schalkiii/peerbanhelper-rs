@@ -8,26 +8,22 @@ use std::collections::HashMap;
 
 use crate::AppState;
 
-/// `GET /api/modules/btn`：BTN 模块状态（对齐上游 `PBHBtnController.status`）。
-///
-/// 前端设置页按 `enabled` / `configSuccess` / `abilities` 渲染 BTN 页面；
-/// 之前是硬编码的「未内置」占位，导致 BTN 实际运行时页面仍显示未启用。
-pub async fn status(State(state): State<AppState>) -> Response {
+/// BTN 状态数据（`/api/modules/btn` 与 `/api/general/status` 的 `btn` 段共用）。
+/// 返回 `(enabled, data)`。
+pub fn btn_status_data(state: &AppState) -> (bool, Value) {
     let Some(network) = state.btn_network.get() else {
-        // 未启用：对齐上游「btnNetwork == null」分支（StdResp 的 success=false）
-        let data = json!({
-            "enabled": false,
-            "configSuccess": false,
-            "appId": "N/A",
-            "appSecret": "N/A",
-            "abilities": [],
-            "configUrl": "BTN_NOT_ENABLE_AND_REQUIRE_RESTART",
-        });
+        // 未启用：对齐上游「btnNetwork == null」分支
         return (
-            StatusCode::OK,
-            crate::std_resp(false, Some("BTN_NOT_ENABLE_AND_REQUIRE_RESTART"), data),
-        )
-            .into_response();
+            false,
+            json!({
+                "enabled": false,
+                "configSuccess": false,
+                "appId": "N/A",
+                "appSecret": "N/A",
+                "abilities": [],
+                "configUrl": "BTN_NOT_ENABLE_AND_REQUIRE_RESTART",
+            }),
+        );
     };
     let abilities: Vec<Value> = network
         .abilities()
@@ -64,16 +60,35 @@ pub async fn status(State(state): State<AppState>) -> Response {
     } else {
         config.app_secret.clone()
     };
-    let data = json!({
-        "enabled": true,
-        "configSuccess": network.config_success(),
-        "configResult": config_result,
-        "abilities": abilities,
-        "appId": config.app_id,
-        "appSecret": app_secret,
-        "configUrl": config.config_url,
-    });
-    (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
+    (
+        true,
+        json!({
+            "enabled": true,
+            "configSuccess": network.config_success(),
+            "configResult": config_result,
+            "abilities": abilities,
+            "appId": config.app_id,
+            "appSecret": app_secret,
+            "configUrl": config.config_url,
+        }),
+    )
+}
+
+/// `GET /api/modules/btn`：BTN 模块状态（对齐上游 `PBHBtnController.status`）。
+///
+/// 前端设置页按 `enabled` / `configSuccess` / `abilities` 渲染 BTN 页面；
+/// 之前是硬编码的「未内置」占位，导致 BTN 实际运行时页面仍显示未启用。
+pub async fn status(State(state): State<AppState>) -> Response {
+    let (enabled, data) = btn_status_data(&state);
+    if enabled {
+        (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
+    } else {
+        (
+            StatusCode::OK,
+            crate::std_resp(false, Some("BTN_NOT_ENABLE_AND_REQUIRE_RESTART"), data),
+        )
+            .into_response()
+    }
 }
 
 /// `GET /api/modules/auto-stun-port-forwarding/status`：AutoSTUN 状态。
