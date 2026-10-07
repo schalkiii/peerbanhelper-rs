@@ -428,9 +428,25 @@ async fn main() -> anyhow::Result<()> {
     let rulesub_shared: Arc<RwLock<IpRuleListConfig>> = Arc::new(RwLock::new(
         cfg.profile.module.ip_rule_list.clone().unwrap_or_default(),
     ));
+    // 静默登录令牌（对齐上游 `SharedObject.SILENT_LOGIN_TOKEN_FOR_GUI` 的启动期随机 UUID）：
+    // GUI 打开 WebUI 时 URL 携带 ?silentLogin=<uuid>，middleware 校验通过即放行并种会话
+    // cookie，GUI 内免输入 token。跨进程经 data/silent_login_token 文件传递（GUI 读）。
+    let silent_login_path = data_dir.join("silent_login_token");
+    let silent_login = match std::fs::read_to_string(&silent_login_path) {
+        Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => {
+            use rand::RngCore as _;
+            let mut buf = [0u8; 16];
+            rand::rngs::OsRng.fill_bytes(&mut buf);
+            let t: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+            let _ = std::fs::write(&silent_login_path, &t);
+            t
+        }
+    };
     let state = AppState {
         db: db.clone(),
         token: Arc::new(Mutex::new(cfg.server.token.clone())),
+        silent_login: silent_login.clone(),
         metrics: metrics.clone(),
         started: Arc::new(std::time::Instant::now()),
         downloaders: statuses.clone(),

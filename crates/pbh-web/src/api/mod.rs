@@ -12,6 +12,7 @@ pub mod btn;
 pub mod charts;
 pub mod downloaders;
 pub mod general;
+pub mod ipblacklist;
 pub mod logs;
 pub mod manifest;
 pub mod peers;
@@ -140,6 +141,14 @@ pub fn api_routes() -> Router<crate::AppState> {
         )
         // —— BTN / AutoSTUN 模块状态 ——
         .route("/modules/btn", get(btn::status))
+        // —— IP 规则黑名单（设置页规则管理，对齐上游 IPBlackList 模块路由）——
+        .route(
+            "/modules/ipblacklist/{ruleType}",
+            get(ipblacklist::get_rule)
+                .put(ipblacklist::put_rule)
+                .delete(ipblacklist::delete_rule),
+        )
+        .route("/modules/ipblacklist/ip/test", post(ipblacklist::test_ip))
         .route(
             "/modules/auto-stun-port-forwarding",
             get(btn::auto_stun_status),

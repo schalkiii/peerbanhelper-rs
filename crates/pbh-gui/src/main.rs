@@ -252,12 +252,22 @@ fn main() {
             // 等 pbh 就绪（最多 30 秒）再显示主窗口，避免看到连接错误页
             let port = args.port;
             let win = app.get_webview_window("main").expect("主窗口缺失");
+            let silent_path = std::path::Path::new(&args.data_dir).join("silent_login_token");
             std::thread::spawn(move || {
                 for _ in 0..30 {
                     if port_open(port) {
                         break;
                     }
                     std::thread::sleep(Duration::from_secs(1));
+                }
+                // 静默登录：导航到带 ?silentLogin= 的 URL（对齐上游 WebUITab 的 URL
+                // 拼接 + Javalin accessManager 豁免）——middleware 校验通过即放行并
+                // 种会话 cookie，GUI 内免输入 token，前端零感知
+                if let Ok(tok) = std::fs::read_to_string(&silent_path) {
+                    let target = format!("http://127.0.0.1:{port}/?silentLogin={}", tok.trim());
+                    if let Ok(u) = target.parse() {
+                        let _ = win.navigate(u);
+                    }
                 }
                 let _ = win.show();
                 let _ = win.set_focus();

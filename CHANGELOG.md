@@ -5,6 +5,29 @@
 
 ## 未发布（working tree）
 
+### feat(gui/web): 静默登录 + IP 规则黑名单管理端点（设置页功能修复）
+
+- **GUI 骨架屏（认证缺失）**：GUI 的 WebView2 有独立 cookie 存储，无人登录过 →
+  全部 API 401。对齐上游 GUI 免登机制：`SILENT_LOGIN_TOKEN_FOR_GUI`（启动期随机
+  UUID，Java 经 URL `&silentLogin=` 传给 WebUI，accessManager 豁免）——
+  Rust 版 pbh 生成/持久化 `data/silent_login_token`；`auth_middleware` 对
+  `?silentLogin=` 匹配的请求放行并下发会话 cookie；GUI 窗口就绪后导航到
+  带 `?silentLogin=` 的 URL。前端零感知（cookie 自动携带）。
+- **设置页 IP 规则黑名单管理缺失**：上游 `IPBlackList` 模块自注册
+  `/api/modules/ipblacklist/{ruleType}` CRUD（GET/PUT/DELETE + ip/test），
+  前端设置页的 IP/端口/ASN/地区/城市/网络类型规则管理全部依赖——Rust 缺失
+  且被 SPA fallback 兜成 index.html（`/api/module/config` 类似，均为假 200）。
+  新增 `api/ipblacklist.rs`：读写 `profile.yml` 的 `module.ip-address-blocker`
+  段（经 `WebBackend::read/write_config`，兼容 `-`/`_` 键 normalize）；
+  `netType` 按上游 Set 语义与 profile 的 8 键布尔对象互转；`ip/test` 返回
+  CIDR 范围（对齐 `UserIPTestResult`）。
+- **前端调用方式实测**（编译 JS 逆向）：所有请求带 `Authorization: Bearer
+  ${authToken}`（登录后的内存凭据，无持久化）；PUT body 为 `{<ruleType>: <值>}`。
+- 实测：silentLogin 无凭据调 metrics → 200 + Set-Cookie；ipblacklist
+  GET/PUT/DELETE/city（含「浙江省 温州市」真实数据）全链路通过。
+
+### fix(wave): counter 累计字段无人累加——WebUI「共检查/封禁/解封」恒为 0
+
 ### fix(wave): counter 累计字段无人累加——WebUI「共检查/封禁/解封」恒为 0
 
 - `/api/statistic/counter` 读取 `Metrics.checks/peer_bans/peer_unbans`（累计字段），

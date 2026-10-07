@@ -50,6 +50,9 @@ pub struct Metrics {
 pub struct AppState {
     pub db: Arc<Database>,
     pub token: Arc<Mutex<String>>,
+    /// 静默登录令牌（GUI 专用，对齐上游 `SILENT_LOGIN_TOKEN_FOR_GUI`）：
+    /// `?silentLogin=` 匹配即放行并种会话 cookie，GUI 内免输入 token
+    pub silent_login: String,
     pub metrics: Arc<Mutex<Metrics>>,
     pub started: Arc<Instant>,
     pub downloaders: Arc<Mutex<Vec<DownloaderStatus>>>,
@@ -435,8 +438,30 @@ async fn auth_middleware(
         )
             .into_response();
     }
+    // 静默登录（对齐上游 JavalinWebContainer accessManager 对 `?silentLogin=` 的豁免）：
+    // GUI 打开 WebUI 时 URL 携带 `?silentLogin=<token>`（进程启动期生成、经
+    // data/silent_login_token 文件传给 GUI）。首次放行并下发会话 cookie，
+    // 页面内后续 API 请求由浏览器自动携带 cookie，前端零感知。
+    let silent_ok = !state.silent_login.is_empty()
+        && req
+            .uri()
+            .query()
+            .and_then(|q| q.split('&').find(|p| p.starts_with("silentLogin=")))
+            .map(|p| p["silentLogin=".len()..].trim() == state.silent_login)
+            .unwrap_or(false);
     if header_ok || query_ok || cookie_ok {
         next.run(req).await
+    } else if silent_ok {
+        let mut resp = next.run(req).await;
+        let cookie = format!(
+            "PBH_SESSION={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",
+            token
+        );
+        if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
+            resp.headers_mut()
+                .append(axum::http::header::SET_COOKIE, v);
+        }
+        resp
     } else {
         (
             StatusCode::UNAUTHORIZED,
@@ -783,6 +808,7 @@ mod tests {
         AppState {
             db,
             token: Arc::new(Mutex::new("test-token".to_string())),
+            silent_login: String::new(),
             metrics: Arc::new(Mutex::new(Metrics::default())),
             started: Arc::new(Instant::now()),
             downloaders: Arc::new(Mutex::new(Vec::new())),
