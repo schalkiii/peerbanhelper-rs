@@ -5,6 +5,24 @@
 
 ## 未发布（working tree）
 
+### fix(wave): counter 累计字段无人累加——WebUI「共检查/封禁/解封」恒为 0
+
+- `/api/statistic/counter` 读取 `Metrics.checks/peer_bans/peer_unbans`（累计字段），
+  但 wave 只更新了「当前值」类字段（downloader_count 等），累计字段从未被写入，
+  WebUI 首页「共检查 X 次 / 封禁 Peer X 次 / 解封 X 次」恒为 0。
+- 修复：run_once 收尾处按本轮 report 累加（`checks += peers`、`peer_bans += banned`、
+  `peer_unbans += unbanned`，对齐上游 BasicMetrics 的累计语义）。
+  实测：首轮 wave 后 `checkCounter` 0 → 9。
+
+### fix(gui): WebView2 磁盘缓存残留旧占位页的处置说明
+
+- 生产教训的最后一环：部署早期缓存的占位页存在于 WebView2 用户数据目录
+  （`%LOCALAPPDATA%\com.pbh-rs.gui\EBWebView`），服务端 `no-store` 只能阻止
+  新缓存、无法清除已有缓存。处置：停止 GUI 后删除该目录（副作用仅为需要
+  重新登录，凭据本身在服务端会话 cookie 中）。
+
+### fix(web): SPA 子路由回退 + 下载器 list/status 对齐上游 DTO（WebUI 三缺陷）
+
 ### fix(web): SPA 子路由回退 + 下载器 list/status 对齐上游 DTO（WebUI 三缺陷）
 
 - **GUI/子路由刷新显示占位页**：static_handler 对未命中路径一律返回

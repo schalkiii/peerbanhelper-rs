@@ -367,6 +367,12 @@ impl WaveEngine {
             m.downloader_count = report.online_downloaders;
             m.torrent_count = report.torrents;
             m.peer_count = report.peers;
+            // 累计字段（`/api/statistic/counter` 的 checkCounter/peerBanCounter/
+            // peerUnbanCounter）：WebUI 首页「共检查/封禁 Peer/解封」计数的数据源，
+            // 缺失会让计数恒为 0（对齐上游 BasicMetrics 的累计语义）
+            m.checks += report.peers as u64;
+            m.peer_bans += report.banned as u64;
+            m.peer_unbans += report.unbanned as u64;
             m.banned_total = self
                 .ban_list()
                 .lock()
