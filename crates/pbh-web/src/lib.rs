@@ -308,6 +308,36 @@ fn placeholder_response() -> Response {
 }
 
 async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
+    // 静默登录入口（GUI 免登闭环）：窗口加载 `/?silentLogin=<token>`，此处校验
+    // secret 并下发会话 cookie 后 302 到无参首页——页面内后续 API 请求由浏览器
+    // 自动携带 cookie 认证。此前仅靠 /api middleware 的静默豁免无法闭环：
+    // 文档请求不经过 /api 中间件，cookie 永远不会种下，GUI 始终 401 骨架屏。
+    if let Some(q) = uri.query() {
+        if let Some(s) = q
+            .split('&')
+            .find(|p| p.starts_with("silentLogin="))
+            .map(|p| p["silentLogin=".len()..].trim())
+        {
+            let expected = state.silent_login.clone();
+            if !expected.is_empty() && s == expected {
+                let token = state
+                    .token
+                    .lock()
+                    .map(|t| t.clone())
+                    .unwrap_or_default();
+                let cookie = format!(
+                    "PBH_SESSION={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",
+                    token
+                );
+                return Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header(axum::http::header::LOCATION, "/")
+                    .header(axum::http::header::SET_COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| placeholder_response());
+            }
+        }
+    }
     let dir = state.static_dir.lock().ok().and_then(|d| d.clone());
     let Some(dir) = dir else {
         return placeholder_response();

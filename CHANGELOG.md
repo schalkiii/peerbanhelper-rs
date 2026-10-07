@@ -5,6 +5,24 @@
 
 ## 未发布（working tree）
 
+### fix(web): 静默登录闭环修正——文档入口种会话 cookie（GUI 骨架屏根治）
+
+- **headless Chrome 自主复现用户视角**：全新 profile 打开 `/?silentLogin=` 仍为
+  骨架屏（下载器 0 处、skeleton 1 处）——上一版静默登录未闭环。
+- **根因**：`?silentLogin=` 的豁免挂在 `/api` 的 auth_middleware 上，而**页面
+  文档请求（GET /）不经过该中间件**——cookie 永远不会被种下；前端 API 请求
+  又不携带 silentLogin（只有首页 URL 带），所以每次 API 仍 401。此前 curl 验证
+  成功是因为手动在 API URL 上补了 silentLogin（真实前端不会）。
+- **闭环修正**：static_handler（文档入口）检测 `?silentLogin=<token>` → 校验
+  secret → 302 重定向到无参首页并下发 `PBH_SESSION` cookie → 页面内所有 API
+  请求由浏览器自动携带 cookie 认证。`/api` middleware 的静默豁免保留（兼容）。
+- **验证方法升级**：`chrome --headless --virtual-time-budget=12000 --dump-dom`
+  （virtual-time 让异步 API 渲染完成后再抓 DOM——不带时 API 未返回，骨架屏
+  假象会误导判断）。实测闭环后：**qBittorrent/MotrixNext 卡片真实渲染、
+  skeleton=0**；正确 cookie 值调 `/api/metrics/general` → 200。
+
+### fix(web): BTN 状态端点实现——设置页「BTN 模块未启用」假象
+
 ### fix(web): BTN 状态端点实现——设置页「BTN 模块未启用」假象
 
 - `GET /api/modules/btn` 此前是硬编码占位（`"BTN is not available in this
