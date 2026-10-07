@@ -5,6 +5,22 @@
 
 ## 未发布（working tree）
 
+### fix(web): BTN 状态端点实现——设置页「BTN 模块未启用」假象
+
+- `GET /api/modules/btn` 此前是硬编码占位（`"BTN is not available in this
+  build"`），BTN 实际运行（ability 同步/上报日志正常）时设置页仍显示未启用。
+- 对齐上游 `PBHBtnController.status` 的 `DownloaderStatusDTO` 语义：
+  `enabled`（SharedBtnNetwork 是否有实例）、`configSuccess`/`configResult`
+  （BtnConfigStatus 枚举转状态文本）、`abilities`（name/displayName/
+  lastSuccess/lastUpdateAt）、`appId`/`appSecret`（>5 字符截断打码）、`configUrl`；
+  未启用分支返回 `BtnNetwork == null` 的「需重启」结构（StdResp success=false）。
+- `BtnNetwork` 补充 `config()` 配置快照访问方法（appId/appSecret/configUrl
+  在 `BtnNetworkConfig`，Web 层原本无法触达）。
+- GUI 静默登录导航增加诊断日志（写入 `data/pbh-gui.log`），失败不再静默。
+- 实测：`enabled=True, configSuccess=True, abilities=8, configResult=SUCCESS`。
+
+### feat(gui/web): 静默登录 + IP 规则黑名单管理端点（设置页功能修复）
+
 ### feat(gui/web): 静默登录 + IP 规则黑名单管理端点（设置页功能修复）
 
 - **GUI 骨架屏（认证缺失）**：GUI 的 WebView2 有独立 cookie 存储，无人登录过 →

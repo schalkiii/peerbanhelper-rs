@@ -253,6 +253,20 @@ fn main() {
             let port = args.port;
             let win = app.get_webview_window("main").expect("主窗口缺失");
             let silent_path = std::path::Path::new(&args.data_dir).join("silent_login_token");
+            // GUI 无控制台：诊断日志写入 data/pbh-gui.log（静默登录失败会表现为骨架屏）
+            let log_path = silent_path
+                .parent()
+                .map(|p| p.join("pbh-gui.log"));
+            let gui_log = move |msg: &str| {
+                if let Some(p) = &log_path {
+                    if let Ok(mut f) =
+                        std::fs::OpenOptions::new().create(true).append(true).open(p)
+                    {
+                        use std::io::Write as _;
+                        let _ = writeln!(f, "[pbh-gui] {msg}");
+                    }
+                }
+            };
             std::thread::spawn(move || {
                 for _ in 0..30 {
                     if port_open(port) {
@@ -263,11 +277,24 @@ fn main() {
                 // 静默登录：导航到带 ?silentLogin= 的 URL（对齐上游 WebUITab 的 URL
                 // 拼接 + Javalin accessManager 豁免）——middleware 校验通过即放行并
                 // 种会话 cookie，GUI 内免输入 token，前端零感知
-                if let Ok(tok) = std::fs::read_to_string(&silent_path) {
-                    let target = format!("http://127.0.0.1:{port}/?silentLogin={}", tok.trim());
-                    if let Ok(u) = target.parse() {
-                        let _ = win.navigate(u);
+                match std::fs::read_to_string(&silent_path) {
+                    Ok(tok) if !tok.trim().is_empty() => {
+                        let target =
+                            format!("http://127.0.0.1:{port}/?silentLogin={}", tok.trim());
+                        match target.parse() {
+                            Ok(u) => {
+                                let result = win.navigate(u);
+                                gui_log(&format!(
+                                    "静默登录导航 → {target}（结果 {result:?}）"
+                                ));
+                            }
+                            Err(e) => gui_log(&format!("静默登录 URL 解析失败: {e}")),
+                        }
                     }
+                    other => gui_log(&format!(
+                        "silent_login_token 不可用（{:?}），跳过静默登录",
+                        other.is_err()
+                    )),
                 }
                 let _ = win.show();
                 let _ = win.set_focus();
