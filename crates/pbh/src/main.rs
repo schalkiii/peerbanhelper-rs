@@ -580,8 +580,10 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
                 let wave_started = std::time::Instant::now();
+                debug!("wave#{} 开始", wave_count + 1);
                 let report = engine.run_once(now).await;
                 wave_count += 1;
+                debug!("wave#{wave_count} 主循环返回，耗时 {:?}", wave_started.elapsed());
                 // 完成日志与上游 `Lang.BAN_WAVE_CHECK_COMPLETED` 逐字一致（含参数顺序），
                 // 计数为上游 `ProcessingStatistics` 口径（只统计有检查结果的下载器/种子/peer），
                 // 便于长时对跑直接把两侧日志逐行 diff。附加诊断降级到 DEBUG。
@@ -652,6 +654,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // PCB 过期清理（默认每 8 小时）
                 if std::time::Instant::now() >= next_pcb_cleanup {
+                    debug!("PCB 8h 清理开始");
                     if let Some(pcb) = engine.pcb_module() {
                         let cutoff = now - pcb.config.persist_duration_ms;
                         let evicted = pcb.cleanup_expired(cutoff);

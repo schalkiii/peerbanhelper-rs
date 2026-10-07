@@ -87,6 +87,19 @@ fn port_open(port: u16) -> bool {
 fn spawn_child(args: &Args) -> std::io::Result<Child> {
     let mut cmd = Command::new(&args.pbh_path);
     cmd.arg("--data").arg(&args.data_dir);
+    // 日志重定向：GUI 是 Windows GUI 子系统进程（无控制台），不重定向时子进程
+    // 的 stdout/stderr（tracing 全部输出）直接丢失。追加写入 data 目录的
+    // pbh-gui.log，同时作为外部看门狗的日志心跳源（冻结诊断依赖）。
+    let log_path = std::path::Path::new(&args.data_dir).join("pbh-gui.log");
+    if let Ok(log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let log_err = log.try_clone()?;
+        cmd.stdout(std::process::Stdio::from(log));
+        cmd.stderr(std::process::Stdio::from(log_err));
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -142,15 +155,34 @@ fn main() {
                 let spawn_args = args.clone_for_spawn();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(2));
-                    let exited = child
+                    // 先取退出状态再判断：exit code 可区分正常退出（0）/ access
+                    // violation（0xC0000005）/ 栈溢出（0xC00000FD）/ abort（0x80000003），
+                    // 是「静默退出」排查的唯一线索（panic=abort 时 panic 消息可能丢失）
+                    let status = child
                         .0
                         .lock()
                         .unwrap()
                         .as_mut()
-                        .map(|c| c.try_wait().map(|s| s.is_some()).unwrap_or(false))
-                        .unwrap_or(true);
-                    if exited {
-                        eprintln!("[pbh-gui] pbh 进程退出，5 秒后重启");
+                        .and_then(|c| c.try_wait().ok().flatten());
+                    if let Some(s) = status {
+                        let code = format!("{s:?}");
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        // GUI 自身无控制台（eprintln 丢失），重启记录写日志文件
+                        let log_path = std::path::Path::new(&spawn_args.data_dir)
+                            .join("pbh-gui.log");
+                        if let Ok(mut f) =
+                            std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
+                        {
+                            use std::io::Write as _;
+                            let _ = writeln!(
+                                f,
+                                "[pbh-gui] {ts} pbh 进程退出（{code}），5 秒后重启"
+                            );
+                        }
+                        eprintln!("[pbh-gui] pbh 进程退出（{code}），5 秒后重启");
                         std::thread::sleep(Duration::from_secs(5));
                         if let Ok(c) = spawn_child(&spawn_args) {
                             *child.0.lock().unwrap() = Some(c);

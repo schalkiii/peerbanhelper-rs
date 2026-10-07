@@ -131,5 +131,8 @@ cargo run -p pbh-db --bin compare_dualrun -- <java.db> <rust.db> --since 2026-10
 | BTN / 推送 / GeoIP | 已对齐上游 | — |
 | IPv6/多拨段行为 | 判定一致（对跑验证） | — |
 
-**看门狗建议**（冻结未根治前）：每 60s 探测 `http://127.0.0.1:9898/health` 并检查日志
-最后修改时间 > 2 个 wave 间隔（默认 5s，取 60s 阈值），失败则重启 `pbh-gui.exe`。
+**看门狗**（已实现，`scripts/pbh-watchdog.ps1`）：探测 `/health` + **wave 完成心跳**
+（读 `data/pbh-gui.log` 的「主循环返回」打点，停滞 > 300s 判定冻结并重启）。
+**注意**：阈值必须 ≥ wave 间隔（config.yml 默认 120s）+ 启动初始化裕量；不要用进程
+CPU 增量做心跳——wave 间隔内 main 线程空闲是常态，会周期性误杀（2026-10-07 教训）。
+常驻方式见脚本头注释（任务计划程序 / NSSM）。

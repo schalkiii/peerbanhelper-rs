@@ -124,6 +124,31 @@ release）窗口 11.3h 对账——**module-mismatch 为 0**（修复前 26 条�
   PCB 清理调度启动时刻吻合（16:21 前的周期为 08:21/16:21/00:21），
   但清理分支锁序干净，更可能是同时刻的其它定时任务交错，待 dump 确认。
 
+**pending-6 dump 分析结论（2026-10-07）**：两个冻结样本（1006 长跑、1007 生产）均无法
+符号化——release profile `strip = true` 不生成 PDB；带 debuginfo 重编译会使代码布局
+漂移（.text 大小差 54KB，debuginfo 影响优化决策），旧 dump 偏移不适用。dump 只能
+确认「主线程停在内核等待、worker 线程全部 idle park、web 线程存活」的结构。
+
+**生产部署后的「冻结循环」重新定性（2026-10-07，重要更正）**：GUI 部署当日出现的
+「pbh 每 ~100s 冻结一次」**不是 pbh 缺陷**，而是**外部看门狗误杀**——初版看门狗按
+「CPU 增量 < 0.5s/30s」判定 wave 冻结，但生产 config 的 wave 间隔是 **120s**（长跑
+实例为 5s），main 线程在 wave 间空闲 ~107s，30s 窗口内 CPU 增量恒低于阈值，健康
+进程被周期性误杀（GUI 自动重启掩盖了进程更替）。看门狗已改为 **wave 完成心跳**
+（读 pbh-gui.log 的「主循环返回」打点，阈值 300s），并要求 wave 间隔必须与部署
+config 一致地配置阈值。修正后 pbh 的 wave/flush/PCB 清理/BTN 全链路日志完整正常，
+无真冻结复现。
+
+**给 wave 主循环加全链路 phase 打点（2026-10-07，诊断基建）**：`wave#N 开始/主循环返回`、
+run_once 的 5 个阶段（解封/判定/落库/下发/PCB 落库）、run_downloader 的 login/fetch_torrents/
+并发拉取、PCB 8h 清理前后——均为 DEBUG 级（默认 `pbh=debug` 已可见）。下次出现真冻结，
+日志最后一条即精确卡点。GUI 侧配套修复：子进程 stdout/stderr 重定向到 `data/pbh-gui.log`
+（此前 GUI 无控制台导致日志全丢）、监督线程把子进程退出码写入日志（区分正常退出 /
+access violation / 栈溢出）。
+
+**pending-6 现状**：36h 长跑冻结发生在 a384daa 修复之前；修复后长跑 13.6h+（wave#409）
+与生产部署均无真冻结复现，**大概率已随 a384daa 解决**。两个 dump 因符号缺失无法回溯
+确认；保留 phase 打点作为后续冻结的定位手段，pending-6 降级为「观察项」。
+
 ### 4.2 外部仓库 workflow 处置（2026-10-05）
 
 `schalkiii/PeerBanHelper`（Java 版 fork）的「Update IPDB on COS」定时任务连续失败：

@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Semaphore;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 单个下载器的运行配置
 #[derive(Clone)]
@@ -263,6 +263,7 @@ impl WaveEngine {
         let mut statuses = Vec::new();
 
         // 1) 解封到期条目
+        debug!("wave phase:1 解封开始");
         let removed = self.remove_expired_bans(now_ms);
         report.unbanned = removed.len();
         // 解封后同步清理 PCB 历史（对齐上游 `@Subscribe onPeerUnBan` →
@@ -285,6 +286,7 @@ impl WaveEngine {
             Ok(entries) => entries.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
+        debug!("wave phase:2 快照判定开始（{} 个下载器）", entries.len());
         for (idx, entry) in entries.iter().enumerate() {
             match self.run_downloader(entry, now_ms).await {
                 Ok(out) => {
@@ -321,6 +323,7 @@ impl WaveEngine {
 
         // 3) 写入内存封禁表 + 落库（对齐上游：先跑完整个 digestion，再逐个 `banPeer`，
         //    因此本 wave 内的判定互相看不到本轮新封禁，跨下载器也不会互相影响）
+        debug!("wave phase:3 落库判定结果（{} 项 pending）", pending.len());
         for (idx, bans) in &pending {
             self.record_bans(&entries[*idx], bans, &ban_baseline, now_ms);
         }
@@ -341,6 +344,7 @@ impl WaveEngine {
             .lock()
             .map(|b| b.need_reapply())
             .unwrap_or(false);
+        debug!("wave phase:4 下发（新增 {} 项，force_full={force_full}）", global_added.len());
         for entry in &entries {
             self.apply_bans(entry, &global_added, removed.len(), force_full, now_ms)
                 .await;
@@ -352,6 +356,7 @@ impl WaveEngine {
         }
 
         // 4) PCB 状态落库（对齐上游 `batchFlushBackDatabase*`，只写 dirty 实体）
+        debug!("wave phase:5 PCB 状态落库");
         self.persist_pcb_state();
 
         *self.statuses.lock().unwrap_or_else(|e| e.into_inner()) = statuses;
@@ -740,6 +745,7 @@ impl WaveEngine {
         now_ms: i64,
     ) -> Result<DownloaderOutput, String> {
         let dl = entry.downloader.clone();
+        debug!("dl {} login 开始", dl.id());
         let gate = self
             .login_gates
             .lock()
@@ -801,10 +807,12 @@ impl WaveEngine {
             });
         }
 
+        debug!("dl {} fetch_torrents 开始", dl.id());
         let torrents = dl
             .fetch_torrents()
             .await
             .map_err(|e| format!("{} torrents: {e}", dl.id()))?;
+        debug!("dl {} 快照 {} 个 torrent，开始并发拉取 peers", dl.id(), torrents.len());
         let sem = Arc::new(Semaphore::new(self.max_concurrent.max(1)));
         let features = dl.feature_flags();
         let mut joins = Vec::new();
