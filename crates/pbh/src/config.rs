@@ -366,6 +366,10 @@ pub struct ServerConfig {
     /// 仅用于推导对外 host（本移植自行拼接 `/blocklist/...` 路径）。
     #[serde(default)]
     pub prefix: Option<String>,
+    /// 演练模式：照常登录/拉取/判定/落库，但不向下载器下发封禁/解封与限速。
+    /// 与 CLI `--dry-run` 任一开启即生效；WebUI 配置页修改后 reload 热应用。
+    #[serde(default, rename = "dry-run")]
+    pub dry_run: bool,
 }
 
 impl ServerConfig {
@@ -508,6 +512,7 @@ fn default_server() -> ServerConfig {
         token: String::new(),
         external_address: None,
         prefix: None,
+        dry_run: false,
     }
 }
 fn default_database() -> DatabaseConfig {

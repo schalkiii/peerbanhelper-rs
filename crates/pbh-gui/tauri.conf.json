@@ -9,7 +9,7 @@
             {
                 "label": "main",
                 "title": "PeerBanHelper",
-                "url": "http://127.0.0.1:9898",
+                "url": "about:blank",
                 "width": 1280,
                 "height": 860,
                 "visible": false,

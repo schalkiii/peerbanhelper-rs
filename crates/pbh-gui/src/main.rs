@@ -37,8 +37,18 @@ impl Args {
 }
 
 fn parse_args() -> Args {
+    // 部署布局（pbh-gui.exe 与 pbh.exe/data 同目录）优先：双击启动（无参数）时
+    // 拉起同目录的 pbh.exe；开发环境（repo 内运行）回退 target/release 布局。
+    let exe = std::env::current_exe().ok();
+    let exe_dir = exe.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let default_pbh = exe_dir
+        .as_ref()
+        .map(|d| d.join("pbh.exe"))
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "target/release/pbh.exe".to_string());
     let mut args = Args {
-        pbh_path: "target/release/pbh.exe".to_string(),
+        pbh_path: default_pbh,
         data_dir: String::new(),
         port: 9898,
     };
@@ -64,12 +74,18 @@ fn parse_args() -> Args {
         }
     }
     if args.data_dir.is_empty() {
-        // 默认：pbh 可执行文件同级的 data 目录（repo 布局为 ../../data）
-        let exe = std::env::current_exe().unwrap_or_default();
-        args.data_dir = exe
-            .parent()
-            .and_then(|p| p.join("../../data").canonicalize().ok())
+        // 默认：exe 同级 data 目录（部署布局）；开发环境回退 repo 的 ../../data
+        args.data_dir = exe_dir
+            .as_ref()
+            .map(|d| d.join("data"))
+            .filter(|p| p.is_dir())
             .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| {
+                exe.as_ref()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.join("../../data").canonicalize().ok())
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
             .unwrap_or_else(|| "data".to_string());
     }
     args
@@ -268,11 +284,30 @@ fn main() {
                 }
             };
             std::thread::spawn(move || {
-                for _ in 0..30 {
+                // 等 pbh 就绪：最多 120 秒（冷启动含 SQLite 迁移可能较慢）。
+                // 窗口 visible=false 且未导航，就绪前用户不会看到连接错误页。
+                let mut ready = false;
+                for _ in 0..120 {
                     if port_open(port) {
+                        ready = true;
                         break;
                     }
                     std::thread::sleep(Duration::from_secs(1));
+                }
+                if !ready {
+                    // 兜底：显示本地占位页（无网络依赖，避免白屏/错误页），
+                    // 并后台持续重试——监督线程会不断拉起 pbh，就绪后自动切入
+                    gui_log("等待 pbh 就绪超时（120s），显示占位页并后台重试");
+                    const WAITING: &str = "data:text/html;charset=utf-8,%3Cmeta%20charset%3Dutf-8%3E%3Cbody%20style%3D'font-family:system-ui%3Bdisplay:flex%3Balign-items:center%3Bjustify-content:center%3Bheight:90vh'%3E%3Cdiv%20style%3D'text-align:center'%3E%3Ch2%3EPeerBanHelper%20%E6%AD%A3%E5%9C%A8%E5%90%AF%E5%8A%A8%E2%80%A6%3C%2Fh2%3E%3Cp%3E%E6%9C%8D%E5%8A%A1%E5%B0%B1%E7%BB%AA%E5%90%8E%E5%B0%86%E8%87%AA%E5%8A%A8%E8%BF%9B%E5%85%A5%20WebUI%3B%E8%8B%A5%E9%95%BF%E6%97%B6%E9%97%B4%E6%97%A0%E5%93%8D%E5%BA%94%EF%BC%8C%E8%AF%B7%E6%9F%A5%E7%9C%8B%20data%2Fpbh-gui.log%3C%2Fp%3E%3C%2Fdiv%3E%3Cscript%3EsetTimeout(()%3D%3Elocation.reload()%2C5000)%3C%2Fscript%3E%3C%2Fbody%3E";
+                    if let Ok(u) = WAITING.parse() {
+                        let _ = win.navigate(u);
+                    }
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                    while !port_open(port) {
+                        std::thread::sleep(Duration::from_secs(5));
+                    }
+                    gui_log("pbh 已就绪（后台重试成功），切换到 WebUI");
                 }
                 // 静默登录：导航到带 ?silentLogin= 的 URL（对齐上游 WebUITab 的 URL
                 // 拼接 + Javalin accessManager 豁免）——middleware 校验通过即放行并

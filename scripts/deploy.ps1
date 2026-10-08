@@ -14,15 +14,20 @@ Set-Location 'd:\workspace\peerbanhelper-rs'
 # 必须保留在 PATH 中。
 $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notmatch 'coreutils') }) -join ';'
 if (-not $SkipBuild) {
-    Write-Output '[1/4] cargo build --release -p pbh'
+    Write-Output '[1/4] cargo build --release -p pbh + pbh-gui'
     cargo build --release -p pbh 2>&1 | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { Write-Error '构建失败'; exit 1 }
+    Push-Location 'crates\pbh-gui'
+    cargo build --release 2>&1 | Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0) { Pop-Location; Write-Error 'GUI 构建失败'; exit 1 }
+    Pop-Location
 } else { Write-Output '[1/4] 跳过构建' }
 Write-Output '[2/4] 停止现有实例'
-Get-Process pbh -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
+Get-Process pbh, pbh-gui -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
 Write-Output '[3/4] 复制产物'
 Copy-Item $srcExe $dstExe -Force
+Copy-Item 'd:\workspace\peerbanhelper-rs\crates\pbh-gui\target\release\pbh-gui.exe' (Join-Path $dstDir 'pbh-gui.exe') -Force
 Write-Output ('  已部署: ' + (Get-Item $dstExe).LastWriteTime)
 Write-Output '[4/4] 启动 GUI（监督线程拉起 pbh）'
 Start-Process (Join-Path $dstDir 'pbh-gui.exe') -ArgumentList @('--pbh-path', $dstExe, '--data-dir', $dataDir, '--port', "$port")

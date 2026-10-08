@@ -6,6 +6,8 @@
 //! 3. 下发封禁列表：`removed` 非空 / 关闭增量 / 需要全量重放时走全量 `setPreferences`，
 //!    否则走增量 `/transfer/banPeers`；两者都无变化时不触碰下载器。
 
+use std::sync::atomic::AtomicBool;
+
 use crate::push::{AlertLevel, AlertManager};
 use pbh_core::banlist::{
     needs_full_ban_list, random_id, BanList, BanMetadata, BannedPeer, BannedPeerAddress,
@@ -218,8 +220,9 @@ pub struct WaveEngine {
     pub metrics: Arc<StdMutex<Metrics>>,
     pub statuses: Arc<StdMutex<Vec<DownloaderStatus>>>,
     pub persist_banlist: bool,
-    /// 演练模式（`--dry-run`）：照常判定与落库，但不向下载器下发封禁/解封/限速。
-    pub dry_run: bool,
+    /// 演练模式（`--dry-run` 或 `server.dry-run`）：照常判定与落库，但不向下载器
+    /// 下发封禁/解封/限速。共享 AtomicBool 以支持 WebUI 修改配置后热生效。
+    pub dry_run: Arc<AtomicBool>,
     pub max_concurrent: usize,
     /// 告警/推送管理器（对齐上游注入到 `DigestionSession` → `RunCheckModuleOrgan` 的
     /// `AlertManager`）
@@ -701,7 +704,7 @@ impl WaveEngine {
         }
         let dl = entry.downloader.clone();
         let full = needs_full_ban_list(removed_count, entry.increment_ban, force_full);
-        if self.dry_run {
+        if self.dry_run.load(std::sync::atomic::Ordering::Relaxed) {
             info!(
                 "[dry-run] 跳过向下载器 {} 下发封禁列表（full={full}，新增 {}，解封 {removed_count}）",
                 dl.id(),
@@ -1445,7 +1448,7 @@ mod tests {
             metrics: Arc::new(StdMutex::new(Metrics::default())),
             statuses: Arc::new(StdMutex::new(Vec::new())),
             persist_banlist: false,
-            dry_run: false,
+            dry_run: Arc::new(AtomicBool::new(false)),
             max_concurrent: 1,
             login_gates: Default::default(),
             live_peers: crate::btn_legacy::new_live_peer_map(),

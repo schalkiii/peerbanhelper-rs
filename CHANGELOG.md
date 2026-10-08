@@ -5,6 +5,29 @@
 
 ## 未发布（working tree）
 
+### feat(gui/web): 原版图标 + GUI 默认路径修复 + 启动占位页 + dry-run 可配置
+
+- **图标**：`pbh-gui` 换用上游原版图标（`icon.png` 256px + 多尺寸 `icon.ico`
+  16-256px），托盘/窗口/exe 资源同步更新。
+- **GUI 默认路径**（修复「双击 pbh-gui.exe 不拉起 pbh.exe」）：`--pbh-path`/
+  `--data-dir` 缺省值改为 exe 同目录布局（部署形态），开发环境回退
+  `target/release` 布局；此前无参数启动指向 repo 相对路径，部署机上 spawn 必然失败。
+- **启动 UX**：主窗口改为 `about:blank` 起始（不预加载服务地址），就绪检测
+  30s→120s；超时显示本地「正在启动…」占位页并后台重试，就绪后自动切入
+  WebUI——杜绝「找不到网页」错误页。
+- **dry-run 可配置**：新增 `server.dry-run`（YAML kebab 对齐 `external-address`），
+  与 CLI `--dry-run` 任一开启即生效；`WaveEngine.dry_run` 改为共享
+  `Arc<AtomicBool>`，WebUI 配置页修改保存后热生效（`save_config`/`reload` 均同步），
+  无需重启。WebUI 其余配置项（下载器/推送/规则订阅等）同样经 config 编辑 +
+  热重建路径生效；wave 间隔等启动期参数需重启。
+- **修复配置持久化 bug**：`PbhBackend::save_config` 此前固定写
+  `<data>/config.yml`，而读取按上游布局优先 `<data>/config/config.yml`——写读
+  路径不一致导致 WebUI 保存的配置重启即丢；backend 现持有 `config_path`
+  （`load_or_create` 返回值），写回与读取同路径。
+- **deploy.ps1**：纳入 GUI 构建与部署（此前只部署 pbh.exe）。
+
+
+
 ### feat(web): OOBE 端点与下载器扫描 + 契约测试补全（web 层全覆盖收官）
 
 - **OOBE 向导端点**（Role.ANYONE，向导在认证前运行）：

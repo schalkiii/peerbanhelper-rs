@@ -47,6 +47,10 @@ fn module_class_name(config_name: &str) -> String {
 
 pub struct PbhBackend {
     data_dir: PathBuf,
+    /// 配置文件实际路径（`load_or_create` 的返回值）：上游布局为
+    /// `<data>/config/config.yml`，自建布局为 `<data>/config.yml`。
+    /// 写回必须与读取同路径，否则 WebUI 保存的配置重启即丢。
+    config_path: PathBuf,
     config: StdMutex<AppConfig>,
     remap: Arc<RemapConfig>,
     blocklist_url: String,
@@ -63,12 +67,16 @@ pub struct PbhBackend {
     /// 登录闸门（与 [`crate::wave::WaveEngine`] 共享）：下载器更新/删除时移除对应条目，
     /// 对齐上游「重建下载器实例 ⇒ 失败计数与冷却清零」。
     login_gates: Arc<StdMutex<HashMap<String, crate::wave::LoginGate>>>,
+    /// 演练模式（`server.dry-run` 或 CLI `--dry-run`）：与 WaveEngine 共享，
+    /// WebUI 修改配置后 reload/save 热应用，无需重启。
+    dry_run: Arc<AtomicBool>,
 }
 
 impl PbhBackend {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         data_dir: PathBuf,
+        config_path: PathBuf,
         config: AppConfig,
         remap: Arc<RemapConfig>,
         blocklist_url: String,
@@ -78,6 +86,7 @@ impl PbhBackend {
         alert_manager: Arc<AlertManager>,
         wave_trigger: Arc<tokio::sync::Notify>,
         login_gates: Arc<StdMutex<HashMap<String, crate::wave::LoginGate>>>,
+        dry_run: Arc<AtomicBool>,
     ) -> Self {
         let install_id = read_installation_id(&data_dir);
         // 推送渠道重建复用的 HTTP 客户端（对齐 `HTTPUtil.newBuilder()`：校验 TLS、超时 15s/60s）
@@ -90,6 +99,7 @@ impl PbhBackend {
         };
         Self {
             data_dir,
+            config_path,
             config: StdMutex::new(config),
             remap,
             blocklist_url,
@@ -102,7 +112,22 @@ impl PbhBackend {
             global_pause: Arc::new(AtomicBool::new(false)),
             wave_trigger,
             login_gates,
+            dry_run,
         }
+    }
+
+    /// 从内存配置同步演练模式标志（`save_config`/`reload` 后调用，
+    /// 使 WebUI 修改 `server.dry-run` 无需重启即生效）。
+    fn sync_dry_run(&self) {
+        let value = self
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .server
+            .dry_run;
+        self.dry_run
+            .store(value, std::sync::atomic::Ordering::Relaxed);
+        info!("演练模式（dry-run）= {value}");
     }
 
     /// 当前配置快照。
@@ -115,11 +140,15 @@ impl PbhBackend {
 
     /// 保存配置到磁盘并更新内存态。
     fn save_config(&self, cfg: &AppConfig) -> Result<(), String> {
-        let path = self.data_dir.join("config.yml");
-        cfg.save_to(&path).map_err(|e| e.to_string())?;
+        // 与读取同路径（构造时传入的 config_path）：写错位置会导致
+        // WebUI 保存的配置在重启后被旧文件覆盖
+        cfg.save_to(&self.config_path)
+            .map_err(|e| e.to_string())?;
         if let Ok(mut slot) = self.config.lock() {
             *slot = cfg.clone();
         }
+        // 演练模式随配置保存即时生效（WebUI 配置页改 server.dry-run 无需重启）
+        self.sync_dry_run();
         Ok(())
     }
 
@@ -211,6 +240,8 @@ impl WebBackend for PbhBackend {
         // 与推送渠道并如实标注差异项。
         self.rebuild_downloaders();
         self.rebuild_push();
+        // 演练模式随 reload 热应用（对齐上游 ReloadManager 的配置重载语义）
+        self.sync_dry_run();
         vec![
             ReloadEntry {
                 module_name: "config".into(),
@@ -266,6 +297,7 @@ impl WebBackend for PbhBackend {
         // 配置变更后的热加载（对齐上游写回后发起的 reload）
         self.rebuild_downloaders();
         self.rebuild_push();
+        self.sync_dry_run();
         Ok(())
     }
 

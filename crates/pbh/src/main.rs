@@ -108,8 +108,14 @@ async fn main() -> anyhow::Result<()> {
         );
         info!("长时对跑标记: {tag}");
     }
-    if args.dry_run {
-        info!("已启用演练模式（--dry-run）：不会向下载器下发封禁/解封/限速");
+    // 演练模式：CLI `--dry-run` 与 config `server.dry-run` 任一开启即生效。
+    // 共享 AtomicBool——WebUI 配置页修改并保存/reload 后无需重启即时生效
+    // （backend.sync_dry_run 负责热同步）。
+    let dry_run_flag = Arc::new(std::sync::atomic::AtomicBool::new(
+        args.dry_run || cfg.server.dry_run,
+    ));
+    if dry_run_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        info!("已启用演练模式（--dry-run / server.dry-run）：不会向下载器下发封禁/解封/限速");
     }
 
     // 内置 NAT（AutoSTUN）：`ip-remapping.auto-stun.enabled=false` 时**严格 no-op**
@@ -414,6 +420,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
     let backend = Arc::new(backend::PbhBackend::new(
         data_dir.clone(),
+        cfg_path.clone(),
         cfg.clone(),
         remap.clone(),
         blocklist_url.clone(),
@@ -423,6 +430,7 @@ async fn main() -> anyhow::Result<()> {
         alert_manager.clone(),
         wave_trigger.clone(),
         login_gates.clone(),
+        dry_run_flag.clone(),
     ));
     // 规则订阅：与 Web 后端（`/api/sub/*`）共享同一份运行时配置
     let rulesub_shared: Arc<RwLock<IpRuleListConfig>> = Arc::new(RwLock::new(
@@ -542,7 +550,7 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         statuses,
         persist_banlist: cfg.persist.banlist,
-        dry_run: args.dry_run,
+        dry_run: dry_run_flag.clone(),
         max_concurrent: 128,
         alert_manager,
         monitor,
@@ -586,7 +594,7 @@ async fn main() -> anyhow::Result<()> {
                         .clone();
                     engine
                         .monitor
-                        .run_scheduled(&entries_snapshot, now, args.dry_run)
+                        .run_scheduled(&entries_snapshot, now, dry_run_flag.load(std::sync::atomic::Ordering::Relaxed))
                         .await;
                     // 暂停期间手动封禁/解封的变更仍需重放（上游暂停分支里也会检查
                     // `needReApplyBanList`），否则变更要等到恢复后才生效。
@@ -643,7 +651,7 @@ async fn main() -> anyhow::Result<()> {
                 // 快照后释放锁再 await：定时任务内有网络 I/O，持锁跨 await 会阻塞下载器热管理
                 let entries_snapshot: Vec<_> =
                     engine.entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                engine.monitor.run_scheduled(&entries_snapshot, now, args.dry_run).await;
+                engine.monitor.run_scheduled(&entries_snapshot, now, dry_run_flag.load(std::sync::atomic::Ordering::Relaxed)).await;
                 // 封禁列表落库（对齐上游 `scheduleWithFixedDelay(saveBanList, 10s, 1h)`：
                 // 首轮后 10 秒内首次保存，之后每小时一次）
                 if cfg.persist.banlist && std::time::Instant::now() >= next_banlist_save {
