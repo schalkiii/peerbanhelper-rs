@@ -65,6 +65,10 @@ pub fn api_routes() -> Router<crate::AppState> {
         // —— 全局通用（PBHGeneralController）——
         .route("/general/status", get(general::status))
         .route(
+            "/general/dryrun",
+            get(general::dryrun_get).put(general::dryrun_put),
+        )
+        .route(
             "/general/global",
             get(general::global_get).patch(general::global_patch),
         )

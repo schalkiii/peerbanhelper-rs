@@ -155,6 +155,10 @@ pub trait WebBackend: Send + Sync {
     fn set_global_paused(&self, paused: bool) -> Result<(), String>;
     /// 匿名统计开关持久化。
     fn set_analytics(&self, enabled: bool) -> Result<(), String>;
+    /// 演练模式当前状态（`server.dry-run`，共享运行时标志）。
+    fn dry_run_enabled(&self) -> bool;
+    /// 演练模式开关持久化（GUI 托盘 / Web 配置页共用）。
+    fn set_dry_run(&self, enabled: bool) -> Result<(), String>;
     /// 重新加载配置；返回每个模块的重载结果。
     fn reload(&self) -> Vec<ReloadEntry>;
     /// 读取 config.yml / profile.yml 等配置文件的 YAML 解析结果。

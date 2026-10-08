@@ -221,19 +221,32 @@ fn main() {
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "在浏览器打开 WebUI", true, None::<&str>)?;
+            let dryrun =
+                tauri::menu::CheckMenuItem::with_id(
+                    app,
+                    "dryrun",
+                    "演练模式（不向下载器下发封禁）",
+                    true,
+                    false,
+                    None::<&str>,
+                )?;
             let quit = MenuItem::with_id(app, "quit", "退出 PeerBanHelper", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &open, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &open, &dryrun, &quit])?;
 
             let handle: AppHandle = app.handle().clone();
             let child = Arc::clone(&child);
             let url_menu = url.clone();
+            // 托盘演练模式开关所需：本机端口与静默登录 token 路径
+            let port_menu = args.port;
+            let token_path_menu =
+                std::path::Path::new(&args.data_dir).join("silent_login_token");
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("缺少窗口图标").clone())
                 .tooltip("PeerBanHelper")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(move |_app, event| {
-                    let win = handle.get_webview_window("main");
+                .on_menu_event(move |app, event| {
+                    let win = app.get_webview_window("main");
                     match event.id().as_ref() {
                         "show" => {
                             if let Some(w) = win {
@@ -242,9 +255,38 @@ fn main() {
                             }
                         }
                         "open" => open_in_browser(&url_menu),
+                        "dryrun" => {
+                            // 托盘开关：取反并调本机 API（凭据取静默登录 token，
+                            // 与 Web 配置页共用同一持久化路径）
+                            if let Some(item) =
+                                app.menu().and_then(|m| m.get("dryrun")).and_then(|i| {
+                                    i.as_check_menuitem().cloned()
+                                })
+                            {
+                                let next = !item.is_checked().unwrap_or(false);
+                                let _ = item.set_checked(next);
+                                let token = std::fs::read_to_string(&token_path_menu)
+                                    .map(|t| t.trim().to_string())
+                                    .unwrap_or_default();
+                                std::thread::spawn(move || {
+                                    let body = format!("{{\"enabled\":{next}}}");
+                                    match ureq::put(&format!(
+                                        "http://127.0.0.1:{port_menu}/api/general/dryrun"
+                                    ))
+                                    .set("Authorization", &format!("Bearer {token}"))
+                                    .send_string(&body)
+                                    {
+                                        Ok(_) => eprintln!("[pbh-gui] 演练模式 → {next}"),
+                                        Err(e) => eprintln!(
+                                            "[pbh-gui] 演练模式切换失败（{next}）: {e}"
+                                        ),
+                                    }
+                                });
+                            }
+                        }
                         "quit" => {
                             child.kill();
-                            handle.exit(0);
+                            app.exit(0);
                         }
                         _ => {}
                     }
@@ -308,6 +350,32 @@ fn main() {
                         std::thread::sleep(Duration::from_secs(5));
                     }
                     gui_log("pbh 已就绪（后台重试成功），切换到 WebUI");
+                }
+                // 同步托盘「演练模式」勾选状态：菜单初始为 false，需与后端
+                // 配置对齐（config 里已开启时首次点击才会正确关闭）
+                let token_for_sync = std::fs::read_to_string(&silent_path)
+                    .map(|t| t.trim().to_string())
+                    .unwrap_or_default();
+                if let Ok(resp) = ureq::get(&format!(
+                    "http://127.0.0.1:{port}/api/general/dryrun"
+                ))
+                .set("Authorization", &format!("Bearer {token_for_sync}"))
+                .timeout(std::time::Duration::from_secs(5))
+                .call()
+                {
+                    if let Ok(v) = resp.into_json::<ureq::serde_json::Value>() {
+                        let enabled = v
+                            .pointer("/data/enabled")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false);
+                        if let Some(item) = handle
+                            .menu()
+                            .and_then(|m| m.get("dryrun"))
+                            .and_then(|i| i.as_check_menuitem().cloned())
+                        {
+                            let _ = item.set_checked(enabled);
+                        }
+                    }
                 }
                 // 静默登录：导航到带 ?silentLogin= 的 URL（对齐上游 WebUITab 的 URL
                 // 拼接 + Javalin accessManager 豁免）——middleware 校验通过即放行并

@@ -5,6 +5,17 @@
 
 ## 未发布（working tree）
 
+### feat(gui/web): 演练模式一键开关（GUI 托盘 + dryrun API）
+
+- **新增 `GET/PUT /api/general/dryrun`**：读写演练模式状态，PUT 落盘
+  `server.dry-run` 并同步运行时标志（与配置页写回同路径，热生效无需重启）
+- **GUI 托盘新增「演练模式（不向下载器下发封禁）」复选菜单**：点击切换调本机
+  API（凭据复用静默登录 token）；启动就绪后自动同步后端当前状态
+- 上游 WebUI 前端无此字段的图形开关（上游也无 dry-run 功能）——本项为 Rust 侧增强
+- 实测：PUT true → 落盘 + GET 回读一致；workspace 测试 0 失败
+
+
+
 ### fix(web): general/status 补齐内存/IP 字段，修复 BTN 状态误显示未启用
 
 - **BTN 状态卡片误显示「未启用」**：前端 `checkModuleAvailable?module=BTN` 用

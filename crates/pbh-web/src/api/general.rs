@@ -166,6 +166,39 @@ fn process_working_set() -> u64 {
     0
 }
 
+/// `GET /api/general/dryrun`：演练模式当前状态。
+pub async fn dryrun_get(State(state): State<AppState>) -> Response {
+    (
+        StatusCode::OK,
+        crate::std_resp(true, None, json!({ "enabled": state.backend.dry_run_enabled() })),
+    )
+        .into_response()
+}
+
+/// `PUT /api/general/dryrun`：切换演练模式（GUI 托盘开关与配置页共用；
+/// 落盘 + 运行时标志即时生效，无需重启）。
+pub async fn dryrun_put(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    let Some(enabled) = body.get("enabled").and_then(|v| v.as_bool()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            crate::std_resp(false, Some("enabled (bool) required"), Value::Null),
+        )
+            .into_response();
+    };
+    match state.backend.set_dry_run(enabled) {
+        Ok(()) => (
+            StatusCode::OK,
+            crate::std_resp(true, None, json!({ "enabled": enabled })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            crate::std_resp(false, Some(&e), Value::Null),
+        )
+            .into_response(),
+    }
+}
+
 /// `GET /api/general/global`：全局配置（暂停 / 匿名统计）。
 pub async fn global_get(State(state): State<AppState>) -> Response {
     let backend = state.backend.as_ref();

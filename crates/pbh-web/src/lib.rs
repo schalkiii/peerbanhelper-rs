@@ -884,6 +884,12 @@ mod tests {
         fn set_analytics(&self, _enabled: bool) -> Result<(), String> {
             Ok(())
         }
+        fn dry_run_enabled(&self) -> bool {
+            false
+        }
+        fn set_dry_run(&self, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
         fn modules(&self) -> Vec<ModuleRecord> {
             vec![]
         }

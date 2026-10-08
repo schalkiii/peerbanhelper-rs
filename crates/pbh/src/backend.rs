@@ -210,6 +210,18 @@ impl WebBackend for PbhBackend {
         self.save_config(&cfg)
     }
 
+    fn dry_run_enabled(&self) -> bool {
+        self.dry_run.load(Ordering::Relaxed)
+    }
+
+    /// 演练模式开关：写入 config 并落盘（重启保持），save_config 内同步运行时
+    /// 标志——GUI 托盘开关与 Web 配置页共用。
+    fn set_dry_run(&self, enabled: bool) -> Result<(), String> {
+        let mut cfg = self.snapshot();
+        cfg.server.dry_run = enabled;
+        self.save_config(&cfg)
+    }
+
     fn modules(&self) -> Vec<ModuleRecord> {
         self.pipeline
             .modules

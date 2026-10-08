@@ -114,6 +114,52 @@ axum 服务：Token 鉴权、健康检查、封禁列表/日志/统计/图表 AP
 
 ---
 
+## 相对上游的改进与增强
+
+在「忠实重写」（只优化实现、不改变语义）前提下，本仓库在以下方面超出 Java 版的能力。
+资源优势见开头对比表（内存 ≈ 1/8 ~ 1/20、冷启动 0.57s、单二进制 ~8MB）。
+
+### 可靠性与可观测性
+
+- **全链路 wave 打点**：ban wave 五阶段（解封/判定/落库/下发/PCB 落库）、下载器
+  登录/快照/并发拉取、PCB 8h 清理共 11 处 DEBUG 打点——真冻结时日志最后一条即精确卡点
+- **GUI 诊断闭环**：子进程 stdout/stderr 重定向到 `data/pbh-gui.log`（此前 GUI 无控制台
+  日志全丢）；监督线程把子进程**退出码**写入日志（区分 access violation / 栈溢出 / 正常退出）
+- **外部看门狗**（`scripts/pbh-watchdog.ps1`）：health 探测 + **wave 完成心跳**双通道判定
+  冻结，阈值与部署 config 的 wave 间隔联动（CPU 增量误杀教训已固化进文档）
+
+### 部署与运维
+
+- **一键部署**：`scripts/deploy.ps1`（构建 → 停服 → 复制 → 健康验证），GUI 与主程序同版本
+- **原生 GUI 壳**（Tauri v2，上游仅 WebUI）：托盘常驻、崩溃自动重启、**静默登录**
+  （GUI 内免输 token）、启动占位页（服务未就绪不再显示错误页）、上游原版图标
+- **演练模式热切换**：`server.dry-run` 配置字段或 GUI 托盘开关即时生效（配置落盘 +
+  运行时标志双写，无需重启）；上游无此功能
+- **配置持久化写读同路径**：WebUI 保存的配置正确写回上游布局
+  `<data>/config/config.yml`，重启不丢
+
+### Web 兼容性
+
+WebUI 前端**原样复用上游 dist**，以下兼容性问题在 Rust 服务端修复（前端零改动）：
+
+- 会话认证对齐 Javalin 语义：登录下发 HttpOnly 会话 cookie（前端无手动凭据存储，
+  全靠 cookie），修复「登录后所有 API 401 → 数据全空」
+- 静态资源缓存策略：占位页 `no-store`、入口 html `no-cache`（部署立即生效）、
+  assets 日级缓存；SPA history 子路由回退 index.html（刷新不再落到占位页）
+- 下载器 CRUD 的 id/方法语义对齐：UUID 与 name 双匹配、`POST`/`PUT`/`PATCH` 全兼容，
+  修复「添加下载器报 DL_NOT_FOUND / 405」
+- `general/status` 信息卡片补齐（system.memory / jvm 内存=进程真实工作集 / 浏览器 IP）
+  与模块名大小写兼容（BTN 状态误显示未启用）
+
+### 工程化
+
+- **530+ 测试**（单元 / 黄金 / 契约 / 端到端）+ `clippy -D warnings` 零警告
+- 黄金测试锁定封禁集合一致性：mock 双跑（同夹具喂 Java/Rust 逐 IP diff）+
+  实机 dry-run 并行对跑
+- 契约测试覆盖 Web 端点响应结构（回归即失败，如 status 卡片字段缺失）
+
+---
+
 ## 与上游的已知差异
 
 少量已知差异（均不改变封禁决策，或已按更安全方向处理）在
@@ -186,6 +232,7 @@ cargo test --workspace
 ```
 peerbanhelper-rs/
 ├── README.md                # 本文件（当前状态）
+├── AGENTS.md                # AI 协作约定（工具链/部署/约定速查）
 ├── SPEC.md                  # 行为契约（忠实重写的行为规格）
 ├── PLAN.md                  # 进度、待办、已知差异与开发历史
 ├── CHANGELOG.md             # 变更日志
