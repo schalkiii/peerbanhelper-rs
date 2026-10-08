@@ -5,6 +5,23 @@
 
 ## 未发布（working tree）
 
+### fix(web): general/status 补齐内存/IP 字段，修复 BTN 状态误显示未启用
+
+- **BTN 状态卡片误显示「未启用」**：前端 `checkModuleAvailable?module=BTN` 用
+  上游大写模块名查询，Rust 配置段名为小写 `btn` → 比较失败返回 `data:false`。
+  模块名匹配改为大小写不敏感。
+- **浏览器 IP 为空**：status 接口的 `system.network.client_ip` 此前硬编码空串；
+  现按上游语义取 `X-Forwarded-For`/`X-Real-IP`（反代场景），否则取连接地址
+  （serve 层加 `into_make_service_with_connect_info`，IPv4 映射地址折叠）。
+- **内存总量/内存压力/堆内存信息**：
+  - 补齐 `system.memory: {total, free, page_size}`（上游
+    `generateSystemMemoryData` 同名字段，此前整段缺失）；
+  - `jvm.memory.heap` 从「系统内存粗略拷贝」改为**进程真实工作集**
+    （`GetProcessMemoryInfo.WorkingSetSize`），`max` 为系统物理内存总量——
+    「堆内存信息」不再显示整个机器内存被占用的误导值。
+
+
+
 ### fix(web): 下载器 CRUD 对齐上游 id 语义，修复「添加下载器报 DL_NOT_FOUND / 405」
 
 - **现象**：WebUI 添加 Aria2Next 下载器（JSON-RPC）报 `DL_NOT_FOUND`；实测

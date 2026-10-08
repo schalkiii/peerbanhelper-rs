@@ -493,7 +493,13 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     info!("Web 服务监听: http://{bind}");
     let server = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        // with_connect_info：status 接口的「浏览器 IP」（client_ip）依赖连接地址
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             warn!("web server error: {e}");
         }
     });

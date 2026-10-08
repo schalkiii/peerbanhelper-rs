@@ -1228,10 +1228,16 @@ mod tests {
 
     /// 发起不带认证的请求（模拟首次访问/GUI 未登录）。
     async fn raw_get(state: AppState, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+        // ConnectInfo extension：oneshot 测试请求绕过 serve 层，status 接口的
+        // ConnectInfo<SocketAddr> extractor 需要 request 手动注入
         let request = Request::builder()
             .uri(uri)
             // 契约测试聚焦「响应结构」；认证流程由独立用例覆盖
             .header("Authorization", "Bearer test-token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                9898,
+            ))))
             .body(Body::empty())
             .expect("请求构造");
         let response = build_router(state.clone()).oneshot(request).await.expect("路由调用");
