@@ -8,6 +8,11 @@ $dstExe = Join-Path $dstDir 'pbh.exe'
 $dataDir = Join-Path $dstDir 'data'
 $port = 9898
 Set-Location 'd:\workspace\peerbanhelper-rs'
+
+# PATH 净化：仅移除 GNU coreutils——其 link.exe（硬链接工具）会遮蔽 MSVC
+# linker；当前工具链为 GNU（rustup default），mingw 的 cc/gcc 是 C 构建依赖，
+# 必须保留在 PATH 中。
+$env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notmatch 'coreutils') }) -join ';'
 if (-not $SkipBuild) {
     Write-Output '[1/4] cargo build --release -p pbh'
     cargo build --release -p pbh 2>&1 | Select-Object -Last 1
