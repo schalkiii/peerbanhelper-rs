@@ -5,6 +5,22 @@
 
 ## 未发布（working tree）
 
+### fix(web): BTN 状态卡片真实根因——缺 `webapi-btn` FeatureModule 记录
+
+- **上一轮修复不彻底**：只做了模块名大小写兼容（`BTN`→`btn`），但用浏览器实测
+  渲染发现卡片仍显示「未启用」。
+- **真实根因**（前端 fetch hook 抓到实际请求）：WebUI 的「BTN 状态」卡片查询的是
+  `checkModuleAvailable?module=webapi-btn`——上游把 BTN 的上报/WebAPI 实现为独立
+  FeatureModule `PBHBtnController`（`getConfigName()="webapi-btn"`），与规则模块
+  `BtnNetworkOnline`（`"btn"`）是两个条目；Rust 的 `modules()` 只列规则流水线模块，
+  缺 `webapi-btn` → 查询恒 false。
+- **修复**：`modules()` 补充 `webapi-btn` 记录（对齐上游 FeatureModule 体系）。
+- **验证方式升级**：本次以 agent-browser 驱动真实浏览器走完「登录 → 设置 → 状态
+  标签」，截图确认卡片渲染为「模块状态：已启用 / 配置文件获取成功」——不再是
+  仅验证 API 返回值。
+
+
+
 ### feat(gui/web): 演练模式一键开关（GUI 托盘 + dryrun API）
 
 - **新增 `GET/PUT /api/general/dryrun`**：读写演练模式状态，PUT 落盘

@@ -223,14 +223,24 @@ impl WebBackend for PbhBackend {
     }
 
     fn modules(&self) -> Vec<ModuleRecord> {
-        self.pipeline
+        let mut out: Vec<ModuleRecord> = self
+            .pipeline
             .modules
             .iter()
             .map(|m| ModuleRecord {
                 class_name: module_class_name(m.config_name()),
                 config_name: m.config_name().to_string(),
             })
-            .collect()
+            .collect();
+        // 对齐上游 FeatureModule 体系：BTN 的上报/WebAPI 是独立 FeatureModule
+        // （PBHBtnController，getConfigName()="webapi-btn"）——WebUI 设置页的
+        // 「BTN 状态」卡片以 `checkModuleAvailable?module=webapi-btn` 查询可用性，
+        // 缺这条记录时卡片恒显示「未启用」
+        out.push(ModuleRecord {
+            class_name: module_class_name("webapi-btn"),
+            config_name: "webapi-btn".into(),
+        });
+        out
     }
 
     fn global_paused(&self) -> bool {
