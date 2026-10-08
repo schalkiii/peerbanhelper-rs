@@ -5,17 +5,7 @@
     "identifier": "com.pbh-rs.gui",
     "build": {},
     "app": {
-        "windows": [
-            {
-                "label": "main",
-                "title": "PeerBanHelper",
-                "url": "about:blank",
-                "width": 1280,
-                "height": 860,
-                "visible": false,
-                "center": true
-            }
-        ],
+        "windows": [],
         "security": {
             "csp": null
         }

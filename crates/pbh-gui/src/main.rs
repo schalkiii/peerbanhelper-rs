@@ -162,12 +162,16 @@ fn main() {
     // 附加模式：服务已在运行（上次 GUI 留下的子进程，或用户手动启动）⇒ 不再拉起
     let attach = port_open(args.port);
     let child = Arc::new(ChildHandle(Mutex::new(None)));
+    // 托盘「重启服务」置位：监督线程跳过 5s 冷却立即重启——保持单 spawn 点，
+    // 避免托盘与监督线程同时拉起造成双子进程/端口冲突
+    let restart_now = Arc::new(std::sync::atomic::AtomicBool::new(false));
     if !attach {
         match spawn_child(&args) {
             Ok(c) => {
                 *child.0.lock().unwrap() = Some(c);
                 // 监督线程：崩溃自动重启（封禁/游标状态均在 DB，重启无损）
                 let child = Arc::clone(&child);
+                let restart_now = Arc::clone(&restart_now);
                 let spawn_args = args.clone_for_spawn();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(2));
@@ -195,11 +199,16 @@ fn main() {
                             use std::io::Write as _;
                             let _ = writeln!(
                                 f,
-                                "[pbh-gui] {ts} pbh 进程退出（{code}），5 秒后重启"
+                                "[pbh-gui] {ts} pbh 进程退出（{code}），即将重启"
                             );
                         }
-                        eprintln!("[pbh-gui] pbh 进程退出（{code}），5 秒后重启");
-                        std::thread::sleep(Duration::from_secs(5));
+                        eprintln!("[pbh-gui] pbh 进程退出（{code}），即将重启");
+                        if restart_now.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                            // 托盘重启：跳过冷却立即拉起
+                            std::thread::sleep(Duration::from_millis(200));
+                        } else {
+                            std::thread::sleep(Duration::from_secs(5));
+                        }
                         if let Ok(c) = spawn_child(&spawn_args) {
                             *child.0.lock().unwrap() = Some(c);
                         }
@@ -219,6 +228,32 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // 主窗口由代码创建（而非 tauri.conf.json）：on_navigation 导航守卫
+            // 只能在 WebviewWindowBuilder 上设置——外部链接转交系统浏览器打开，
+            // WebView 始终停留在本机 WebUI，用户不会"跳出去回不来"
+            let nav_port = args.port;
+            let mut win_builder =
+                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(
+                    "about:blank".parse().expect("about:blank"),
+                ))
+                .title("PeerBanHelper")
+                .inner_size(1280.0, 860.0)
+                .center()
+                .visible(false);
+            win_builder = win_builder.on_navigation(move |nav_url| {
+                let local = (nav_url.host_str() == Some("127.0.0.1")
+                    || nav_url.host_str() == Some("localhost"))
+                    && nav_url.port_or_known_default() == Some(nav_port);
+                let internal = nav_url.scheme() == "data" || nav_url.scheme() == "about";
+                if local || internal {
+                    true
+                } else {
+                    open_in_browser(nav_url.as_str());
+                    false
+                }
+            });
+            win_builder.build().expect("创建主窗口失败");
+
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "在浏览器打开 WebUI", true, None::<&str>)?;
             let dryrun =
@@ -230,8 +265,11 @@ fn main() {
                     false,
                     None::<&str>,
                 )?;
+            let restart =
+                MenuItem::with_id(app, "restart", "重启服务（重启 pbh 子进程）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 PeerBanHelper", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &open, &dryrun, &quit])?;
+            let menu =
+                Menu::with_items(app, &[&show, &open, &dryrun, &restart, &quit])?;
 
             let handle: AppHandle = app.handle().clone();
             let child = Arc::clone(&child);
@@ -240,6 +278,8 @@ fn main() {
             let port_menu = args.port;
             let token_path_menu =
                 std::path::Path::new(&args.data_dir).join("silent_login_token");
+            // 托盘「重启服务」所需：置位监督线程的立即重启标志
+            let restart_now_menu = Arc::clone(&restart_now);
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().expect("缺少窗口图标").clone())
                 .tooltip("PeerBanHelper")
@@ -255,6 +295,17 @@ fn main() {
                             }
                         }
                         "open" => open_in_browser(&url_menu),
+                        "restart" => {
+                            // 托盘重启：结束子进程并置位立即重启标志——由监督线程
+                            // 统一拉起（单 spawn 点，防止与监督线程竞态造成双进程）
+                            restart_now_menu.store(true, std::sync::atomic::Ordering::Relaxed);
+                            child.kill();
+                            eprintln!("[pbh-gui] pbh 重启中（托盘操作），最多 2 秒后恢复");
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
                         "dryrun" => {
                             // 托盘开关：取反并调本机 API（凭据取静默登录 token，
                             // 与 Web 配置页共用同一持久化路径）
