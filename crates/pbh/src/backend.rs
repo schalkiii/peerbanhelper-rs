@@ -46,7 +46,6 @@ fn module_class_name(config_name: &str) -> String {
 }
 
 pub struct PbhBackend {
-    data_dir: PathBuf,
     /// 配置文件实际路径（`load_or_create` 的返回值）：上游布局为
     /// `<data>/config/config.yml`，自建布局为 `<data>/config.yml`。
     /// 写回必须与读取同路径，否则 WebUI 保存的配置重启即丢。
@@ -98,7 +97,6 @@ impl PbhBackend {
             }
         };
         Self {
-            data_dir,
             config_path,
             config: StdMutex::new(config),
             remap,

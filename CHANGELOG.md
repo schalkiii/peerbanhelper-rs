@@ -3,7 +3,17 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
-## 未发布（working tree）
+## 9.5.1-rs.1（2026-10-09）
+
+首个对外发布版本——功能基线对齐上游 PeerBanHelper v9.5.1，WebUI 沿用上游 dist。
+
+**发布内容**：Windows x64 的 `pbh.exe`（服务端）+ `pbh-gui.exe`（Tauri 托盘壳，
+含 `WebView2Loader.dll`）；Linux x64 可自行从源码构建（单二进制）。
+
+> 版本号约定：Cargo 版本号对齐上游基线（9.5.1），Rust 移植自身的发布序列以
+> `-rs.N` 后缀体现在 Git tag 与 Release 标题上。
+
+
 
 ### fix(web/gui): 构建时间异常 + 后端版本 unknown + 托盘直达实时日志
 

@@ -164,6 +164,16 @@ GeoIP 更新进度以日志代替后台任务 UI 等。
 
 ## 快速开始
 
+### 直接下载（Windows x64）
+
+从 [Releases](https://github.com/schalkiii/peerbanhelper-rs/releases) 下载
+`pbh-rs-<版本>-windows-x64.zip`，解压后得到：
+
+- `pbh.exe`：服务端（命令行/后台运行）
+- `pbh-gui.exe` + `WebView2Loader.dll`：原生托盘壳（双击即可，自动拉起服务端）
+
+从 Java 版迁移或灰度切换步骤见 [docs/DEPLOY.md](docs/DEPLOY.md)。
+
 ### 从源码构建
 
 ```bash

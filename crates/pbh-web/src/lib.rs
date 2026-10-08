@@ -1281,8 +1281,8 @@ mod tests {
         let compile_time = data
             .pointer("/peerbanhelper/compile_time")
             .and_then(|v| v.as_i64())
-            .expect("compile_time 必须为毫秒时间戳");
-        assert!(compile_time > 1_600_000_000_000, "不得为 1970（占位 0）");
+            .expect("compile_time 必须为秒级时间戳（上游 `generatePbhData` 语义）");
+        assert!(compile_time > 1_600_000_000, "不得为 1970（占位 0）");
         let btn = data.get("btn").expect("必须含 btn 段（设置页 BTN 状态数据源）");
         assert!(btn.get("enabled").and_then(|v| v.as_bool()).is_some());
         let net = data.pointer("/system/network").expect("必须含 system.network");
