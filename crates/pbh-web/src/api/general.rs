@@ -23,7 +23,7 @@ pub async fn status(
         .and_then(|p| std::fs::metadata(p).ok())
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let (china_ok, global_ok) = network_reachability();
     let (total, available) = system_memory();
@@ -95,7 +95,10 @@ pub async fn status(
         "btn": btn_data,
         "peerbanhelper": {
             "version": env!("CARGO_PKG_VERSION"),
-            "commit_id": option_env!("GIT_COMMIT").unwrap_or("unknown"),
+            // commit_id = 所配套 WebUI 前端的构建 commit（前端页脚显示并据此比对；
+            // 上游 jar 里两者同源构建所以恒等，Rust 仓库的 git commit 与前端无关，
+            // 返回 Rust commit 会让前端误报「WebUI Commit 与后端不同」）
+            "commit_id": option_env!("GIT_COMMIT").unwrap_or("01b0b945"),
             "compile_time": compile_time,
             "release": "Rust",
             "uptime": uptime,

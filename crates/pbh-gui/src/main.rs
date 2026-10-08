@@ -265,11 +265,20 @@ fn main() {
                     false,
                     None::<&str>,
                 )?;
+            let viewlog = MenuItem::with_id(
+                app,
+                "viewlog",
+                "查看实时日志（浏览器）",
+                true,
+                None::<&str>,
+            )?;
             let restart =
                 MenuItem::with_id(app, "restart", "重启服务（重启 pbh 子进程）", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 PeerBanHelper", true, None::<&str>)?;
-            let menu =
-                Menu::with_items(app, &[&show, &open, &dryrun, &restart, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show, &open, &viewlog, &dryrun, &restart, &quit],
+            )?;
 
             let handle: AppHandle = app.handle().clone();
             let child = Arc::clone(&child);
@@ -295,6 +304,11 @@ fn main() {
                             }
                         }
                         "open" => open_in_browser(&url_menu),
+                        "viewlog" => {
+                            // 日志页（前端路由 /log，实时 SSE 滚动）——侧边栏无入口，
+                            // 托盘直达；系统浏览器打开避免占用主窗口
+                            open_in_browser(&format!("{url_menu}/log"));
+                        }
                         "restart" => {
                             // 托盘重启：结束子进程并置位立即重启标志——由监督线程
                             // 统一拉起（单 spawn 点，防止与监督线程竞态造成双进程）
