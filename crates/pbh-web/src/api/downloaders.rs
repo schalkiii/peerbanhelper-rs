@@ -25,6 +25,17 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> R
     }
 }
 
+/// `POST /api/downloaders/scan`：局域网下载器扫描（上游 `DownloaderDiscovery`）。
+///
+/// 本移植未实现 mDNS/端口探测，返回空结果——手动添加下载器为主路径。
+pub async fn scan() -> Response {
+    (
+        StatusCode::OK,
+        crate::std_resp(true, None, json!({ "downloaders": [] })),
+    )
+        .into_response()
+}
+
 /// `GET /api/downloaders/test`：测试配置连通性（body 为 `{config}`）。
 pub async fn test(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let cfg = body.get("config").cloned().unwrap_or(body);

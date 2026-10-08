@@ -936,22 +936,22 @@ mod tests {
             Ok(())
         }
         fn test_downloader(&self, _config: &Value) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn push_channels(&self) -> Vec<Value> {
             vec![]
         }
         fn add_push_channel(&self, _channel: &Value) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn update_push_channel(&self, _name: &str, _channel: &Value) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn remove_push_channel(&self, _name: &str) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
         fn test_push_channel(&self, _channel: &Value) -> Result<(), String> {
-            Err("TEST_ONLY".into())
+            Ok(())
         }
     }
 
@@ -1665,5 +1665,91 @@ mod tests {
             .await
             .expect("路由调用");
         assert_eq!(response.status(), StatusCode::OK, "DELETE 下载器应 200");
+    }
+
+    #[tokio::test]
+    async fn push_crud_and_test() {
+        // push CRUD 全链路（对齐上游 PBHPushController：PUT/GET/PATCH/DELETE/test）
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let router = build_router(state.clone());
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/api/push")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"name":"ch1","type":"webhook","endpoint":"http://127.0.0.1:18080/pushhook"}"#))
+            .expect("请求构造");
+        let response = router.clone().oneshot(put).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "PUT 渠道应 200");
+        let (status, _) = get_json(&state, "/api/push").await;
+        assert_eq!(status, StatusCode::OK, "GET 渠道列表应 200");
+        let patch = Request::builder()
+            .method("PATCH")
+            .uri("/api/push/ch1")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"name":"ch1","type":"webhook"}"#))
+            .expect("请求构造");
+        let response = router.clone().oneshot(patch).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "PATCH 渠道应 200");
+        let post = Request::builder()
+            .method("POST")
+            .uri("/api/push/test")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"name":"ch1","type":"webhook"}"#))
+            .expect("请求构造");
+        let response = router.clone().oneshot(post).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "test 渠道应 200");
+        let delete = Request::builder()
+            .method("DELETE")
+            .uri("/api/push/ch1")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.oneshot(delete).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "DELETE 渠道应 200");
+    }
+
+    #[tokio::test]
+    async fn oobe_endpoints_contract() {
+        // OOBE 向导端点（Role.ANYONE：向导在认证前运行——不带凭据直测）
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let router = build_router(state.clone());
+        for (method, path, body) in [
+            ("POST", "/api/oobe/testDownloader", r#"{"type":"qbittorrent","endpoint":"http://127.0.0.1:9091"}"#),
+            ("POST", "/api/oobe/testDatabaseConfig", r#"{}"#),
+            ("POST", "/api/oobe/scanDownloader", r#"{}"#),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Content-Type", "application/json")
+                .body(Body::from(body))
+                .expect("请求构造");
+            let response = router.clone().oneshot(request).await.expect("路由调用");
+            assert_eq!(response.status(), StatusCode::OK, "{path} 应 200");
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+            let v: Value = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("{path} 必须返回 JSON（SPA 假 200 回归）：{e}"));
+            assert_eq!(v.get("success").and_then(|s| s.as_bool()), Some(true), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn downloaders_scan_returns_empty_list() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/downloaders/scan")
+            .header("Authorization", "Bearer test-token")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .expect("请求构造");
+        let response = build_router(state).oneshot(request).await.expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
+        let body: Value = serde_json::from_slice(&bytes).expect("必须是 JSON");
+        assert!(body.pointer("/data/downloaders").and_then(|v| v.as_array()).is_some());
     }
 }

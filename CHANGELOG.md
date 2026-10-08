@@ -5,6 +5,26 @@
 
 ## 未发布（working tree）
 
+### feat(web): OOBE 端点与下载器扫描 + 契约测试补全（web 层全覆盖收官）
+
+- **OOBE 向导端点**（Role.ANYONE，向导在认证前运行）：
+  `POST /api/oobe/testDownloader`（复用 `backend.test_downloader`，返回
+  success 布尔）、`POST /api/oobe/testDatabaseConfig`（内置 SQLite 恒成功）、
+  `POST /api/oobe/scanDownloader`（mDNS 扫描未移植，返回空列表——手动添加
+  为主路径）。此前这些端点缺失且被 SPA fallback 兜成假 200。
+- **`POST /api/downloaders/scan`**：同上，返回空列表。
+- **契约测试 +4**：push CRUD/test 全链路（PUT/GET/PATCH/test/DELETE）、
+  oobe 三端点（无凭据直测——Role.ANYONE 语义）、downloaders/scan 空列表。
+  **pbh-web 契约测试达 28 条、总用例 38 个**。
+- **NoopBackend 语义统一**：全部写操作改 Ok（「空实现但成功」），测试聚焦
+  响应结构而非后端状态。
+- **看门狗自启**：启动文件夹注册 `pbh-watchdog.cmd`（登录自动拉起看门狗，
+  免管理员权限；任务计划程序 ONLOGON 需提权故弃用）。
+- 教训重申：release 构建遗漏再次发生——部署脚本化提上日程（见遗留）。
+- 部署实测：oobe/scan 三端点 200；全量测试 0 失败。
+
+### test(web): WebUI 契约测试集——把每个生产缺陷变成回归用例
+
 ### test(core/mockqb): 覆盖矩阵最后缺口消除——BTN L5 对跑实现、ptr L5 定性 n/a
 
 - **BTN L5 对跑（矩阵 ❌ → ✅）**：mockqb 新增 BTN mock——`/btn/config` 返回

@@ -37,6 +37,10 @@ pub fn public_routes() -> Router<crate::AppState> {
         .route("/metadata/manifest", get(manifest::manifest))
         .route("/init/token", get(manifest::init_status))
         .route("/oobe/status", get(manifest::init_status))
+        // OOBE 向导（Role.ANYONE：向导在认证完成前运行）
+        .route("/oobe/testDownloader", post(manifest::oobe_test_downloader))
+        .route("/oobe/testDatabaseConfig", post(manifest::oobe_test_database_config))
+        .route("/oobe/scanDownloader", post(manifest::oobe_scan_downloader))
 }
 
 /// 需要鉴权的路由（对齐上游 Role.USER_READ / USER_WRITE 的全部端点）。
@@ -96,6 +100,7 @@ pub fn api_routes() -> Router<crate::AppState> {
             get(crate::downloaders).put(downloaders::create),
         )
         .route("/downloaders/test", post(downloaders::test))
+        .route("/downloaders/scan", post(downloaders::scan))
         .route(
             "/downloaders/{id}",
             patch(downloaders::update).delete(downloaders::remove),
