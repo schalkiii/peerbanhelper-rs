@@ -1,0 +1,1 @@
+{"ts":"2026-10-08T17:26:58.8982203Z","round":1,"java":null,"rust":{"pid":121516,"cpu_sec":0.0,"alive":true,"private_mb":0.7,"rss_mb":4.1,"cpu_delta":0.0},"java_health":"ok(200)","rust_health":"down","java_db_mb":null,"rust_db_mb":null,"disk":{"free_gb":120.85,"low":false,"drive":"D:"},"db_warn":[]}
