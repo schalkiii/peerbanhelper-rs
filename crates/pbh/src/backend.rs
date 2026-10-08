@@ -383,7 +383,13 @@ impl WebBackend for PbhBackend {
         let (downloader, increment) = build_downloader(&dl_cfg, &self.remap, &self.blocklist_url)
             .map_err(|e| format!("创建下载器失败: {e}"))?;
         let mut cfg = self.snapshot();
-        if cfg.downloaders.iter().any(|d| d.name == dl_cfg.name) {
+        // 查重对齐上游 id 语义：name 与显式 id 任一撞车即视为重复
+        // （上游 Downloader 的 id 为 UUID，前端可能以 id 复提交）
+        if cfg
+            .downloaders
+            .iter()
+            .any(|d| d.name == dl_cfg.name || d.id.as_deref() == Some(dl_cfg.name.as_str()))
+        {
             return Err("DL_DUPLICATE_NAME".into());
         }
         cfg.downloaders.push(dl_cfg);
@@ -406,10 +412,12 @@ impl WebBackend for PbhBackend {
         let (downloader, increment) = build_downloader(&parsed, &self.remap, &self.blocklist_url)
             .map_err(|e| format!("重建下载器失败: {e}"))?;
         let mut cfg = self.snapshot();
+        // 路径参数对齐上游为下载器 id（UUID）；存量配置可能只有 name（id 未显式
+        // 配置时 resolved_id() 回退 name），两者都接受
         let slot = cfg
             .downloaders
             .iter_mut()
-            .find(|d| d.name == id)
+            .find(|d| d.name == id || d.id.as_deref() == Some(id))
             .ok_or_else(|| "DL_NOT_FOUND".to_string())?;
         *slot = parsed;
         self.save_config(&cfg)?;
@@ -435,7 +443,9 @@ impl WebBackend for PbhBackend {
 
     fn remove_downloader(&self, id: &str) -> Result<(), String> {
         let mut cfg = self.snapshot();
-        cfg.downloaders.retain(|d| d.name != id);
+        // 与 update 同理：id（UUID）与 name 双匹配，避免按 UUID 删除时 config 条目残留
+        cfg.downloaders
+            .retain(|d| !(d.name == id || d.id.as_deref() == Some(id)));
         self.save_config(&cfg)?;
         if let Ok(mut entries) = self.entries.lock() {
             entries.retain(|e| e.downloader.id() != id);

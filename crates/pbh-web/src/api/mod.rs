@@ -97,13 +97,13 @@ pub fn api_routes() -> Router<crate::AppState> {
         // —— 下载器管理（PBHDownloaderController）——
         .route(
             "/downloaders",
-            get(crate::downloaders).put(downloaders::create),
+            get(crate::downloaders).put(downloaders::create).post(downloaders::create),
         )
         .route("/downloaders/test", post(downloaders::test))
         .route("/downloaders/scan", post(downloaders::scan))
         .route(
             "/downloaders/{id}",
-            patch(downloaders::update).delete(downloaders::remove),
+            patch(downloaders::update).put(downloaders::update).delete(downloaders::remove),
         )
         .route("/downloaders/{id}/status", get(downloaders::status))
         .route("/downloaders/{id}/torrents", get(downloaders::torrents))

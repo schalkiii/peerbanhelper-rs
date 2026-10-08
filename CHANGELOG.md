@@ -5,6 +5,25 @@
 
 ## 未发布（working tree）
 
+### fix(web): 下载器 CRUD 对齐上游 id 语义，修复「添加下载器报 DL_NOT_FOUND / 405」
+
+- **现象**：WebUI 添加 Aria2Next 下载器（JSON-RPC）报 `DL_NOT_FOUND`；实测
+  `POST /api/downloaders` 直接 405。
+- **根因**（三处叠加）：
+  1. 路由方法缺失：`create` 只挂在 PUT（前端发 POST → 405）、`update` 只挂
+     PATCH（前端发 PUT → 405）；
+  2. id 匹配不一致：上游下载器 id 为 UUID（config 条目可显式配置 `id`），
+     前端按 UUID 提交更新，而 `update_downloader`/`remove_downloader` 只按
+     `name` 匹配 config → UUID 必然 `DL_NOT_FOUND`，删除时还会残留 config 条目；
+  3. 新添加的下载器在下一轮 wave 前不出现在 list（statuses 驱动）。
+- **修复**：路由补齐 `POST /downloaders` 与 `PUT/PATCH /downloaders/{id}`；
+  update/remove/add-查重统一为 `name == id || config.id == id` 双匹配。
+- **实测**：POST 添加 Aria2Next（`http://localhost:29100/jsonrpc`）→ success；
+  wave 后 statuses `online=true`（JSON-RPC `getVersion`/`tellActive` 均通）；
+  按 UUID PATCH 更新 200；workspace 测试 0 失败。
+
+
+
 ### feat(gui/web): 原版图标 + GUI 默认路径修复 + 启动占位页 + dry-run 可配置
 
 - **图标**：`pbh-gui` 换用上游原版图标（`icon.png` 256px + 多尺寸 `icon.ico`
