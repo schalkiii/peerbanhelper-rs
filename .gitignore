@@ -8,6 +8,9 @@
 # 会话日志（构建/clippy/test 输出）
 *.log
 
+# 长跑采样输出（运行时产物，脚本默认落在仓库根目录）
+longrun_samples.jsonl
+
 # 编辑器 / 操作系统
 .idea/
 .vscode/
