@@ -274,7 +274,7 @@ pub async fn ranks(
         Ok((rankings, total)) => {
             let results = rankings
                 .iter()
-                .map(|(addr, count)| json!({ "address": addr, "count": count }))
+                .map(|(addr, count)| json!({ "peerIp": addr, "count": count }))
                 .collect::<Vec<_>>();
             let data = json!({ "page": page, "size": size, "total": total, "results": results });
             (StatusCode::OK, crate::std_resp(true, None, data)).into_response()

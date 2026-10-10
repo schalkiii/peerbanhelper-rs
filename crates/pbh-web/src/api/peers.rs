@@ -29,16 +29,16 @@ pub async fn info(
     let found = access.0 > 0;
     let data = json!({
         "found": found,
-        "ip": host,
+        "address": host,
         "banCount": ban_count,
         "torrentAccessCount": access.1,
         "firstTimeSeen": access.2,
         "lastTimeSeen": access.3,
         "uploadedToPeer": access.4,
         "downloadedFromPeer": access.5,
-        "peerId": null,
-        "geoData": null,
-        "wastedTraffic": 0,
+        "geo": null,
+        "ptrLookup": null,
+        "btnQueryAvailable": false,
     });
     let _ = params;
     (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
@@ -80,7 +80,7 @@ pub async fn access_history(
                             "id": r.torrent_id,
                             "size": r.torrent_size,
                             "name": r.torrent_name,
-                            "hash": r.torrent_info_hash,
+                            "infoHash": r.torrent_info_hash,
                         },
                         "downloader": r.downloader,
                         "peerId": r.peer_id,

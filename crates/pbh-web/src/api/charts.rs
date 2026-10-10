@@ -88,11 +88,19 @@ pub async fn traffic(
         .db
         .traffic_trend(start, end, downloader.as_deref())
         .unwrap_or_default();
-    let data = json!({
-        "downloaded": rows.iter().map(|(k, v)| json!({ "key": k, "value": v.0 })).collect::<Vec<_>>(),
-        "uploaded": rows.iter().map(|(k, v)| json!({ "key": k, "value": v.1 })).collect::<Vec<_>>(),
-    });
-    (StatusCode::OK, crate::std_resp(true, None, data)).into_response()
+    // 对齐上游 `PBHChartController#handleTraffic`：返回数组，每项为
+    // { timestamp, dataOverallDownloaded, dataOverallUploaded }（`traffic.vue` 按此读取）
+    let data = rows
+        .iter()
+        .map(|(ts, (down, up))| {
+            json!({
+                "timestamp": ts,
+                "dataOverallDownloaded": down,
+                "dataOverallUploaded": up,
+            })
+        })
+        .collect::<Vec<_>>();
+    (StatusCode::OK, crate::std_resp(true, None, json!(data))).into_response()
 }
 
 /// `GET /api/chart/sessionAnalyse?startAt&endAt&downloader`：会话时段分析。
@@ -116,13 +124,31 @@ pub async fn session_analyse(
         .db
         .connection_metrics_trend(start, end, downloader.as_deref())
         .unwrap_or_default();
+    // 对齐上游 `PeerConnectionMetricsDTO`：字段名用驼峰且包含全部 18 个字段。
+    // Rust 仅落库并聚合 `totalConnections`/`incomingConnections`，其余按 0 占位
+    // （待 metrics 写入层补齐后可移除占位）。
     let data = rows
         .iter()
         .map(|(ts, row)| {
             json!({
-                "time": ts,
-                "total_connections": row[0],
-                "incoming_connections": row[1],
+                "key": ts,
+                "totalConnections": row[0],
+                "incomingConnections": row[1],
+                "remoteRefuseTransferToClient": 0,
+                "remoteAcceptTransferToClient": 0,
+                "localRefuseTransferToPeer": 0,
+                "localAcceptTransferToPeer": 0,
+                "localNotInterested": 0,
+                "questionStatus": 0,
+                "optimisticUnchoke": 0,
+                "fromDHT": 0,
+                "fromPEX": 0,
+                "fromLSD": 0,
+                "fromTrackerOrOther": 0,
+                "rc4Encrypted": 0,
+                "plainTextEncrypted": 0,
+                "utpSocket": 0,
+                "tcpSocket": 0,
             })
         })
         .collect::<Vec<_>>();

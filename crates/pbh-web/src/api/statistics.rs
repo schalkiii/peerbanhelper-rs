@@ -27,7 +27,10 @@ pub async fn counter(State(state): State<AppState>) -> Response {
     let metrics = state.metrics.lock().unwrap_or_else(|e| e.into_inner());
     // 对齐上游 `BasicMetrics`：封禁计数取内存封禁表（`BanList`）的大小
     let banned_ips = state.ban_list.lock().map(|l| l.len() as u64).unwrap_or(0);
-    let peers = metrics.peer_count as u64;
+    // 对齐上游 `PBHMetricsController#handleBasicCounter`：
+    // 前端 `statisticInfo.vue` 读取 `peersBlockRate` 并经 `formatPercentage` 乘 100 显示，
+    // 分母须为已跟踪 swarm 总数（trackedSwarmCount），而非当前 wave 的 peer_count。
+    let tracked = state.db.tracked_swarm_size().unwrap_or(0) as u64;
     let data = json!({
         "checkCounter": metrics.checks,
         "peerBanCounter": metrics.peer_bans,
@@ -35,8 +38,8 @@ pub async fn counter(State(state): State<AppState>) -> Response {
         "banlistCounter": banned_ips,
         "bannedIpCounter": banned_ips,
         "wastedTraffic": 0,
-        "trackedSwarmCount": state.db.tracked_swarm_size().unwrap_or(0) as u64,
-        "peerBlockRate": if peers > 0 { metrics.peer_bans as f64 / peers as f64 } else { 0.0 },
+        "trackedSwarmCount": tracked,
+        "peersBlockRate": if tracked > 0 { metrics.peer_bans as f64 / tracked as f64 } else { 0.0 },
         "weeklySessions": state
             .db
             .peer_session_count_week(now_for_week_window())
@@ -71,7 +74,7 @@ pub async fn field(
         Ok(rows) => {
             let results: Vec<Value> = rows
                 .iter()
-                .map(|(key, count, percent)| json!({ "key": key, "value": count, "percent": percent }))
+                .map(|(key, count, percent)| json!({ "data": key, "count": count, "percent": percent }))
                 .collect();
             (StatusCode::OK, crate::std_resp(true, None, json!(results))).into_response()
         }

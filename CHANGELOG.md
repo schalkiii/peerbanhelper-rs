@@ -3,6 +3,35 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## [Unreleased]
+
+### fix(web): 修复「恶意:正常 连接比例」恒为 0.00%
+
+- **根因**：`/api/statistic/counter` 返回的字段名为 `peerBlockRate`，但上游前端
+  `statisticInfo.vue` 读取的是 `peersBlockRate`（`formatPercentage(undefined)` 恒返回 0），
+  导致该指标**永远显示 0.00%**，与是否真的封禁无关。
+- **修复**：`crates/pbh-web/src/api/statistics.rs` 将字段名改为 `peersBlockRate`，
+  并将分母从「当前 wave 的 `peer_count`」改为与上游一致的 `trackedSwarmCount`
+  （已跟踪 swarm 总数；`tracked_swarm` 为上游临时表，按会话累计）。前端经
+  `formatPercentage` 乘 100 后正常显示为百分比。
+- 已构建部署到生产目录，`/health` 200，端点复测字段正确；封禁日志（3757 条）经
+  核查无异常，封禁决策一直正常工作。
+
+### fix(web): 对齐统计/图表/封禁日志等端点的 JSON 字段名与上游
+
+全面复核 Web API 输出字段名（对照上游 Java 控制器与前端读取字段），修复一类
+「字段名/结构不一致导致前端静默显示 0 或空白」的问题：
+- `statistic/analysis/field`：`key`→`data`、`value`→`count`（对齐 `UniversalFieldNumResult`）
+- `bans/ranks`：`address`→`peerIp`（对齐 `rankTable` 读取）
+- `chart/traffic`：重塑为数组 `{timestamp, dataOverallDownloaded, dataOverallUploaded}`
+  （对齐 `TrafficDataComputed`，原 `downloaded/uploaded` 子对象结构前端不识别）
+- `chart/sessionAnalyse`：字段名驼峰化并补齐 `PeerConnectionMetricsDTO` 全部 18 字段
+- `peer/{ip}`（info）：`ip`→`address`、`geoData`→`geo`，补齐 `ptrLookup`/`btnQueryAvailable`
+  （对齐 `PeerInfoDTO`）
+- `access_history`（peers/torrents）：`torrent.hash`→`infoHash`（对齐 `TorrentEntityDTO`）
+- `ipblacklist/ip/test`：`lower`→`from`、`upper`→`to`、`compressed`→`generatedCidr`
+- 已构建部署，`/health` 200，并通过脚本实测确认各端点字段名与上游一致。
+
 ## 9.5.1-rs.1（2026-10-09）
 
 首个对外发布版本——功能基线对齐上游 PeerBanHelper v9.5.1，WebUI 沿用上游 dist。

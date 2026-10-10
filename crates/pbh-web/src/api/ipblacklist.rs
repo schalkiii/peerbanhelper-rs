@@ -235,9 +235,9 @@ pub async fn test_ip(Json(body): Json<Value>) -> Response {
                     true,
                     None,
                     json!({
-                        "lower": lower.to_string(),
-                        "upper": upper.to_string(),
-                        "compressed": net.to_string(),
+                        "from": lower.to_string(),
+                        "to": upper.to_string(),
+                        "generatedCidr": net.to_string(),
                         "count": format!("{}", 1u128 << (128 - count as u128)),
                     }),
                 ),

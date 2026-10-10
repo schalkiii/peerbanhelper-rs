@@ -121,7 +121,7 @@ pub async fn access_history(
                             "id": r.torrent_id,
                             "size": r.torrent_size,
                             "name": r.torrent_name,
-                            "hash": r.torrent_info_hash,
+                            "infoHash": r.torrent_info_hash,
                         },
                         "downloader": r.downloader,
                         "peerId": r.peer_id,
