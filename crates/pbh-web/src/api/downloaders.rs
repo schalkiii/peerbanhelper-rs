@@ -145,6 +145,10 @@ pub async fn status(State(state): State<AppState>, Path(id): Path<String>) -> Re
 }
 
 /// `GET /api/downloaders/{id}/torrents`：实时种子列表。
+///
+/// 对齐上游 `TorrentWrapper(id, size, completedSize, name, hash, privateTorrent,
+/// progress, rtUploadSpeed, rtDownloadSpeed)`：WebUI「活动种子」的速度列直接读
+/// `rtUploadSpeed` / `rtDownloadSpeed`，缺失会渲染成 `NaN undefined/s`。
 pub async fn torrents(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(downloader) = state.backend.downloader(&id) else {
         return (
@@ -162,7 +166,12 @@ pub async fn torrents(State(state): State<AppState>, Path(id): Path<String>) -> 
                         "id": t.hash,
                         "name": t.name,
                         "size": t.total_size,
+                        "completedSize": t.completed_size(),
+                        "hash": t.hash,
+                        "privateTorrent": t.is_private.unwrap_or(false),
                         "progress": t.progress,
+                        "rtUploadSpeed": t.upspeed,
+                        "rtDownloadSpeed": t.dlspeed,
                     })
                 })
                 .collect::<Vec<_>>();

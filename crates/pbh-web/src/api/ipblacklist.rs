@@ -215,7 +215,7 @@ fn mutate(state: &AppState, kind: &str, body: &Value, add: bool) -> Result<(), S
 }
 
 /// `POST /api/modules/ipblacklist/ip/test`：解析 IP/CIDR 并返回范围信息
-/// （对齐上游 `UserIPTestResult(lower, upper, compressed, count)`）。
+/// （对齐上游 `UserIPTestResult(from, to, generatedCidr, count)`）。
 pub async fn test_ip(Json(body): Json<Value>) -> Response {
     let Some(ip_str) = body.get("ip").and_then(|v| v.as_str()) else {
         return (
