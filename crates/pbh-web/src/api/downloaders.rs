@@ -144,6 +144,25 @@ pub async fn status(State(state): State<AppState>, Path(id): Path<String>) -> Re
     }
 }
 
+/// 一条实时种子 → `TorrentWrapper`（对齐上游全 9 字段）。
+///
+/// WebUI「活动种子」的速度列直接读 `rtUploadSpeed` / `rtDownloadSpeed`，
+/// 缺失会渲染成 `NaN undefined/s`（2026-10-11 生产缺陷，已由契约测试固化）。
+/// 抽成函数以便单测字段集合，避免重演「只断言 200 不断言字段名」的漏洞。
+pub(crate) fn torrent_data_json(t: &pbh_core::model::TorrentData) -> Value {
+    json!({
+        "id": t.hash,
+        "name": t.name,
+        "size": t.total_size,
+        "completedSize": t.completed_size(),
+        "hash": t.hash,
+        "privateTorrent": t.is_private.unwrap_or(false),
+        "progress": t.progress,
+        "rtUploadSpeed": t.upspeed,
+        "rtDownloadSpeed": t.dlspeed,
+    })
+}
+
 /// `GET /api/downloaders/{id}/torrents`：实时种子列表。
 ///
 /// 对齐上游 `TorrentWrapper(id, size, completedSize, name, hash, privateTorrent,
@@ -159,22 +178,7 @@ pub async fn torrents(State(state): State<AppState>, Path(id): Path<String>) -> 
     };
     match downloader.fetch_torrents().await {
         Ok(torrents) => {
-            let results = torrents
-                .iter()
-                .map(|t| {
-                    json!({
-                        "id": t.hash,
-                        "name": t.name,
-                        "size": t.total_size,
-                        "completedSize": t.completed_size(),
-                        "hash": t.hash,
-                        "privateTorrent": t.is_private.unwrap_or(false),
-                        "progress": t.progress,
-                        "rtUploadSpeed": t.upspeed,
-                        "rtDownloadSpeed": t.dlspeed,
-                    })
-                })
-                .collect::<Vec<_>>();
+            let results = torrents.iter().map(torrent_data_json).collect::<Vec<_>>();
             (
                 StatusCode::OK,
                 crate::std_resp(true, Some("OK"), json!(results)),

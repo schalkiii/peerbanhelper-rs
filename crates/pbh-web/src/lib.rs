@@ -1599,6 +1599,173 @@ mod tests {
         }
     }
 
+    // ===========================================================================
+    // 契约测试第三批：**字段级**契约（防「前端静默 0 / NaN undefined/s」复发）
+    //
+    // 背景：前两批对部分端点只断言 200，未断言字段名，导致三类生产缺陷连续漏网——
+    // ① `counter` 写成 `peerBlockRate` ⇒ 「恶意:正常 连接比例」恒 0.00%；
+    // ② `ranks` 用 `address` 而非 `peerIp`；③ `downloaders/{id}/torrents` 缺
+    // `rtUploadSpeed/rtDownloadSpeed` ⇒ 活动种子速度列 `NaN undefined/s`。
+    // 本批对「前端实际读取」的字段集合做**全等断言**（多/缺/错名都会失败）。
+    // ===========================================================================
+
+    /// 断言对象字段集合与期望**完全一致**（排序后逐项比较）。
+    fn assert_fields(obj: &Value, expected: &[&str], what: &str) {
+        let map = obj
+            .as_object()
+            .unwrap_or_else(|| panic!("{what} 不是 JSON 对象: {obj}"));
+        let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut want: Vec<&str> = expected.to_vec();
+        want.sort_unstable();
+        assert_eq!(
+            keys, want,
+            "{what} 字段集合不符——字段名错配会让前端静默显示 0/空白/NaN"
+        );
+    }
+
+    #[tokio::test]
+    async fn statistic_counter_field_contract() {
+        // 回归：`peersBlockRate` 曾误写为 `peerBlockRate`，前端
+        // `formatPercentage(undefined)` 使「恶意:正常 连接比例」恒为 0.00%。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, body) = get_json(&state, "/api/statistic/counter").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        assert_fields(
+            data,
+            &[
+                "banlistCounter",
+                "bannedIpCounter",
+                "checkCounter",
+                "peerBanCounter",
+                "peerUnbanCounter",
+                "peersBlockRate",
+                "trackedSwarmCount",
+                "wastedTraffic",
+                "weeklySessions",
+            ],
+            "statistic/counter",
+        );
+        // 旧字段名不得复现
+        assert!(
+            data.get("peerBlockRate").is_none(),
+            "不得再出现旧字段名 peerBlockRate（前端读的是 peersBlockRate）"
+        );
+    }
+
+    #[tokio::test]
+    async fn peer_info_field_contract() {
+        // 对齐上游 `PeerInfoDTO`
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, body) = get_json(&state, "/api/peer/1.2.3.4").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        assert_fields(
+            data,
+            &[
+                "address",
+                "banCount",
+                "btnQueryAvailable",
+                "downloadedFromPeer",
+                "firstTimeSeen",
+                "found",
+                "geo",
+                "lastTimeSeen",
+                "ptrLookup",
+                "torrentAccessCount",
+                "uploadedToPeer",
+            ],
+            "peer/{ip}",
+        );
+    }
+
+    #[test]
+    fn downloader_torrent_field_contract() {
+        // 回归（2026-10-11）：缺 rtUploadSpeed/rtDownloadSpeed ⇒ 活动种子速度列
+        // 渲染成 `NaN undefined/s`。对齐上游 `TorrentWrapper` 全 9 字段。
+        let t = pbh_core::model::TorrentData {
+            hash: "abc".into(),
+            name: "n".into(),
+            progress: 0.5,
+            total_size: 100,
+            piece_size: 10,
+            pieces_have: 4,
+            completed_override: None,
+            dlspeed: 7,
+            upspeed: 9,
+            is_private: Some(true),
+        };
+        let v = crate::api::downloaders::torrent_data_json(&t);
+        assert_fields(
+            &v,
+            &[
+                "completedSize",
+                "hash",
+                "id",
+                "name",
+                "privateTorrent",
+                "progress",
+                "rtDownloadSpeed",
+                "rtUploadSpeed",
+                "size",
+            ],
+            "downloaders/{id}/torrents 条目",
+        );
+        assert_eq!(v.get("rtUploadSpeed").and_then(|x| x.as_i64()), Some(9));
+        assert_eq!(v.get("rtDownloadSpeed").and_then(|x| x.as_i64()), Some(7));
+        // completedSize = piece_size * pieces_have（无 override 时）
+        assert_eq!(v.get("completedSize").and_then(|x| x.as_i64()), Some(40));
+    }
+
+    #[tokio::test]
+    async fn paginated_endpoints_response_shape() {
+        // 分页端点统一 {page,size,total,results}（前端按此渲染分页器）
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        for path in [
+            "/api/bans/logs",
+            "/api/bans/ranks",
+            "/api/peer/1.2.3.4/banHistory",
+            "/api/peer/1.2.3.4/accessHistory",
+            "/api/torrent/query",
+        ] {
+            let (status, body) = get_json(&state, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} 必须 200");
+            let data = body.get("data").expect("data 字段");
+            for f in ["page", "size", "total", "results"] {
+                assert!(data.get(f).is_some(), "{path} 缺分页字段 {f}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chart_endpoints_response_shape() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        // geoIpInfo：前端按四个 map 渲染（Rust 无 IP 库 ⇒ 空表，但字段必须存在）
+        let (_, body) = get_json(&state, "/api/chart/geoIpInfo").await;
+        let data = body.get("data").expect("data 字段");
+        for f in ["city", "isp", "province", "region"] {
+            assert!(
+                data.get(f).and_then(|v| v.as_object()).is_some(),
+                "geoIpInfo 缺 {f}"
+            );
+        }
+        // trend：两个趋势数组（trends.vue 读 connectedPeersTrend / bannedPeersTrend）
+        let (_, body) = get_json(&state, "/api/chart/trend").await;
+        let data = body.get("data").expect("data 字段");
+        for f in ["connectedPeersTrend", "bannedPeersTrend"] {
+            assert!(data.get(f).and_then(|v| v.as_array()).is_some(), "trend 缺 {f}");
+        }
+        // traffic / sessionAnalyse：直接是数组（前端 .map，非对象）
+        for path in ["/api/chart/traffic", "/api/chart/sessionAnalyse"] {
+            let (_, body) = get_json(&state, path).await;
+            assert!(
+                body.get("data").and_then(|v| v.as_array()).is_some(),
+                "{path} 的 data 必须是数组"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn logs_history_and_manifest() {
         let state = test_state(Arc::new(Database::open_in_memory().unwrap()));

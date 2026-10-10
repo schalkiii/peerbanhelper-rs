@@ -43,6 +43,32 @@
   `completedSize`（`TorrentData::completed_size()`）、`privateTorrent`。
 - 已构建部署，`/health` 200，实测端点返回真实速度（如 `rtUploadSpeed=66829`）。
 
+### fix(db): 修复两个导致端点返回 500 的读取缺陷
+
+- **`/api/peer/{ip}/accessHistory` 恒 500**：`query_access_history` 把 `{cond}`
+  直接拼在 `p.torrent_id` 后**缺一个空格**，拼成 `p.torrent_idWHERE ...` ⇒ SQLite
+  语法错误。该端点自上线起从未可用（测试此前只覆盖到 200 断言，未真正请求它）。
+  修复：`crates/pbh-db/src/lib.rs` 模板改为 `ON t.id = p.torrent_id {cond}`。
+- **`/api/modules/swarm-tracking/details` 500（Java 迁移用户必现）**：上游迁移脚本把
+  `tracked_swarm.peer_progress` 建成 `TEXT`（手误，其实体是 `double`），本移植 schema
+  按 REAL 声明，但 `CREATE TABLE IF NOT EXISTS` **不会改写既有库** ⇒ 从 Java 迁移的库
+  该列仍是 TEXT，按 `f64` 读取报 `Invalid column type Text`。
+  修复：`crates/pbh-db/src/monitor.rs` 新增 `real_like()`，先按数值读、失败再按文本解析
+  （与既有 `text_like()` 同一思路），`downloader_progress` / `peer_progress` 均已兼容。
+- 验证：对生产实例 **50+ 个 GET 端点**做全量扫描，修复后非 200 计数为 **0**。
+
+### test(web): 新增「字段级」契约测试，堵住「只断言 200」的覆盖漏洞
+
+前两批契约测试对部分端点只断言 HTTP 200，未断言字段名，导致三类生产缺陷连续漏网
+（`peerBlockRate` 恒 0.00%、`ranks` 的 `address`、`downloaders/{id}/torrents` 缺
+`rtUploadSpeed`）。本批新增 5 个用例，对**前端实际读取**的字段集合做全等断言：
+- `statistic/counter` 字段全等 + 显式断言旧字段 `peerBlockRate` 不得复现
+- `peer/{ip}` 对齐 `PeerInfoDTO` 全 11 字段
+- `downloaders/{id}/torrents` 对齐 `TorrentWrapper` 全 9 字段（JSON 构造抽成
+  `torrent_data_json` 以便单测，无需 26 方法的 mock 后端）
+- 分页端点统一 `{page,size,total,results}`；图表端点断言数组/对象形状
+- 断言辅助 `assert_fields()` 做**全等**比较，多字段/缺字段/错字段名都会失败
+
 ### test(monitor): 修复 `flush` 缓存断言与「缓存淘汰」逻辑矛盾，并补回归测试
 
 - **问题**：8a89319 的「监控缓存无界增长」修复改变了 `peer-recording` 的行为
