@@ -32,6 +32,29 @@
 - `ipblacklist/ip/test`：`lower`→`from`、`upper`→`to`、`compressed`→`generatedCidr`
 - 已构建部署，`/health` 200，并通过脚本实测确认各端点字段名与上游一致。
 
+### fix(web): 修复「活动种子」速度列显示 `NaN undefined/s`
+
+- **根因**：`GET /api/downloaders/{id}/torrents` 只返回 `{id, name, size, progress}` 四项，
+  缺少上游 `TorrentWrapper` 的 `rtUploadSpeed` / `rtDownloadSpeed`。前端
+  `downloader.ts` 的 `Torrent` 模型直接读这两个字段，缺失时经速度格式化后渲染成
+  `NaN undefined/s`（表格列与卡片两处均受影响）。
+- **修复**：`crates/pbh-web/src/api/downloaders.rs` 补齐 `TorrentWrapper` 全部 9 个字段——
+  新增 `rtUploadSpeed`（`upspeed`）、`rtDownloadSpeed`（`dlspeed`）、`hash`、
+  `completedSize`（`TorrentData::completed_size()`）、`privateTorrent`。
+- 已构建部署，`/health` 200，实测端点返回真实速度（如 `rtUploadSpeed=66829`）。
+
+### test(monitor): 修复 `flush` 缓存断言与「缓存淘汰」逻辑矛盾，并补回归测试
+
+- **问题**：8a89319 的「监控缓存无界增长」修复改变了 `peer-recording` 的行为
+  （`flush` 写库后按 `PEER_RECORDING_CACHE_TIMEOUT_MS` 淘汰过期条目），
+  但 `crates/pbh/src/monitor.rs` 的 `peers_retrieved_then_scheduled_flush_reaches_the_sink`
+  仍断言旧契约（`flush 不清空缓存`），且该修复本身**没有测试覆盖** ⇒ `cargo test --workspace` 失败。
+- **修复**：该测试改传真实当前时间戳（原传 `0`，被淘汰逻辑判为 1970 年的过期条目），
+  保留「flush 保留未过期缓存」的原意；新增 `peer_recording_flush_evicts_stale_entries`
+  覆盖淘汰语义（先落库再淘汰，数据不丢）。
+- 门禁：`cargo test --workspace` 全绿（pbh 54 → 55），`cargo clippy --workspace
+  --all-targets -- -D warnings` 零警告。
+
 ### fix(core/db): 监控缓存无界增长 + DB 锁中毒处理不一致
 
 - **监控缓存无界增长（24/7 运行潜在内存泄漏）**：`SessionAnalyseServiceModule.track_cache`
