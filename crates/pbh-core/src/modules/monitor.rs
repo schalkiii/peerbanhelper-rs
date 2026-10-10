@@ -225,6 +225,15 @@ pub fn start_of_today_ms(time_ms: i64) -> i64 {
     attach_local_offset(midnight, local_offset_secs_at(time_ms))
 }
 
+/// 当前 Unix 时间戳（毫秒），供缓存淘汰等内部逻辑使用。
+pub fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 对齐 `TimeUtil.getEndOfToday(time)`：系统时区下当天 23:59:59.999（差异同 [`start_of_hour_ms`]）。
 pub fn end_of_today_ms(time_ms: i64) -> i64 {
     let naive = local_naive(time_ms);
@@ -1604,6 +1613,13 @@ impl SessionAnalyseServiceModule {
         if !rows.is_empty() {
             self.sink.upsert_metrics_tracks(&rows);
         }
+        // 对齐上游 PBHCache：flush 后仅保留当天时段的条目，避免跨天 key 持续累积导致无界增长
+        // （留存条目已全量 upsert 入库，淘汰不丢数据）
+        let today = start_of_today_ms(now_ms());
+        self.track_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|k, _| k.timeframe_at_ms == today);
     }
 
     /// 对齐 `flushData()`。
@@ -1873,6 +1889,18 @@ impl PeerRecordingServiceModule {
         }
         for entry in cache.values_mut() {
             entry.dirty = false;
+        }
+        // 对齐上游 PBHCache：flush 后按超时（PEER_RECORDING_CACHE_TIMEOUT_MS）淘汰，
+        // 仍超限则按时间戳淘汰最旧条目（均为已 flush 的 dirty=false 条目，安全），避免无界增长
+        let now = now_ms();
+        cache.retain(|_, entry| now - entry.timestamp_ms <= PEER_RECORDING_CACHE_TIMEOUT_MS);
+        if cache.len() > PEER_RECORDING_CACHE_SIZE {
+            let mut keys: Vec<(PeerRecordCacheKey, i64)> =
+                cache.iter().map(|(k, e)| (k.clone(), e.timestamp_ms)).collect();
+            keys.sort_by_key(|(_, t)| *t);
+            for (k, _) in keys.into_iter().take(cache.len() - PEER_RECORDING_CACHE_SIZE) {
+                cache.remove(&k);
+            }
         }
     }
 

@@ -313,7 +313,7 @@ impl Database {
     }
 
     fn migrate(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(include_str!("schema.sql"))?;
@@ -396,7 +396,7 @@ impl Database {
             "{HISTORY_SELECT_SQL} ORDER BY {} LIMIT ?1 OFFSET ?2",
             clauses.join(", ")
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM history", [], |r| r.get(0))?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_history_row)?;
@@ -415,7 +415,7 @@ impl Database {
         let sql = format!(
             "{HISTORY_SELECT_SQL} WHERE t.info_hash = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3"
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM history h JOIN torrents t ON t.id = h.torrent_id
              WHERE t.info_hash = ?1",
@@ -444,7 +444,7 @@ impl Database {
         let sql = format!(
             "{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT ?2 OFFSET ?3"
         );
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let total: i64 = conn.query_row(
             "SELECT COUNT(*) FROM history WHERE ip = ?1",
             rusqlite::params![ip],
@@ -463,7 +463,7 @@ impl Database {
 
     /// 指定 IP 的封禁次数（`/api/peer/{ip}` 的 `banCount`）。
     pub fn history_count_by_ip(&self, ip: &str) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.query_row(
             "SELECT COUNT(*) FROM history WHERE ip = ?1",
             rusqlite::params![ip],
@@ -474,7 +474,7 @@ impl Database {
     /// 最近一条历史（`/api/bans` 列表的上下文兜底；对齐上游从 `history` 取最后一条的展示语义）。
     pub fn last_history_by_ip(&self, ip: &str) -> anyhow::Result<Option<HistoryRow>> {
         let sql = format!("{HISTORY_SELECT_SQL} WHERE h.ip = ?1 ORDER BY h.ban_at DESC LIMIT 1");
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(&sql)?;
         Ok(stmt
             .query_row(rusqlite::params![ip], map_history_row)
@@ -490,7 +490,7 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(Vec<(String, i64)>, i64)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (total, sql): (i64, String) = match filter {
             Some(_) => (
                 conn.query_row(
@@ -554,7 +554,7 @@ impl Database {
 
     /// `BanListService.readBanList`：读回 `(address, BanMetadata JSON)` 列表。
     pub fn read_ban_list(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT address, metadata FROM banlist")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -562,7 +562,7 @@ impl Database {
 
     /// `BanListService.saveBanList`：整表替换（事务内先清空再写入，返回写入条数）。
     pub fn save_ban_list(&self, entries: &[(String, String)]) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.unchecked_transaction()?;
         tx.execute("DELETE FROM banlist", [])?;
         let mut written = 0usize;
@@ -578,7 +578,7 @@ impl Database {
 
     /// 清空持久化封禁列表（`DELETE /api/bans` 的 `*` 落库部分）。
     pub fn clear_ban_list(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.execute("DELETE FROM banlist", [])?)
     }
 
@@ -586,7 +586,7 @@ impl Database {
 
     /// 读回一个键（不存在 ⇒ `None`）。
     pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn
             .query_row(
                 "SELECT v FROM metadata WHERE k=?1",
@@ -598,7 +598,7 @@ impl Database {
 
     /// 写入/覆盖一个键（upsert）。
     pub fn set_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO metadata(k, v) VALUES (?1, ?2)
              ON CONFLICT(k) DO UPDATE SET v=excluded.v",
@@ -617,7 +617,7 @@ impl Database {
         update_type: &str,
         now_ms: i64,
     ) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO rule_sub_log (rule_id, update_time, count, update_type)
              VALUES (?1, ?2, ?3, ?4)",
@@ -633,7 +633,7 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<RuleSubLogRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut rows: Vec<RuleSubLogRow> = Vec::new();
         let offset = offset.max(0);
         if let Some(id) = rule_id {
@@ -668,7 +668,7 @@ impl Database {
         last_update: Option<i64>,
         ent_count: Option<i64>,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO rule_sub_info (rule_id, enabled, rule_name, sub_url, last_update, ent_count)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -685,7 +685,7 @@ impl Database {
 
     /// 规则订阅日志总数（供 WebUI 分页）。
     pub fn count_rule_sub_log(&self, rule_id: Option<&str>) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: i64 = match rule_id {
             Some(id) => conn.query_row(
                 "SELECT COUNT(*) FROM rule_sub_log WHERE rule_id = ?1",
@@ -699,7 +699,7 @@ impl Database {
 
     /// 读取单条规则订阅的当前状态（对齐上游 `RuleSubInfoService.get`）。
     pub fn get_rule_sub_info(&self, rule_id: &str) -> anyhow::Result<Option<RuleSubInfoRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT rule_id, enabled, rule_name, sub_url, last_update, ent_count \
              FROM rule_sub_info WHERE rule_id = ?1",
@@ -724,7 +724,7 @@ impl Database {
         if rows.is_empty() {
             return Ok(0);
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.unchecked_transaction()?;
         let mut written = 0usize;
         for row in rows {
@@ -809,7 +809,7 @@ impl Database {
 
     /// 读取某个类型（`pcb_address` / `pcb_range`）的全部持久化实体。
     pub fn load_pcb_rows(&self, kind: PcbEntityKind) -> anyhow::Result<Vec<PcbPersistRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let is_addr = kind.is_addr();
         let sql = if is_addr {
             "SELECT ip, port, torrent_id, last_report_progress, last_report_uploaded,
@@ -871,7 +871,7 @@ impl Database {
     }
 
     pub fn cleanup_pcb(&self, older_than_ms: i64) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut n = 0;
         for t in ["pcb_address", "pcb_range"] {
             n += conn.execute(
@@ -957,7 +957,7 @@ impl Database {
 
     /// `module + rule` 分组统计（`/api/statistic/rules`，数据源 `history`）。
     pub fn rule_stats(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT module_name, rule_name, COUNT(*) AS c FROM history
              GROUP BY module_name, rule_name ORDER BY c DESC",
@@ -981,7 +981,7 @@ impl Database {
         end_ms: i64,
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(i64, i64)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (cond, has_downloader) = match downloader {
             Some(_) => (" AND downloader = ?3", true),
             None => ("", false),
@@ -1014,7 +1014,7 @@ impl Database {
         end_ms: i64,
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(i64, (i64, i64))>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (cond, has_downloader) = match downloader {
             Some(_) => (" AND downloader = ?3", true),
             None => ("", false),
@@ -1055,7 +1055,7 @@ impl Database {
         end_ms: i64,
         downloader: Option<&str>,
     ) -> anyhow::Result<Vec<(i64, [i64; 2])>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (cond, has_downloader) = match downloader {
             Some(_) => (" AND downloader = ?3", true),
             None => ("", false),
@@ -1101,7 +1101,7 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<(Vec<AccessHistoryRow>, i64)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (cond, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(ip) = ip_prefix {
             (
                 "WHERE p.address LIKE ?1 || '%'".to_string(),
@@ -1177,7 +1177,7 @@ impl Database {
     ///
     /// 返回 (总访问次数, 涉及的不同种子数, 最早/最晚时间, 累计上传/下载)。
     pub fn peer_access_summary(&self, ip: &str) -> anyhow::Result<(i64, i64, i64, i64, i64, i64)> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let row = conn.query_row(
             "SELECT COUNT(*), COUNT(DISTINCT torrent_id), COALESCE(MIN(first_time_seen), 0),
                     COALESCE(MAX(last_time_seen), 0), COALESCE(SUM(uploaded), 0), COALESCE(SUM(downloaded), 0)
@@ -1262,7 +1262,7 @@ impl Database {
 
     /// 按 hash 查询单个种子统计。
     pub fn torrent_by_hash(&self, hash: &str) -> anyhow::Result<Option<TorrentRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let row = conn
             .query_row(
                 "SELECT t.id, t.info_hash, t.name, t.size,

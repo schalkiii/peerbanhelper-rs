@@ -32,6 +32,20 @@
 - `ipblacklist/ip/test`：`lower`→`from`、`upper`→`to`、`compressed`→`generatedCidr`
 - 已构建部署，`/health` 200，并通过脚本实测确认各端点字段名与上游一致。
 
+### fix(core/db): 监控缓存无界增长 + DB 锁中毒处理不一致
+
+- **监控缓存无界增长（24/7 运行潜在内存泄漏）**：`SessionAnalyseServiceModule.track_cache`
+  与 `PeerRecordingServiceModule.cache` 原为无淘汰的普通 `HashMap`（注释明言未实现上游
+  `PBHCache` 的容量/超时淘汰），仅定时 flush 写库、不清缓存，跨天/长时间累积后无界增长。
+  - `track_cache`：`flush_all` 全量 upsert 后仅保留当天时段条目（`timeframe_at_ms == 今日零点`）。
+  - `peer cache`：`flush` 全量 upsert 后置 dirty=false，再按 `PEER_RECORDING_CACHE_TIMEOUT_MS`
+    （180s）淘汰，仍超限则按时间戳淘汰最旧（`PEER_RECORDING_CACHE_SIZE=3500` 兜底）。
+  - 淘汰前均已落库，故不丢数据，行为对齐上游「flush 后淘汰」。
+- **DB 锁中毒处理不一致**：`pbh-db` 内 27 处 `self.conn.lock().unwrap()` 与少量
+  `unwrap_or_else(|e| e.into_inner())` 混用——中毒时前者会直接 panic（HTTP 500），后者自愈。
+  统一为 `unwrap_or_else(|e| e.into_inner())`，中毒时优雅降级而非整端点崩溃。
+- 已构建部署，`cargo clippy -p pbh-core -p pbh-db` 零 warning，`/health` 200。
+
 ## 9.5.1-rs.1（2026-10-09）
 
 首个对外发布版本——功能基线对齐上游 PeerBanHelper v9.5.1，WebUI 沿用上游 dist。
