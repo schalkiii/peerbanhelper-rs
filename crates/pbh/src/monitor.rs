@@ -508,18 +508,21 @@ module:
         let host = MonitorHost::new(&profile(), sink.clone());
         let torrent = torrent();
         let peers = vec![peer("1.2.3.4"), peer("5.6.7.8")];
+        // 用真实当前时间戳：`flush` 的淘汰按「条目时间戳 vs 墙钟」判定，
+        // 传 0 会被当成过期条目淘汰（见 `peer_recording_flush_evicts_stale_entries`）
+        let now = pbh_core::modules::monitor::now_ms();
 
-        host.on_peers_retrieved("qb", &torrent, &peers, 0);
+        host.on_peers_retrieved("qb", &torrent, &peers, now);
         assert_eq!(host.peer_recording().unwrap().cache_len(), 2);
         assert_eq!(host.swarm_tracking().unwrap().cache_len(), 2);
         assert_eq!(host.session_analyse().unwrap().cache_len(), 2);
         assert!(sink.peer_records().is_empty(), "回调本身不落库");
 
-        host.run_scheduled(&[], 0, false).await;
+        host.run_scheduled(&[], now, false).await;
         assert_eq!(
             host.peer_recording().unwrap().cache_len(),
             2,
-            "flush 不清空缓存"
+            "flush 保留未过期缓存（已落库，只淘汰过期条目）"
         );
         assert_eq!(sink.peer_records().len(), 2, "peer-recording.flush 写库");
         assert_eq!(
@@ -535,6 +538,29 @@ module:
         // session-analyse 的 track 行先 upsert、再按「是否今天」聚合进 metrics 后删除
         assert_eq!(sink.connection_metrics().len(), 1, "flushData 聚合落库");
         assert!(sink.metrics_tracks().is_empty(), "聚合后的 track 行被删除");
+    }
+
+    /// 回归：`peer-recording` 缓存无界增长修复——`flush` 写库后按
+    /// `PEER_RECORDING_CACHE_TIMEOUT_MS`（180s）淘汰过期条目。
+    ///
+    /// 落库先于淘汰，故淘汰不丢数据（对齐上游 `PBHCache` 的容量/超时淘汰语义）。
+    #[tokio::test]
+    async fn peer_recording_flush_evicts_stale_entries() {
+        let sink = Arc::new(InMemoryMonitorSink::new());
+        let host = MonitorHost::new(&profile(), sink.clone());
+        let peers = vec![peer("1.2.3.4"), peer("5.6.7.8")];
+
+        // 时间戳传 0：远早于墙钟，flush 时判定为过期条目
+        host.on_peers_retrieved("qb", &torrent(), &peers, 0);
+        assert_eq!(host.peer_recording().unwrap().cache_len(), 2);
+
+        host.run_scheduled(&[], 0, false).await;
+        assert_eq!(sink.peer_records().len(), 2, "淘汰前已落库，数据不丢");
+        assert_eq!(
+            host.peer_recording().unwrap().cache_len(),
+            0,
+            "flush 后过期条目被淘汰（对齐 PBHCache，避免无界增长）"
+        );
     }
 
     /// 生产落点（`DbMonitorSink`）下的同一链路：`onPeersRetrieved` → 定时 flush → SQLite
