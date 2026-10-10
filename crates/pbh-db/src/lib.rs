@@ -1125,7 +1125,7 @@ impl Database {
         order_sql.push_str("p.last_time_seen DESC");
 
         let count_sql = format!(
-            "SELECT COUNT(*) FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}"
+            "SELECT COUNT(*) FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id {cond}"
         );
         let total: i64 = conn
             .query_row(
@@ -1139,7 +1139,7 @@ impl Database {
                     COALESCE(t.size, 0), p.downloader, COALESCE(p.peer_id, ''), COALESCE(p.client_name, ''),
                     p.uploaded, p.downloaded, p.upload_speed, p.download_speed,
                     COALESCE(p.last_flags, ''), p.first_time_seen, p.last_time_seen
-             FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id{cond}
+             FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id {cond}
              ORDER BY {order_sql} LIMIT ? OFFSET ?"
         );
         let mut stmt = conn.prepare(&sql)?;

@@ -1023,6 +1023,26 @@ fn map_metrics_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<MetricsTrackRo
     })
 }
 
+/// 读取 REAL 列，兼容「上游（Java）建的库」把该列建成 `TEXT` 的情况。
+///
+/// 上游迁移脚本把 `tracked_swarm.peer_progress` 写成 `TEXT NOT NULL`（属手误，
+/// 其 Java 实体声明为 `double`，写出的是数值文本）；本移植 schema 按实体声明为 REAL，
+/// 但 `CREATE TABLE IF NOT EXISTS` **不会改写既有库** ⇒ 从 Java 迁移过来的用户
+/// 该列仍是 TEXT，按 `f64` 取会 `Invalid column type Text`，使
+/// `GET /api/modules/swarm-tracking/details` 返回 500（2026-10-11 生产缺陷）。
+/// 这里先按数值读，失败再按文本解析（与 [`text_like`] 同一思路）。
+fn real_like(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64> {
+    match row.get::<_, f64>(index) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let s = row.get::<_, String>(index)?;
+            s.parse::<f64>().map_err(|_| {
+                rusqlite::Error::InvalidColumnType(index, s, rusqlite::types::Type::Text)
+            })
+        }
+    }
+}
+
 fn map_tracked_swarm(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackedSwarmRow> {
     Ok(TrackedSwarmRow {
         id: Some(row.get(0)?),
@@ -1032,10 +1052,10 @@ fn map_tracked_swarm(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackedSwarmRo
         torrent_is_private: row.get::<_, Option<i64>>(4)?.map(|v| v != 0),
         torrent_size: row.get(5)?,
         downloader: row.get(6)?,
-        downloader_progress: row.get(7)?,
+        downloader_progress: real_like(row, 7)?,
         peer_id: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
         client_name: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-        peer_progress: row.get(10)?,
+        peer_progress: real_like(row, 10)?,
         uploaded: row.get(11)?,
         uploaded_offset: row.get(12)?,
         upload_speed: row.get(13)?,
