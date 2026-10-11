@@ -1,7 +1,8 @@
 # 测试覆盖矩阵与用例清单
 
-> 生成于 2026-09-25（commit ca3ef8a 之后）。统计口径：`cargo test --workspace -- --list`，
-> 共 **23 个测试目标、587 个用例**。运行：`cargo test --workspace`；
+> 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-11 增量核对。统计口径：
+> `cargo test --workspace -- --list`，共 **27 个测试目标、620 个用例**。运行：
+> `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
 
@@ -23,7 +24,7 @@
 | 模块 | L1 单元 | L2 黄金 | L3/L4 | L5 对跑 | 小计 |
 |---|---|---|---|---|---|
 | btn（传输层/ability/上报）| ✅ 56 | — | — | ✅ btn mock（新增）| 61 |
-| monitor（监控模块宿主）| ✅ 45 | — | — | n/a¹ | 45 |
+| monitor（监控模块宿主）| ✅ 55（含缓存淘汰回归）| — | — | n/a¹ | 55 |
 | downloader（qb/tr/aria2/biglybt/bitcomet/deluge）| ✅ 91+ | — | ✅ 20 | ✅ sample | 118 |
 | geoip（IPDB/GeoCN/更新器）| ✅ 37 | — | — | n/a² | 37 |
 | remap / 地址翻译 | ✅ 24+ | ✅ 8 | — | ✅ matrix | 36 |
@@ -31,7 +32,7 @@
 | db（schema/history/torrents/统计）| ✅ 26 | — | — | ✅ compare_dualrun | 31 |
 | config（AppConfig/上游布局）| ✅ 15 | ✅ 1 | ✅ 2 | — | 18 |
 | string_blacklist（client/peer-id）| ✅ 3 | ✅ 12 | — | ✅ matrix | 15 |
-| web（API/鉴权/任务/契约）| ✅ 35（含 23 契约）| — | — | n/a | 35 |
+| web（API/鉴权/任务/契约）| ✅ 45（含 23 契约 + 3 字段级契约 + 2 SPA 静态资源回归）| — | — | n/a | 45 |
 | progress_cheat（PCB）| ✅ 1 | ✅ 11 | — | ✅ rewind/desync/excessive | 12 |
 | expression_engine | ✅ 11 | ✅ 6 | — | n/a³ | 17 |
 | ip_blacklist | ✅ 9 | ✅ 1 | — | ✅ matrix | 10 |

@@ -59,14 +59,15 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
 - 生产运行：GUI + pbh（health 200）、看门狗 wave 心跳常驻；WebUI 前端可用
   （会话 cookie / 缓存策略 / SPA 回退 / 下载器 CRUD id 语义均已修复）
 - 2026-10-09~11 连续修复一批「前端静默显示异常」缺陷（字段名/结构未对齐上游）：
-  `peersBlockRate` 恒 0%、活动种子速度 `NaN undefined/s`、统计/图表/封禁日志端点字段对齐。
-  根因与门禁见上文「Web API 字段对齐门禁」
+  `peersBlockRate` 恒 0%、活动种子速度 `NaN undefined/s`、统计/图表/封禁日志端点字段对齐、
+  `accessHistory`/`swarm-tracking details` 恒 500、SPA 子路由刷新资源错配（`/list` 刷新报
+  「无法解析接口返回数据」）。根因与门禁见上文两条门禁条目
 - 演练模式（`server.dry-run`）支持 Web 配置页 + `PUT /api/general/dryrun` + GUI 托盘开关，
   均热生效
 - pending-6（36h 长跑冻结）已降级观察项：修复后长跑与生产无真冻结复现；
   wave 全链路 phase 打点保留为下次冻结的定位手段
-- 工作区：`target/live/` 仍保留历史对跑归档（archive / rust / snapshots，**实测
-  0.64 GB / 36 个文件**，此前记录的 2.26GB 已过时），已列为删除候选待用户确认
+- 工作区：`target/live/` 历史对跑归档（0.64 GB）与 `probe_java_db.py` 已于 2026-10-11
+  经用户确认删除
 
 ## 下一步候选
 
