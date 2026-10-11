@@ -33,6 +33,14 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
   ② dist 前端读取点（`data/static/assets/*.js`，压缩单行，用脚本抠 token 上下文，
   勿用 grep 上下文）。**字段名以「前端读什么」为准，不是以「上游构造参数叫什么」为准**
   （如 `UserIPTestResult` 字段是 `from/to/generatedCidr`，非构造参数 `lower/upper/compressed`）。
+- **SPA 静态资源门禁（改 `static_handler` / 前端部署方式必读）**：dist 的 `index.html`
+  用相对路径引用 `assets/api/favicon`，从非根子路由（如 `/list`）直接刷新时浏览器会
+  请求 `/list/assets/...`、`/list/api/...`。服务端已做三层防护：① 回退 html 注入
+  `<base href="/">`；② `*/api/...` 308 到 `/api/...`；③ 子路径 assets/favicon 映射。
+  **动静态服务逻辑后必须用浏览器从子路由硬刷新验证**（curl 只能验 Content-Type，
+  验不出前端把 HTML 当 JS/JSON 解析这类问题）。前端路由的真实路径见上游
+  `webui/src/router/index.ts`（如封禁名单是 `/list` 不是 `/banlist`，设置是 `/config`
+  不是 `/settings`）——**不要凭导航栏文案猜 URL**。
 
 ## 发布流程
 

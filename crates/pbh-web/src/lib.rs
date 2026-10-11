@@ -356,45 +356,96 @@ async fn static_handler(State(state): State<AppState>, uri: Uri) -> Response {
     };
     let rel = uri.path().trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
-    let safe = safe_join(&dir, rel);
-    if let Some(path) = safe {
-        if path.is_file() {
-            if let Ok(bytes) = tokio::fs::read(&path).await {
-                let ct = mime_for(&path);
-                // SPA 缓存策略：入口 html 每次回源（部署更新立即生效，规避启发式缓存）；
-                // 其余静态资源（assets 带内容哈希）日级缓存
-                let cache = if ct.starts_with("text/html") {
-                    "no-cache"
-                } else {
-                    "public, max-age=86400"
-                };
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", ct)
-                    .header("Cache-Control", cache)
-                    .body(Body::from(bytes))
-                    .unwrap_or_else(|_| placeholder_response());
-            }
+
+    // 1. 优先按请求路径精确服务静态文件
+    if let Some(rsp) = try_serve_static(&dir, rel).await {
+        return rsp;
+    }
+
+    // 2. 前端 dist 使用相对路径 `./assets/...` 与 `./favicon.ico`。当用户从
+    //    非根路由（如 /banlist）直接刷新时，浏览器会请求 `/banlist/assets/...`，
+    //    精确路径找不到就会回退 index.html，导致 JS/CSS 被当成 HTML 解析，
+    //    页面白屏并报「无法解析接口返回数据」。把最后一个 `/assets/` 之后的
+    //    路径映射到 static 根目录的 `assets/`，`*/favicon.ico` 映射到根 favicon。
+    if let Some(idx) = rel.rfind("/assets/") {
+        let assets_rel = &rel[idx + 1..];
+        if let Some(rsp) = try_serve_static(&dir, assets_rel).await {
+            return rsp;
         }
     }
-    // SPA history 路由回退：WebUI 的前端子路由（如「封禁名单」「统计」的路径）
-    // 在磁盘上并无同名文件，刷新时必须回退到 index.html 交给前端路由接管——
-    // 对齐上游 Jetty 静态服务的 SPA fallback 语义，否则子路由刷新会落到占位页
-    // （占位页仅用于「前端尚未安装」的首次部署场景）
-    let index = safe_join(&dir, "index.html");
-    if let Some(path) = index {
-        if path.is_file() {
-            if let Ok(bytes) = tokio::fs::read(&path).await {
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "text/html; charset=utf-8")
-                    .header("Cache-Control", "no-cache")
-                    .body(Body::from(bytes))
-                    .unwrap_or_else(|_| placeholder_response());
-            }
+    if rel.ends_with("/favicon.ico") {
+        if let Some(rsp) = try_serve_static(&dir, "favicon.ico").await {
+            return rsp;
         }
+    }
+
+    // 3. 某些前端 API 调用（如 manifest）会拼上当前子路径前缀，即使已注入
+    //    <base href="/"> 仍请求 `/banlist/api/metadata/manifest`。将其 308 到
+    //    `/api/...`，避免被 SPA fallback 吞掉导致前端报「无法解析接口返回数据」。
+    if let Some(idx) = rel.rfind("/api/") {
+        let api_path = &rel[idx + 1..];
+        return Response::builder()
+            .status(StatusCode::PERMANENT_REDIRECT)
+            .header(axum::http::header::LOCATION, format!("/{}", api_path))
+            .body(Body::empty())
+            .unwrap_or_else(|_| placeholder_response());
+    }
+
+    // 4. SPA history 路由回退：WebUI 的前端子路由在磁盘上并无同名文件，
+    //    刷新时必须回退到 index.html 交给前端路由接管。
+    //    dist 里 index.html 使用相对路径引用 assets/api/favicon，从非根路由
+    //    刷新时浏览器会把这些相对路径加上当前路径前缀（如 /banlist/assets/...），
+    //    导致资源与 API 请求全部错位。注入 <base href="/"> 让所有相对路径以
+    //    根为基准，一次性修正。
+    if let Some(rsp) = serve_index_html(&dir).await {
+        return rsp;
     }
     placeholder_response()
+}
+
+/// 尝试从 static 目录服务单个文件。返回 None 当文件不存在或读取失败。
+async fn try_serve_static(dir: &std::path::Path, rel: &str) -> Option<Response> {
+    let path = safe_join(dir, rel)?;
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = tokio::fs::read(&path).await.ok()?;
+    let ct = mime_for(&path);
+    // SPA 缓存策略：入口 html 每次回源（部署更新立即生效，规避启发式缓存）；
+    // 其余静态资源（assets 带内容哈希）日级缓存
+    let cache = if ct.starts_with("text/html") {
+        "no-cache"
+    } else {
+        "public, max-age=86400"
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", ct)
+        .header("Cache-Control", cache)
+        .body(Body::from(bytes))
+        .ok()
+}
+
+/// 服务 SPA 入口 `index.html`，并动态注入 `<base href="/">`。
+///
+/// 前端 dist 原样复用上游产物，其资源/API 引用采用相对路径。当用户从
+/// `/banlist`、`/settings` 等子路由直接刷新时，浏览器会把 `assets/...`、
+/// `api/...`、`favicon.ico` 解析为 `/banlist/assets/...`、`/banlist/api/...` 等，
+/// 导致静态资源错配、API 请求被 SPA fallback 吞掉（前端拿到 HTML 当 JSON 解析，
+/// 报「无法解析接口返回数据」）。注入 base href 后所有相对路径以根为基准，
+/// 一次性解决该问题，同时保留 dist 文件不做修改。
+async fn serve_index_html(dir: &std::path::Path) -> Option<Response> {
+    let path = safe_join(dir, "index.html")?;
+    let mut html = tokio::fs::read_to_string(&path).await.ok()?;
+    if !html.contains("<base href=") {
+        html = html.replacen("<head>", "<head>\n  <base href=\"/\">", 1);
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .header("Cache-Control", "no-cache")
+        .body(Body::from(html))
+        .ok()
 }
 
 /// 防目录穿越的路径拼接。
@@ -1458,6 +1509,64 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(ct.starts_with("application/json"), "/api 404 必须是 JSON，实际 {ct}");
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_injects_base_href() {
+        // 回归（2026-10-11）：前端 dist 使用相对路径引用 assets/api/favicon。
+        // 从 /banlist 等子路由直接刷新时，浏览器会请求 /banlist/assets/...、
+        // /banlist/api/...，导致 JS/CSS 被当成 HTML 解析、API 请求被 fallback 吞掉
+        // → 前端报「无法解析接口返回数据」。后端在回退的 index.html 里注入
+        // <base href="/">，让所有相对路径以根为基准。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        // test_state 默认 static_dir=None（回退到占位页），这里构造临时 dist 目录
+        // 只验证注入逻辑，不依赖生产目录。
+        let tmp = std::env::temp_dir().join(format!("pbh-web-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("index.html"),
+            "<!DOCTYPE html><html><head><title>PeerBanHelper</title></head><body><div id=app></div></body></html>",
+        )
+        .unwrap();
+        *state.static_dir.lock().unwrap() = Some(tmp.clone());
+        let router = build_router(state);
+        for path in ["/banlist", "/settings", "/some/spa/route"] {
+            let request = Request::builder().uri(path).body(Body::empty()).expect("请求构造");
+            let response = router.clone().oneshot(request).await.expect("路由调用");
+            assert_eq!(response.status(), StatusCode::OK, "{path} 应回退 html");
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let html = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(
+                html.contains("<base href=\"/\">"),
+                "{path} 回退的 html 必须注入 <base href=\"/\">，否则子路由相对路径错位"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn spa_route_api_request_redirects_to_api_root() {
+        // 回归（2026-10-11）：从 /banlist 刷新时前端可能请求 /banlist/api/metadata/manifest，
+        // 后端若回退 index.html，前端拿到 HTML 当 JSON 解析失败。应 308 到 /api/...。
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let tmp = std::env::temp_dir().join(format!("pbh-web-api-redirect-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("index.html"), "<!DOCTYPE html><html><head></head><body></body></html>").unwrap();
+        *state.static_dir.lock().unwrap() = Some(tmp.clone());
+        let router = build_router(state);
+        let request = Request::builder()
+            .uri("/banlist/api/metadata/manifest")
+            .body(Body::empty())
+            .expect("请求构造");
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        let loc = response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(loc, "/api/metadata/manifest");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]

@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 
+### fix(web): 修复 SPA 子路由直接刷新时资源与 API 请求错配
+
+- **现象**：从 `/list`（封禁名单）等子路由直接刷新时，页面报「无法解析接口返回数据」，
+  脚本/样式加载失败，主内容区停在状态页（dashboard）不切换。
+- **根因**：前端 dist（上游原样复用）的 `index.html` 使用相对路径引用
+  `assets/...`、`api/...`、`favicon.ico`。从非根路由刷新时浏览器把这些相对路径
+  加上当前路径前缀（如 `/list/assets/...`、`/list/api/metadata/manifest`），导致：
+  ① JS/CSS 请求被 SPA fallback 回退成 HTML，浏览器把 HTML 当脚本解析；
+  ② API 请求同样被回退成 HTML，前端把 HTML 当 JSON 解析后报错。
+- **修复**（三层防护，均在服务端，不改 dist）：
+  1. 回退的 `index.html` 动态注入 `<base href="/">`，让所有相对路径以根为基准
+     （`serve_index_html`）；
+  2. `*/api/...` 形态的请求 308 重定向到 `/api/...`（兜底未走 base 的 API 调用）；
+  3. 子路径下的 `assets/...` 与 `favicon.ico` 直接映射到真实文件（兜底资源加载）。
+- 新增测试：`spa_fallback_injects_base_href`、`spa_route_api_request_redirects_to_api_root`。
+- 真实 WebUI 验证（Kimi WebBridge 浏览器逐页截图）：`/dashboard`、`/list`（含子路由
+  硬刷新）、`/log`、`/ipHistory`、`/torrentHistory`、`/metricsCharts`、`/ruleSubscribe`、
+  `/config` 全部正常渲染，活动种子速度列显示真实速率（无 `NaN undefined/s`）。
+
 ### fix(web): 修复「恶意:正常 连接比例」恒为 0.00%
 
 - **根因**：`/api/statistic/counter` 返回的字段名为 `peerBlockRate`，但上游前端
