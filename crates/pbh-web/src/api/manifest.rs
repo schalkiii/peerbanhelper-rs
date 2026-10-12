@@ -71,6 +71,39 @@ pub async fn oobe_test_database_config(Json(_body): Json<Value>) -> Response {
         .into_response()
 }
 
+/// `POST /api/oobe/init`：OOBE 向导提交初始化（`{token, downloader, btn, database}`）。
+///
+/// 该端点此前缺失，向导最后一步会拿到 `API_NOT_FOUND`。本移植的初始化大部分是
+/// 自动的（访问令牌在首次启动时随机生成并写回配置、数据库固定内置 SQLite），
+/// 因此这里只落实**有实际效果的两项**：访问令牌与下载器；`btn` / `database` 忽略。
+pub async fn oobe_init(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    // 访问令牌：更新运行态（无落盘接口，重启后仍用配置里的令牌）
+    if let Some(token) = body.get("token").and_then(|v| v.as_str()) {
+        if !token.trim().is_empty() {
+            if let Ok(mut current) = state.token.lock() {
+                *current = token.to_string();
+            }
+        }
+    }
+    // 下载器：交由后端持久化（对齐向导「添加一个下载器」的主路径）
+    if let Some(downloader) = body.get("downloader") {
+        if downloader.is_object() {
+            if let Err(e) = state.backend.add_downloader(downloader) {
+                return (
+                    StatusCode::OK,
+                    crate::std_resp(false, Some(&e), Value::Null),
+                )
+                    .into_response();
+            }
+        }
+    }
+    (
+        StatusCode::OK,
+        crate::std_resp(true, None, json!({ "success": true })),
+    )
+        .into_response()
+}
+
 /// `GET /api/init/token`：初始化状态。
 pub async fn init_status(State(state): State<AppState>) -> Response {
     let initialized = !state

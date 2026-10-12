@@ -42,3 +42,27 @@ pub async fn delete_key(State(_state): State<AppState>) -> Response {
     )
         .into_response()
 }
+
+/// `GET /api/pbhplus/claimRenewFreeLicenseCaptcha`：领取免费许可的人机验证挑战。
+///
+/// 本移植没有许可体系（全部功能默认开启），无需续期。端点必须存在以免前端弹窗
+/// 拿到 `API_NOT_FOUND`，这里明确返回「不需要」而非伪造挑战。
+pub async fn claim_captcha(State(_state): State<AppState>) -> Response {
+    (
+        StatusCode::OK,
+        crate::std_resp(false, Some("PLUS_LICENSE_NOT_REQUIRED"), Value::Null),
+    )
+        .into_response()
+}
+
+/// `POST /api/pbhplus/renewFreeLicense`：续期免费许可（同上，无需续期）。
+pub async fn renew_free_license(
+    State(_state): State<AppState>,
+    Json(_body): Json<Value>,
+) -> Response {
+    (
+        StatusCode::OK,
+        crate::std_resp(false, Some("PLUS_LICENSE_NOT_REQUIRED"), Value::Null),
+    )
+        .into_response()
+}

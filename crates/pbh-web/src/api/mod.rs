@@ -7,6 +7,7 @@
 
 pub mod alerts;
 pub mod auth;
+pub mod autostun;
 pub mod bans;
 pub mod btn;
 pub mod charts;
@@ -43,6 +44,7 @@ pub fn public_routes() -> Router<crate::AppState> {
         .route("/oobe/testDownloader", post(manifest::oobe_test_downloader))
         .route("/oobe/testDatabaseConfig", post(manifest::oobe_test_database_config))
         .route("/oobe/scanDownloader", post(manifest::oobe_scan_downloader))
+        .route("/oobe/init", post(manifest::oobe_init))
 }
 
 /// 需要鉴权的路由（对齐上游 Role.USER_READ / USER_WRITE 的全部端点）。
@@ -166,6 +168,17 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/laboratory/experiments", get(labs::experiments))
         .route("/laboratory/experiment/{id}", put(labs::set_experiment))
         .route("/laboratory/config", post(labs::set_config))
+        // —— AutoSTUN（`/api/autostun/*`；本移植未实现该功能，端点仍需存在以免
+        // 前端拿到 API_NOT_FOUND，响应为「未启用」的诚实状态）——
+        .route("/autostun/status", get(autostun::status))
+        .route("/autostun/config", put(autostun::config))
+        .route("/autostun/tunnels", get(autostun::tunnels))
+        .route(
+            "/autostun/tunnel/{id}/connections",
+            get(autostun::connections),
+        )
+        .route("/autostun/refreshNatType", post(autostun::refresh_nat_type))
+        .route("/autostun/restart", post(autostun::restart))
         // —— BTN / AutoSTUN 模块状态 ——
         .route("/modules/btn", get(btn::status))
         // —— IP 规则黑名单（设置页规则管理，对齐上游 IPBlackList 模块路由）——
@@ -182,6 +195,14 @@ pub fn api_routes() -> Router<crate::AppState> {
             get(pbhplus::status).put(pbhplus::put_key).delete(pbhplus::delete_key),
         )
         .route("/pbhplus/key", put(pbhplus::put_key).delete(pbhplus::delete_key))
+        .route(
+            "/pbhplus/claimRenewFreeLicenseCaptcha",
+            get(pbhplus::claim_captcha),
+        )
+        .route(
+            "/pbhplus/renewFreeLicense",
+            post(pbhplus::renew_free_license),
+        )
         .route(
             "/modules/auto-stun-port-forwarding",
             get(btn::auto_stun_status),

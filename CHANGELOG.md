@@ -5,6 +5,33 @@
 
 ## [Unreleased]
 
+### feat(test): WebUI 端点契约全量校验（防「端点缺失」与「data 形状不符」）
+
+- 新增 `crates/pbh-web/src/webui_endpoints.json`：**前端完整端点契约清单**，从上游
+  `webui/src/service/*.ts` 提取（路径 + 方法 + `data` 形状）。仓库内不含前端源码，
+  故固化为清单作为测试源；前端升级后需重新提取刷新（清单头部已注明来源）。
+- 新增测试 `webui_contract_all_endpoints_exist_and_match_shape`：逐条请求清单端点，
+  断言 ① 不落到 `/api` fallback 的 `API_NOT_FOUND`（即端点存在，405 也算存在）；
+  ② `data` 形状匹配（`array`/`object`/`number`/`string`/`page`/`geo`/`lab`）。
+- **为什么需要它**：此前 `mod tests` 里已有「WebUI 契约测试（生产事故回归集）」，
+  但那是**手工挑选的事故点**——`/api/expression-engine/*`、`/api/laboratory/*`
+  从未被任何测试请求过，于是「缺端点」一直没暴露。这里改为**以前端完整调用面
+  为契约源**，把两类缺陷一次性变成红测。
+
+该机制上线即发现并修复 **11 项契约不符**：
+
+- **端点缺失（9 个）**：`POST /api/oobe/init`（OOBE 向导最后一步会失败）、
+  `GET /api/pbhplus/claimRenewFreeLicenseCaptcha`、`POST /api/pbhplus/renewFreeLicense`、
+  `/api/autostun/*` 全套 6 个（`status`/`config`/`tunnels`/`tunnel/{id}/connections`/
+  `refreshNatType`/`restart`）。
+  - AutoSTUN 本移植未实现功能，但端点必须存在：读操作返回**结构完整、语义诚实**
+    的「未启用」状态（字段对齐前端 `AutoSTUNStatus`），写操作返回 501 +
+    `AUTOSTUN_NOT_SUPPORTED`，**不假装生效**。
+  - Plus 两个许可端点返回 `PLUS_LICENSE_NOT_REQUIRED`（本移植无许可体系、全功能默认开启）。
+- **`data` 形状不符（1 个）**：`GET /api/push` 曾返回 `{channels:[...]}`，而前端
+  `GetPushChannelList()` 是 `CommonResponse<PushConfig[]>`——**`data` 必须是数组**，
+  包一层对象会让推送设置页拿不到任何渠道。
+
 ### fix(web): 修复统计/规则订阅/自定义脚本/实验性功能四个页面的契约错配
 
 WebUI（上游预构建 dist，**不在本仓库**）是按上游 Java 的响应契约写的；本轮四个问题

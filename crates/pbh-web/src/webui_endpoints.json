@@ -1,0 +1,102 @@
+{
+  "_source": "WebUI 端点契约清单：从上游 webui/src/service/*.ts（PeerBanHelper v9.5.x）提取。路径占位符已替换为示例值。仓库内不含前端源码，故固化为本清单作为测试源——前端升级后需重新提取刷新。",
+  "_purpose": "逐条校验后端：① 端点存在（不落到 /api fallback 的 API_NOT_FOUND）；② data 形状与前端期望一致。shape=any 表示只校验存在性。",
+  "_shape_legend": {
+    "any": "只校验端点存在",
+    "array": "data 必须是数组",
+    "object": "data 必须是对象",
+    "number": "data 必须是数字",
+    "string": "data 必须是字符串",
+    "page": "data 必须是含 page/size/total/results 的对象，且 results 是数组",
+    "geo": "data 含 city/isp/province/region 四个字段，且每个都是数组",
+    "lab": "data 含 labEnabled 且 experiments 是数组"
+  },
+  "endpoints": [
+    { "method": "GET", "path": "/api/metadata/manifest", "shape": "object" },
+    { "method": "POST", "path": "/api/auth/login", "shape": "any" },
+    { "method": "POST", "path": "/api/oobe/init", "shape": "any" },
+    { "method": "POST", "path": "/api/oobe/testDownloader", "shape": "any" },
+    { "method": "POST", "path": "/api/oobe/testDatabaseConfig", "shape": "any" },
+    { "method": "POST", "path": "/api/oobe/scanDownloader", "shape": "any" },
+
+    { "method": "GET", "path": "/api/alerts", "shape": "array" },
+    { "method": "PATCH", "path": "/api/alert/1/dismiss", "shape": "any" },
+    { "method": "POST", "path": "/api/alert/dismissAll", "shape": "any" },
+
+    { "method": "GET", "path": "/api/bans", "shape": "any" },
+    { "method": "GET", "path": "/api/bans/logs", "shape": "page" },
+    { "method": "GET", "path": "/api/bans/ranks", "shape": "page" },
+
+    { "method": "GET", "path": "/api/logs/history", "shape": "array" },
+    { "method": "GET", "path": "/api/logs/live", "shape": "any", "skip": "SSE 长连接：oneshot 请求永不结束，无法在测试中请求" },
+
+    { "method": "GET", "path": "/api/general/status", "shape": "object" },
+    { "method": "GET", "path": "/api/general/global", "shape": "object" },
+    { "method": "GET", "path": "/api/general/config", "shape": "object" },
+    { "method": "GET", "path": "/api/general/profile", "shape": "object" },
+    { "method": "GET", "path": "/api/general/checkModuleAvailable", "shape": "any" },
+    { "method": "GET", "path": "/api/general/heapdump", "shape": "any" },
+
+    { "method": "GET", "path": "/api/statistic/counter", "shape": "object" },
+    { "method": "GET", "path": "/api/statistic/rules", "shape": "any" },
+    { "method": "GET", "path": "/api/statistic/analysis/banTrends", "shape": "any" },
+    { "method": "GET", "path": "/api/statistic/analysis/field", "shape": "any" },
+
+    { "method": "GET", "path": "/api/chart/geoIpInfo", "shape": "geo" },
+    { "method": "GET", "path": "/api/chart/trend", "shape": "object" },
+    { "method": "GET", "path": "/api/chart/traffic", "shape": "array" },
+    { "method": "GET", "path": "/api/chart/sessionAnalyse", "shape": "array" },
+
+    { "method": "GET", "path": "/api/downloaders", "shape": "array" },
+    { "method": "POST", "path": "/api/downloaders/test", "shape": "any" },
+
+    { "method": "GET", "path": "/api/peer/1.2.3.4", "shape": "object" },
+    { "method": "GET", "path": "/api/peer/1.2.3.4/banHistory", "shape": "page" },
+    { "method": "GET", "path": "/api/peer/1.2.3.4/accessHistory", "shape": "page" },
+    { "method": "GET", "path": "/api/torrent/query", "shape": "page" },
+    { "method": "GET", "path": "/api/torrent/abcdef/banHistory", "shape": "page" },
+    { "method": "GET", "path": "/api/torrent/abcdef/accessHistory", "shape": "page" },
+
+    { "method": "GET", "path": "/api/push", "shape": "array" },
+    { "method": "POST", "path": "/api/push/test", "shape": "any" },
+    { "method": "PATCH", "path": "/api/push/ch-1", "shape": "any" },
+    { "method": "DELETE", "path": "/api/push/ch-1", "shape": "any" },
+
+    { "method": "GET", "path": "/api/sub/rules", "shape": "array" },
+    { "method": "PUT", "path": "/api/sub/rule", "shape": "any" },
+    { "method": "PATCH", "path": "/api/sub/rule/rule-1", "shape": "any" },
+    { "method": "DELETE", "path": "/api/sub/rule/rule-1", "shape": "any" },
+    { "method": "POST", "path": "/api/sub/rule/rule-1/update", "shape": "any" },
+    { "method": "POST", "path": "/api/sub/rules/update", "shape": "any" },
+    { "method": "GET", "path": "/api/sub/logs", "shape": "page" },
+    { "method": "GET", "path": "/api/sub/interval", "shape": "number" },
+    { "method": "PATCH", "path": "/api/sub/interval", "shape": "any" },
+
+    { "method": "GET", "path": "/api/expression-engine/scripts", "shape": "page" },
+    { "method": "GET", "path": "/api/expression-engine/editable", "shape": "object" },
+    { "method": "GET", "path": "/api/expression-engine/demo.av", "shape": "any" },
+    { "method": "PUT", "path": "/api/expression-engine/demo.av", "shape": "any" },
+    { "method": "DELETE", "path": "/api/expression-engine/demo.av", "shape": "any" },
+
+    { "method": "GET", "path": "/api/laboratory/experiments", "shape": "lab" },
+    { "method": "PUT", "path": "/api/laboratory/experiment/sqlite_vacuum", "shape": "any" },
+    { "method": "POST", "path": "/api/laboratory/config", "shape": "any" },
+
+    { "method": "GET", "path": "/api/modules/btn", "shape": "object" },
+    { "method": "GET", "path": "/api/modules/ipblacklist/ip", "shape": "object", "_note": "BlackList<T> = {[K in T]: ...[]}，是对象不是数组" },
+    { "method": "GET", "path": "/api/modules/ipblacklist/netType", "shape": "object" },
+
+    { "method": "GET", "path": "/api/pbhplus/status", "shape": "object" },
+    { "method": "PUT", "path": "/api/pbhplus/key", "shape": "any" },
+    { "method": "DELETE", "path": "/api/pbhplus/key", "shape": "any" },
+    { "method": "GET", "path": "/api/pbhplus/claimRenewFreeLicenseCaptcha", "shape": "any" },
+    { "method": "POST", "path": "/api/pbhplus/renewFreeLicense", "shape": "any" },
+
+    { "method": "GET", "path": "/api/autostun/status", "shape": "object" },
+    { "method": "PUT", "path": "/api/autostun/config", "shape": "any" },
+    { "method": "GET", "path": "/api/autostun/tunnels", "shape": "array" },
+    { "method": "GET", "path": "/api/autostun/tunnel/dl-1/connections", "shape": "page" },
+    { "method": "POST", "path": "/api/autostun/refreshNatType", "shape": "any" },
+    { "method": "POST", "path": "/api/autostun/restart", "shape": "any" }
+  ]
+}

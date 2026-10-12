@@ -9,11 +9,14 @@ use serde_json::{json, Value};
 use crate::AppState;
 
 /// `GET /api/push`：推送渠道列表。
+///
+/// WebUI `GetPushChannelList()` 的返回类型是 `CommonResponse<PushConfig[]>`——
+/// **`data` 直接是数组**；包成 `{channels: [...]}` 会让推送设置页拿不到任何渠道。
 pub async fn list(State(state): State<AppState>) -> Response {
     let channels = state.backend.push_channels();
     (
         StatusCode::OK,
-        crate::std_resp(true, Some("OK"), json!({ "channels": channels })),
+        crate::std_resp(true, Some("OK"), json!(channels)),
     )
         .into_response()
 }

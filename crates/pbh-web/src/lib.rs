@@ -2162,6 +2162,138 @@ mod tests {
         );
     }
 
+    /// WebUI 端点契约清单（从上游 `webui/src/service/*.ts` 提取后固化）。
+    ///
+    /// 仓库内不含前端源码，无法在 CI 里扫描前端，因此把「前端实际调用的全部端点 +
+    /// data 形状」固化成清单作为测试源。前端升级后需重新提取刷新此文件。
+    const WEBUI_ENDPOINTS_JSON: &str = include_str!("webui_endpoints.json");
+
+    /// `/api` fallback 的 404（`api_not_found`）——**端点缺失**的判据。
+    ///
+    /// 405（方法不匹配）也算路由存在，因此不能用 status 直接判断。
+    fn is_api_not_found(status: StatusCode, body: &Value) -> bool {
+        status == StatusCode::NOT_FOUND
+            && body.get("message").and_then(|v| v.as_str()) == Some("API_NOT_FOUND")
+    }
+
+    /// 按清单约定的形状校验 `data`。
+    fn check_contract_shape(shape: &str, data: &Value) -> Result<(), String> {
+        let kind = |v: &Value| -> &'static str {
+            if v.is_array() {
+                "array"
+            } else if v.is_object() {
+                "object"
+            } else if v.is_number() {
+                "number"
+            } else if v.is_string() {
+                "string"
+            } else {
+                "null"
+            }
+        };
+        match shape {
+            "any" => Ok(()),
+            "array" | "object" | "number" | "string" => {
+                if kind(data) == shape {
+                    Ok(())
+                } else {
+                    Err(format!("data 应为 {shape}，实际 {}：{data}", kind(data)))
+                }
+            }
+            "page" => {
+                let obj = data.as_object().ok_or_else(|| format!("data 应为对象：{data}"))?;
+                for f in ["page", "size", "total", "results"] {
+                    if !obj.contains_key(f) {
+                        return Err(format!("缺分页字段 {f}"));
+                    }
+                }
+                if !data["results"].is_array() {
+                    return Err(format!("results 必须是数组：{}", data["results"]));
+                }
+                Ok(())
+            }
+            "geo" => {
+                for f in ["city", "isp", "province", "region"] {
+                    match data.get(f) {
+                        Some(v) if v.is_array() => {}
+                        _ => return Err(format!("{f} 必须是数组（前端要 .reduce）")),
+                    }
+                }
+                Ok(())
+            }
+            "lab" => {
+                if !data.get("labEnabled").is_some() {
+                    return Err(format!("缺 labEnabled：{data}"));
+                }
+                if !data["experiments"].is_array() {
+                    return Err(format!("experiments 必须是数组：{data}"));
+                }
+                Ok(())
+            }
+            other => Err(format!("清单里未知的 shape：{other}")),
+        }
+    }
+
+    /// **前端契约全量校验**：清单里的每个端点都必须存在，且 `data` 形状与前端期望一致。
+    ///
+    /// 这组测试存在的理由：此前 `mod tests` 里已有「WebUI 契约测试（生产事故回归集）」，
+    /// 但那是**手工挑选的事故点**——`/api/expression-engine/*`、`/api/laboratory/*`
+    /// 从未被任何测试请求过，于是「缺端点」一直没暴露。这里改为**以前端完整调用面
+    /// 为契约源**，一次性覆盖全部端点。
+    #[tokio::test]
+    async fn webui_contract_all_endpoints_exist_and_match_shape() {
+        let dir = std::env::temp_dir().join(format!("pbh-webui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        // 注入可注入的依赖，让「模块未启用」不至于掩盖「形状不符」
+        state.sub_module = Some(Arc::new(TestSubModule));
+        state.scripts_dir = Some(dir.join("scripts"));
+        state.lab_path = Some(dir.join("laboratory.yml"));
+
+        let contract: Value = serde_json::from_str(WEBUI_ENDPOINTS_JSON).expect("清单 JSON");
+        let endpoints = contract["endpoints"].as_array().expect("endpoints 数组");
+        assert!(!endpoints.is_empty(), "清单不应为空");
+
+        let mut failures: Vec<String> = Vec::new();
+        for entry in endpoints {
+            let method = entry["method"].as_str().unwrap_or("GET");
+            let path = entry["path"].as_str().expect("path");
+            let shape = entry["shape"].as_str().unwrap_or("any");
+            // SSE 等无法在 oneshot 里请求的长连接端点显式跳过
+            if entry.get("skip").is_some() {
+                continue;
+            }
+            let http_method = axum::http::Method::from_bytes(method.as_bytes()).expect("method");
+            // 写方法给空 body：具体字段缺失会 400，但仍证明路由存在（非 API_NOT_FOUND）
+            let body = match method {
+                "PUT" | "POST" | "PATCH" => Some("{}".to_string()),
+                _ => None,
+            };
+            let (status, resp) = send_json(&state, http_method, path, body).await;
+            if is_api_not_found(status, &resp) {
+                failures.push(format!("{method} {path}：端点缺失（API_NOT_FOUND）"));
+                continue;
+            }
+            // 只在成功响应上校验形状（模块未启用等返回 success=false 时跳过）
+            if status == StatusCode::OK && resp.get("success").and_then(|v| v.as_bool()) == Some(true)
+            {
+                if let Some(data) = resp.get("data") {
+                    if let Err(e) = check_contract_shape(shape, data) {
+                        failures.push(format!("{method} {path}：{e}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "WebUI 契约不符 {} 项：\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `geoIpInfo` 的真实聚合：对每个去重 IP 查库，四个维度输出 KV 数组（按 value 降序）。
     #[tokio::test]
     async fn geo_ip_aggregates_distinct_banned_ips() {
