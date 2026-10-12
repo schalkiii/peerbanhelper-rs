@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
-> 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-11 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **27 个测试目标、620 个用例**。运行：
+> 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-13 增量核对。统计口径：
+> `cargo test --workspace -- --list`，共 **27 个测试目标、625 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -32,7 +32,7 @@
 | db（schema/history/torrents/统计）| ✅ 26 | — | — | ✅ compare_dualrun | 31 |
 | config（AppConfig/上游布局）| ✅ 15 | ✅ 1 | ✅ 2 | — | 18 |
 | string_blacklist（client/peer-id）| ✅ 3 | ✅ 12 | — | ✅ matrix | 15 |
-| web（API/鉴权/任务/契约）| ✅ 45（含 23 契约 + 3 字段级契约 + 2 SPA 静态资源回归）| — | — | n/a | 45 |
+| web（API/鉴权/任务/契约）| ✅ 50（含 WebUI 端点契约全量校验 + 字段级契约 + SPA 静态资源回归）| — | — | n/a | 50 |
 | progress_cheat（PCB）| ✅ 1 | ✅ 11 | — | ✅ rewind/desync/excessive | 12 |
 | expression_engine | ✅ 11 | ✅ 6 | — | n/a³ | 17 |
 | ip_blacklist | ✅ 9 | ✅ 1 | — | ✅ matrix | 10 |
@@ -222,3 +222,29 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 4. **封禁列表字符串化**：全量下发对每个 IPv4 附带 hex 压缩 mapped IPv6 变体
    （`toCompressedString()`，见 `remap.rs::to_compressed_string`）；
    增量下发用下载器原始 `ip:port`。
+
+## 6. WebUI 端点契约全量校验（2026-10-13 新增）
+
+**背景**：前端是上游预构建 dist（仓库内**不含**前端源码），它按 Java 的响应契约写。
+此前 `pbh-web` 的 `mod tests` 里已有一组「WebUI 契约测试（生产事故回归集）」，
+但那是**手工挑选的事故点**——`/api/expression-engine/*`、`/api/laboratory/*`
+从未被任何测试请求过，于是「端点缺失」与「`data` 形状不符」反复出现而测试全绿。
+（同类缺陷已 5 次复发：`peerBlockRate` 恒 0、批量字段名、`rtUploadSpeed` NaN、
+`geoIpInfo` 返回对象致 `.reduce is not a function`、`/api/push` 包了 `{channels}` 层。）
+
+**机制**：把「前端实际调用的全部端点 + `data` 形状」固化成契约清单
+`crates/pbh-web/src/webui_endpoints.json`（从上游 `webui/src/service/*.ts` 提取），
+测试 `webui_contract_all_endpoints_exist_and_match_shape` 逐条断言：
+
+| 断言 | 判据 |
+|---|---|
+| 端点存在 | 响应不是 `/api` fallback 的 `API_NOT_FOUND`（405 方法不匹配也算存在） |
+| `data` 形状 | `array` / `object` / `number` / `string` / `page`（分页四字段）/ `geo`（四个维度均为数组）/ `lab` |
+| 跳过项 | SSE 长连接（如 `/api/logs/live`）无法在 oneshot 中请求，清单里以 `skip` 标注 |
+
+**维护方式**：上游前端升级后需重新提取清单（`webui/src/**` 中排除 `api/model/*` 的
+import 后的全部 `api/...` 字面量），否则新端点不在门禁覆盖内。
+
+**已通过该机制发现并修复**（详见 CHANGELOG）：
+9 个端点缺失（`/api/oobe/init`、`/api/pbhplus/{claimRenewFreeLicenseCaptcha,renewFreeLicense}`、
+`/api/autostun/*` 全套 6 个）与 1 处形状不符（`/api/push`）。

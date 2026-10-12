@@ -3,7 +3,16 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
-## [Unreleased]
+## 9.5.1-rs.2（2026-10-13）
+
+### fix(web): 收尾两项——oobe/init 令牌落盘 + 契约清单补 downloaders/{id}
+
+- `POST /api/oobe/init` 原先只把访问令牌写进运行态内存，**重启即丢**。新增
+  `WebBackend::set_token`（对齐 `set_dry_run` / `set_analytics` 的既有持久化模式：
+  更新内存配置 + 经 `save_config` 写回 `config.yml`），向导设置的令牌重启后保持生效。
+  下载器仍交由后端持久化；`btn` / `database` 段按现状忽略（Rust 固定内置 SQLite）。
+- 端点契约清单补 `/api/downloaders/{id}`（PATCH/DELETE 单个下载器）——全量扫描前端
+  `webui/src/**` 时发现该路径此前未纳入门禁，已补齐。
 
 ### feat(test): WebUI 端点契约全量校验（防「端点缺失」与「data 形状不符」）
 

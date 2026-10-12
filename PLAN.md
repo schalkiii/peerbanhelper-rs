@@ -19,7 +19,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**530+ 个测试全部通过**（23 个 suite；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**625 个测试全部通过**（27 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -144,19 +144,28 @@
 - GeoIP 更新失败策略：上游「下载失败仍 move 空临时文件」会截断既有数据库，本移植失败时
   一律保留原文件（不复刻该缺陷）。
 - 每日流量阈值告警等上游默认关闭的功能：默认配置下无行为差异，仅 `enabled: true` 时生效。
+- **AutoSTUN 的 Web 状态面**：核心能力（TCP STUN / UDP NAT 探测 / TCP 转发器，见 §3.6）已实现并经
+  `ip-remapping.auto-stun.enabled` 在 `main.rs` 接线；但 `/api/autostun/status` 返回的是**静态
+  「未启用」结构**（`AppState::auto_stun_status()`），不反映真实 registry 状态；写操作
+  （`PUT /autostun/config`、`refreshNatType`、`restart`）返回 `501 AUTOSTUN_NOT_SUPPORTED`。
+  端点存在是为了避免前端拿到 `API_NOT_FOUND`；如需在 WebUI 里真实启停 AutoSTUN，
+  须把 `ip-remapping.auto-stun` 的 registry 注入 `AppState`（当前未接）。
+- **OOBE 向导 `/api/oobe/init`**：仅落实**有实际效果**的两项——访问令牌（经
+  `WebBackend::set_token` 写回 `config.yml`，重启保持）与下载器（经后端持久化）；
+  `btn` 与 `database` 段忽略（Rust 版固定内置 SQLite，无外部数据库配置项）。
 
-### 4.3 原生 GUI（Tauri 托盘壳）——方案规划
+### 4.3 原生 GUI（Tauri 托盘壳）——已完成（M1）
 
-- [ ] **架构**：新增独立 crate `crates/pbh-gui`（**不加入 workspace members**——Tauri 在 Linux 需要
+- [x] **架构**：独立 crate `crates/pbh-gui`（**不在 workspace members**——Tauri 在 Linux 需要
       webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建；Windows 侧单独构建）。
       职责：① 以子进程拉起 `pbh --data <dir>`（保留窗口关闭=隐藏到托盘、崩溃自动重启、日志重定向到文件）；
-      ② 系统托盘（显示主窗口 / 打开数据目录 / 退出=结束子进程）；③ WebView 加载 `http://127.0.0.1:9898`
-      （**复用上游 WebUI dist**，不在 Tauri 内重写前端，与「前端原样复用」原则一致）。
-- [ ] **技术选型**：tauri v2（`tray-icon` feature，WebView2 系统组件）+ 单实例互斥（命名 Mutex +
-      端口探测）；托盘图标内嵌（构建脚本生成 32×32 PNG/ICO）。
-- [ ] **里程碑**：M1 托盘壳 + 子进程管理 + WebView 指向本地服务（Windows 先行）；
-      M2 单实例与开机自启、托盘菜单完善；M3 Linux（libwebkit2gtk-4.1）/macOS 适配与打包。
-- [ ] **验收**：关闭窗口仅隐藏；退出托盘菜单结束子进程并退出；`pbh.exe` 未就绪时窗口显示连接中提示并自动重载。
+      ② 系统托盘（显示主窗口 / 浏览器打开 WebUI / 查看实时日志 / 演练模式开关 / 重启服务 / 退出）；
+      ③ WebView 加载 `http://127.0.0.1:9898`（**复用上游 WebUI dist**，不重写前端）。
+- [x] **技术选型**：tauri v2（`tray-icon` feature，WebView2 系统组件）+ 单实例互斥（命名 Mutex +
+      端口探测）；托盘图标内嵌；`--pbh-path <pbh.exe>` 已存在服务时进入**附加模式**。
+- [x] **里程碑 M1**：托盘壳 + 子进程管理 + WebView 指向本地服务（Windows），
+      已随 `9.5.1-rs.1` 发布（产物含 `pbh-gui.exe` + `WebView2Loader.dll`）。
+- [ ] **里程碑 M2/M3（未做）**：开机自启、托盘菜单进一步完善、Linux（libwebkit2gtk-4.1）/macOS 适配与打包。
 
 ### 4.4 长时对跑基建（数十小时 ~ 数天）
 
