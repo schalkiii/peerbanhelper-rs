@@ -145,6 +145,8 @@ pub trait WebBackend: Send + Sync {
     // ---- metadata / general ----
     /// 安装 ID（首次启动生成并持久化）。
     fn installation_id(&self) -> String;
+    /// 更新访问令牌并**落盘**（OOBE 向导 `/api/oobe/init`；重启后保持生效）。
+    fn set_token(&self, token: &str) -> Result<(), String>;
     /// 匿名统计开关。
     fn analytics_enabled(&self) -> bool;
     /// 当前启用模块清单（manifest + checkModuleAvailable）。

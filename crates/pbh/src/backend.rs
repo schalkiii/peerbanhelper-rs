@@ -198,6 +198,13 @@ impl WebBackend for PbhBackend {
         self.install_id.clone()
     }
 
+    /// OOBE 向导设置访问令牌：更新内存配置并写回 `config.yml`（重启后保持）。
+    fn set_token(&self, token: &str) -> Result<(), String> {
+        let mut cfg = self.snapshot();
+        cfg.server.token = token.to_string();
+        self.save_config(&cfg)
+    }
+
     fn analytics_enabled(&self) -> bool {
         self.snapshot().analytics
     }

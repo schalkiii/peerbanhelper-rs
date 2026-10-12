@@ -49,6 +49,8 @@
 
     { "method": "GET", "path": "/api/downloaders", "shape": "array" },
     { "method": "POST", "path": "/api/downloaders/test", "shape": "any" },
+    { "method": "PATCH", "path": "/api/downloaders/dl-1", "shape": "any" },
+    { "method": "DELETE", "path": "/api/downloaders/dl-1", "shape": "any" },
 
     { "method": "GET", "path": "/api/peer/1.2.3.4", "shape": "object" },
     { "method": "GET", "path": "/api/peer/1.2.3.4/banHistory", "shape": "page" },

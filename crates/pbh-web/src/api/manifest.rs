@@ -77,9 +77,16 @@ pub async fn oobe_test_database_config(Json(_body): Json<Value>) -> Response {
 /// 自动的（访问令牌在首次启动时随机生成并写回配置、数据库固定内置 SQLite），
 /// 因此这里只落实**有实际效果的两项**：访问令牌与下载器；`btn` / `database` 忽略。
 pub async fn oobe_init(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    // 访问令牌：更新运行态（无落盘接口，重启后仍用配置里的令牌）
+    // 访问令牌：更新运行态 + 经后端写回 config.yml（重启后保持）
     if let Some(token) = body.get("token").and_then(|v| v.as_str()) {
         if !token.trim().is_empty() {
+            if let Err(e) = state.backend.set_token(token) {
+                return (
+                    StatusCode::OK,
+                    crate::std_resp(false, Some(&e), Value::Null),
+                )
+                    .into_response();
+            }
             if let Ok(mut current) = state.token.lock() {
                 *current = token.to_string();
             }

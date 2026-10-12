@@ -947,6 +947,9 @@ mod tests {
         fn installation_id(&self) -> String {
             "test-install".into()
         }
+        fn set_token(&self, _token: &str) -> Result<(), String> {
+            Ok(())
+        }
         fn analytics_enabled(&self) -> bool {
             true
         }
