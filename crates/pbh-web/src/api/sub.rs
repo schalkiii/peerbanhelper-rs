@@ -22,6 +22,9 @@ fn not_found() -> Response {
 }
 
 /// `GET /api/sub/`：订阅规则列表。
+///
+/// WebUI `getRuleList()` 的返回类型是 `CommonResponse<ruleBrief[]>`——**`data` 直接是数组**，
+/// 不能包成 `{rules, count}`：否则前端拿到对象后表格全空（表格列按数组项取值）。
 pub async fn list(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -30,9 +33,8 @@ pub async fn list(
         return not_found();
     };
     let rules = module.list_rules();
-    let data = json!({ "rules": rules, "count": rules.len() });
     let _ = params;
-    (StatusCode::OK, crate::std_resp(true, Some("OK"), data)).into_response()
+    (StatusCode::OK, crate::std_resp(true, Some("OK"), json!(rules))).into_response()
 }
 
 /// `PUT /api/sub/rule`：新增规则（body 为规则 JSON）。
@@ -153,6 +155,9 @@ pub async fn logs(
 }
 
 /// `GET /api/sub/interval`：轮询间隔（毫秒）。
+///
+/// WebUI `GetCheckInvervalSettings()` 的返回类型是 `CommonResponse<number>`——
+/// **`data` 是裸数字**，不能包成 `{interval: n}`。
 pub async fn interval_get(State(state): State<AppState>) -> Response {
     let Some(module) = state.sub_module.as_ref() else {
         return not_found();
@@ -160,18 +165,19 @@ pub async fn interval_get(State(state): State<AppState>) -> Response {
     let interval = module.interval();
     (
         StatusCode::OK,
-        crate::std_resp(true, Some("OK"), json!({ "interval": interval })),
+        crate::std_resp(true, Some("OK"), json!(interval)),
     )
         .into_response()
 }
 
-/// `PATCH /api/sub/interval`：设置轮询间隔（body: `{interval: 毫秒}`）。
+/// `PATCH /api/sub/interval`：设置轮询间隔（body: `{checkInterval: 毫秒}`，对齐 WebUI
+/// `SetCheckInterval` 提交的字段名）。
 pub async fn interval_patch(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let Some(module) = state.sub_module.as_ref() else {
         return not_found();
     };
     let interval = body
-        .get("interval")
+        .get("checkInterval")
         .and_then(|v| v.as_i64())
         .unwrap_or_default();
     match module.set_interval(interval) {

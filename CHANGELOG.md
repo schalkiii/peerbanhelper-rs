@@ -5,6 +5,38 @@
 
 ## [Unreleased]
 
+### fix(web): 修复统计/规则订阅/自定义脚本/实验性功能四个页面的契约错配
+
+WebUI（上游预构建 dist，**不在本仓库**）是按上游 Java 的响应契约写的；本轮四个问题
+全部是「端点缺失或 `data` 形状/字段名与前端期望不符」，前端没有报错位就表现为空白页。
+
+- **统计页「位置与运营商」`n.reduce is not a function`**：`GET /api/chart/geoIpInfo`
+  返回 `{city:{},isp:{},...}`（**对象**），而前端 `ispPie.vue` 的 `onSuccess` 只判
+  `if (data.data)` 后直接 `data.data[field].reduce(...)` ⇒ 对象没有 reduce，整页报错。
+  同时补上真实数据：新增加权 `Database::distinct_ips`（`bannedOnly` 取 `history.ip`、
+  否则取 `peer_records.address`），Web 层注入已有的 `GeoIpProvider`，按上游 `handleGeoIP`
+  逐 IP 查库聚合为 `KV[]`（按 value 降序）；未装 IP 库时返回四个空数组并标
+  `IPDB_NEED_INIT`，保证渲染为空而不是抛异常。
+- **规则订阅页面用 java 版配置显示为空**：`GET /api/sub/rules` 的 `data` 曾是
+  `{rules,count}` 对象（前端 `CommonResponse<ruleBrief[]>` 要求**数组**），且条目字段是
+  `id/name/url/entries`，与前端 `ruleBrief`（`ruleId/ruleName/subUrl/entCount/lastUpdate`）
+  全不对。现已对齐：`data` 为数组，字段按 `RuleSubInfoEntity`（`lastUpdate`/`entCount`
+  取 `rule_sub_info`）；`GET /api/sub/interval` 的 `data` 改为**裸数字**；
+  `PATCH /api/sub/interval` 改读 `checkInterval`；新增/更新改读 `ruleId/ruleName/subUrl`。
+- **自定义脚本页面为空**：缺整套 `/api/expression-engine/*` 端点，请求落到 `/api` 的
+  JSON 404。新增 `scripts`（分页 `{page,size,total,results}`）、`editable`、
+  `GET/PUT/DELETE /{id}`（body 为源码纯文本），脚本目录与引擎加载用同一解析规则，
+  并对 id 做路径穿越/后缀校验。
+- **启用实验性功能提示 api not found**：缺 `/api/laboratory/*`。新增 `experiments`
+  （`{labEnabled, experiments[]}`）、`PUT /experiment/{id}`、`POST /config`，
+  持久化到 `<config_dir>/laboratory.yml`，实验组按 `abs(installationId.hashCode() % 5)`
+  对齐上游 `Laboratory` 的灰度语义。
+
+- 新增测试：`expression_engine_script_endpoints_roundtrip`、
+  `laboratory_endpoints_expose_and_toggle_experiments`、
+  `sub_endpoints_return_bare_array_and_number`、`geo_ip_aggregates_distinct_banned_ips`，
+  并把 `chart_endpoints_response_shape` 的断言从「对象」收紧为「数组」。
+
 ### fix(web): 修复 SPA 子路由直接刷新时资源与 API 请求错配
 
 - **现象**：从 `/list`（封禁名单）等子路由直接刷新时，页面报「无法解析接口返回数据」，

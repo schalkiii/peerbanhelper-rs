@@ -13,11 +13,13 @@ pub mod charts;
 pub mod downloaders;
 pub mod general;
 pub mod ipblacklist;
+pub mod labs;
 pub mod logs;
 pub mod manifest;
 pub mod peers;
 pub mod pbhplus;
 pub mod push;
+pub mod script;
 pub mod statistics;
 pub mod sub;
 pub mod tasks;
@@ -149,6 +151,21 @@ pub fn api_routes() -> Router<crate::AppState> {
             "/sub/interval",
             get(sub::interval_get).patch(sub::interval_patch),
         )
+        // —— 自定义脚本（`/api/expression-engine/*`，对齐 WebUI `service/script.ts`）——
+        // 静态段（scripts / editable）必须先于 `/{id}` 注册：静态优先匹配，
+        // 否则名为 `editable` 的脚本会与 editable 端点撞名
+        .route("/expression-engine/scripts", get(script::list))
+        .route("/expression-engine/editable", get(script::editable))
+        .route(
+            "/expression-engine/{id}",
+            get(script::content)
+                .put(script::upsert)
+                .delete(script::remove),
+        )
+        // —— 实验性功能（`Laboratory`）——
+        .route("/laboratory/experiments", get(labs::experiments))
+        .route("/laboratory/experiment/{id}", put(labs::set_experiment))
+        .route("/laboratory/config", post(labs::set_config))
         // —— BTN / AutoSTUN 模块状态 ——
         .route("/modules/btn", get(btn::status))
         // —— IP 规则黑名单（设置页规则管理，对齐上游 IPBlackList 模块路由）——

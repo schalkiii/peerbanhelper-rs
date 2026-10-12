@@ -1317,6 +1317,50 @@ impl Database {
         Ok(buckets.into_iter().collect())
     }
 
+    /// GeoIP 图表数据源：时间窗口内去重后的 peer IP（对齐上游 `handleGeoIP` 的两条数据源）。
+    ///
+    /// - `banned_only=true` → 上游 `HistoryService.getDistinctIps`，取 `history.ip`，
+    ///   窗口两端为**闭区间**（与 [`Self::ban_trends`] 一致）；
+    /// - 否则 → 上游 `PeerRecordService.getDistinctIps`，取 `peer_records.address`，
+    ///   窗口左闭右开（与 [`Self::peer_first_seen_trend`] 一致）。
+    pub fn distinct_ips(
+        &self,
+        banned_only: bool,
+        start_ms: i64,
+        end_ms: i64,
+        downloader: Option<&str>,
+    ) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let sql = match (banned_only, downloader.is_some()) {
+            (true, true) => {
+                "SELECT DISTINCT ip FROM history
+                 WHERE ban_at >= ?1 AND ban_at <= ?2 AND downloader = ?3"
+            }
+            (true, false) => {
+                "SELECT DISTINCT ip FROM history WHERE ban_at >= ?1 AND ban_at <= ?2"
+            }
+            (false, true) => {
+                "SELECT DISTINCT address FROM peer_records
+                 WHERE first_time_seen >= ?1 AND first_time_seen < ?2 AND downloader = ?3"
+            }
+            (false, false) => {
+                "SELECT DISTINCT address FROM peer_records
+                 WHERE first_time_seen >= ?1 AND first_time_seen < ?2"
+            }
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let map_fn = |r: &rusqlite::Row| r.get::<_, String>(0);
+        let ips = match downloader {
+            Some(d) => stmt
+                .query_map(rusqlite::params![start_ms, end_ms, d], map_fn)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            None => stmt
+                .query_map(rusqlite::params![start_ms, end_ms], map_fn)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        };
+        Ok(ips)
+    }
+
     /// 字段统计（对齐上游 `/api/statistic/analysis/field` 的 `countOrSum` 两种模式）。
     ///
     /// `mode = "count"` 计数，`mode = "sum"` 求和。

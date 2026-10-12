@@ -268,7 +268,7 @@ peerbanhelper-rs/
 
 ## 验证
 
-- `cargo test --workspace`：**620+ 个测试全部通过**（单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
+- `cargo test --workspace`：**530+ 个测试全部通过**（单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
   L3 适配器 / L4 端到端 / 实机社区脚本判定）；`cargo clippy --workspace --all-targets -D warnings` 零警告
 - 行为等价性：mock 双跑（同一夹具分别喂给 Java/Rust，封禁集合逐 IP diff）与实机 dry-run 并行对跑
   （同配置/同下载器/同 GeoIP 库）均已验证，脚本见仓库根目录 `*_dualrun.ps1`

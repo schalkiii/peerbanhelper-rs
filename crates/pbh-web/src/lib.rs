@@ -80,6 +80,21 @@ pub struct AppState {
     pub btn_network: pbh_core::btn_transport::SharedBtnNetwork,
     /// 后台任务注册表（`GET /api/tasks/live`；对齐上游 `BackgroundTaskManager`）
     pub tasks: Arc<BackgroundTaskRegistry>,
+    /// GeoIP 数据源（`GET /api/chart/geoIpInfo`；未安装 IP 库时为 `None`）。
+    ///
+    /// 与 ban wave 的 `history.peer_geoip` 落库共用同一份 provider（对齐上游
+    /// `PBHChartController` 注入的 `IPDBManager`）：上游对每个去重 IP **实时查询**
+    /// IPDB 再聚合，而非读取落库 JSON——落库 JSON 只保留了精简字段，不足以还原
+    /// city/province/isp/region 四个维度。
+    pub geo: Option<Arc<dyn pbh_core::geoip::GeoIpProvider>>,
+    /// 自定义脚本目录（`GET/PUT/DELETE /api/expression-engine/*`）。
+    ///
+    /// 与 `expression-engine` 模块加载脚本用的是同一路径（见
+    /// `pbh_core::modules::expression_engine::resolve_scripts_dir`）。
+    pub scripts_dir: Option<PathBuf>,
+    /// `laboratory.yml` 路径（实验性功能 `/api/laboratory/*`；对齐上游
+    /// `Laboratory` 的 `<config_dir>/laboratory.yml`）。
+    pub lab_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -916,6 +931,9 @@ mod tests {
             sub_module: None,
             btn_network: Default::default(),
             tasks: Arc::new(BackgroundTaskRegistry::new()),
+            geo: None,
+            scripts_dir: None,
+            lab_path: None,
         }
     }
 
@@ -1029,6 +1047,72 @@ mod tests {
             .expect("响应体");
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, body)
+    }
+
+    /// 发一个带 Token 的任意方法请求（`body` 可为纯文本），返回 (状态码, JSON)。
+    ///
+    /// 脚本端点 `PUT /api/expression-engine/{id}` 的 body 是**源码文本而非 JSON**，
+    /// 因此这里不强制 `application/json`。
+    async fn send_json(
+        state: &AppState,
+        method: axum::http::Method,
+        uri: &str,
+        body: Option<String>,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Authorization", "Bearer test-token")
+            // `Json` 提取器要求该头；`Bytes` 提取器（脚本源码）不校验
+            .header("content-type", "application/json")
+            .body(body.map(Body::from).unwrap_or_else(Body::empty))
+            .expect("请求构造");
+        let response = build_router(state.clone())
+            .oneshot(request)
+            .await
+            .expect("路由调用");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("响应体");
+        let parsed: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, parsed)
+    }
+
+    /// 规则订阅测试替身：验证 `/api/sub/*` 的**响应形状**（不依赖真实规则文件/网络）。
+    struct TestSubModule;
+    impl crate::SubModule for TestSubModule {
+        fn list_rules(&self) -> Vec<Value> {
+            vec![json!({
+                "ruleId": "all-in-one",
+                "ruleName": "All",
+                "subUrl": "http://x/all.txt",
+                "enabled": true,
+                "lastUpdate": 100,
+                "entCount": 3,
+            })]
+        }
+        fn add_rule(&self, _rule: &Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn update_rule(&self, _id: &str, _rule: &Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove_rule(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn refresh_rule(&self, _id: Option<&str>) -> String {
+            String::new()
+        }
+        fn logs(&self, _page: i64, _size: i64) -> (i64, Vec<Value>) {
+            (0, vec![])
+        }
+        fn interval(&self) -> i64 {
+            14_400_000
+        }
+        fn set_interval(&self, _ms: i64) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     fn swarm_row(address: &str, last_time_seen_ms: i64) -> TrackedSwarmRow {
@@ -1850,13 +1934,19 @@ mod tests {
     #[tokio::test]
     async fn chart_endpoints_response_shape() {
         let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
-        // geoIpInfo：前端按四个 map 渲染（Rust 无 IP 库 ⇒ 空表，但字段必须存在）
+        // geoIpInfo：四个维度必须是 **KV 数组**——前端 `ispPie.vue` 的
+        // `onSuccess` 只判 `if (data.data)`，随后直接 `data.data[field].reduce(...)`，
+        // 返回对象会让整页报 `.reduce is not a function`（2026-10-12 生产问题）。
+        // 未安装 IP 库（geo=None）时返回四个空数组。
         let (_, body) = get_json(&state, "/api/chart/geoIpInfo").await;
         let data = body.get("data").expect("data 字段");
         for f in ["city", "isp", "province", "region"] {
+            let Some(field) = data.get(f) else {
+                panic!("geoIpInfo 缺 {f}")
+            };
             assert!(
-                data.get(f).and_then(|v| v.as_object()).is_some(),
-                "geoIpInfo 缺 {f}"
+                field.as_array().is_some(),
+                "geoIpInfo.{f} 必须是数组（前端要 .reduce），实际 {field}"
             );
         }
         // trend：两个趋势数组（trends.vue 读 connectedPeersTrend / bannedPeersTrend）
@@ -1873,6 +1963,321 @@ mod tests {
                 "{path} 的 data 必须是数组"
             );
         }
+    }
+
+    /// 自定义脚本端点（`custom-script` 页面）：列表分页 / 内容往返 / 删除 / 非法 id 拒绝。
+    ///
+    /// 这套端点此前**完全缺失**，页面会拿到 `/api` fallback 的 `API_NOT_FOUND` 且列表为空。
+    #[tokio::test]
+    async fn expression_engine_script_endpoints_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("pbh-scripts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        state.scripts_dir = Some(dir.clone());
+
+        // 端点必须存在（缺失时 /api 的 fallback 返回 API_NOT_FOUND + data:null）
+        let (status, body) = get_json(&state, "/api/expression-engine/scripts").await;
+        assert_eq!(status, StatusCode::OK, "scripts 端点缺失: {body}");
+        let data = body.get("data").expect("data 字段");
+        for f in ["page", "size", "total", "results"] {
+            assert!(data.get(f).is_some(), "scripts 缺分页字段 {f}");
+        }
+        assert!(data
+            .get("results")
+            .and_then(|v| v.as_array())
+            .expect("results 必须是数组")
+            .is_empty());
+
+        // editable：目录可写
+        let (status, body) = get_json(&state, "/api/expression-engine/editable").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["data"]["editable"].as_bool().unwrap_or(false),
+            "临时目录应可写"
+        );
+
+        // PUT（body 为源码文本）→ GET 回读 → 列表出现 → DELETE
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::PUT,
+            "/api/expression-engine/demo.av",
+            Some("return 1;".to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "PUT 脚本失败");
+        let (_, body) = get_json(&state, "/api/expression-engine/demo.av").await;
+        assert_eq!(body["data"].as_str(), Some("return 1;"), "脚本内容往返");
+
+        let (_, body) = get_json(&state, "/api/expression-engine/scripts").await;
+        let results = body["data"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["id"].as_str(), Some("demo.av"));
+        assert_eq!(results[0]["name"].as_str(), Some("demo"));
+        assert!(results[0]["version"].is_string(), "version 必填（前端渲染）");
+        assert_eq!(body["data"]["total"], 1);
+
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::DELETE,
+            "/api/expression-engine/demo.av",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(&state, "/api/expression-engine/scripts").await;
+        assert_eq!(body["data"]["total"], 0);
+
+        // 非法 id 必须被拒绝（含 `..` 的路径穿越、非 .av 后缀）
+        for bad in ["/api/expression-engine/..evil.av", "/api/expression-engine/evil.txt"] {
+            let (status, _) = send_json(
+                &state,
+                axum::http::Method::PUT,
+                bad,
+                Some("x".to_string()),
+            )
+            .await;
+            assert_ne!(status, StatusCode::OK, "{bad} 必须被拒绝");
+        }
+        assert!(
+            !dir.join("..evil.av").exists() && !dir.join("evil.txt").exists(),
+            "非法 id 不得落盘"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 实验性功能端点（`laboratory`）：清单结构 + 总开关/单项开关持久化。
+    ///
+    /// 缺端点时「启用实验性功能」会返回 API_NOT_FOUND。
+    #[tokio::test]
+    async fn laboratory_endpoints_expose_and_toggle_experiments() {
+        let dir = std::env::temp_dir().join(format!("pbh-lab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lab = dir.join("laboratory.yml");
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        state.lab_path = Some(lab.clone());
+
+        let (status, body) = get_json(&state, "/api/laboratory/experiments").await;
+        assert_eq!(status, StatusCode::OK, "laboratory 端点缺失: {body}");
+        let data = body["data"].clone();
+        assert!(data.get("labEnabled").is_some(), "缺 labEnabled");
+        let experiments = data
+            .get("experiments")
+            .and_then(|v| v.as_array())
+            .expect("experiments 必须是数组");
+        assert!(!experiments.is_empty(), "至少应注册一个实验");
+        for item in experiments {
+            for f in ["id", "title", "description", "activated"] {
+                assert!(item.get(f).is_some(), "实验项缺 {f}");
+            }
+        }
+
+        // 总开关关闭 -> 所有实验 activated 恒 false（对齐上游 `isExperimentActivated`）
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::POST,
+            "/api/laboratory/config",
+            Some(r#"{"enabled":false}"#.to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = get_json(&state, "/api/laboratory/experiments").await;
+        assert_eq!(body["data"]["labEnabled"], false);
+        for item in body["data"]["experiments"].as_array().unwrap() {
+            assert_eq!(item["activated"], false, "总开关关闭时不得激活");
+        }
+
+        // 总开关打开 + 打开单个实验
+        send_json(
+            &state,
+            axum::http::Method::POST,
+            "/api/laboratory/config",
+            Some(r#"{"enabled":true}"#.to_string()),
+        )
+        .await;
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::PUT,
+            "/api/laboratory/experiment/sqlite_vacuum",
+            Some(r#"{"status":true}"#.to_string()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "设置实验失败");
+        let (_, body) = get_json(&state, "/api/laboratory/experiments").await;
+        let sqlite = body["data"]["experiments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "sqlite_vacuum")
+            .expect("sqlite_vacuum 实验应注册");
+        assert_eq!(sqlite["activated"], true);
+
+        // 未知实验 id 必须报错而非静默成功
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::PUT,
+            "/api/laboratory/experiment/no-such-experiment",
+            Some(r#"{"status":true}"#.to_string()),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "未知实验 id 必须被拒绝");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 规则订阅端点：`rules` 的 data 必须是**数组**，`interval` 的 data 必须是**裸数字**。
+    ///
+    /// 此前 `rules` 返回 `{rules,count}` 对象、字段名为 `id/name/url/entries`，
+    /// 与前端 `ruleBrief`（`ruleId/ruleName/subUrl/entCount/lastUpdate`）全不对，
+    /// 页面表现为「用 java 版配置打开也是空的」。
+    #[tokio::test]
+    async fn sub_endpoints_return_bare_array_and_number() {
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        state.sub_module = Some(Arc::new(TestSubModule));
+
+        let (status, body) = get_json(&state, "/api/sub/rules").await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body.get("data").expect("data 字段");
+        assert!(
+            data.as_array().is_some(),
+            "sub/rules 的 data 必须是数组（前端 CommonResponse<ruleBrief[]>），实际 {data}"
+        );
+        let rules = data.as_array().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["ruleId"], "all-in-one");
+        assert_eq!(rules[0]["ruleName"], "All");
+        assert_eq!(rules[0]["subUrl"], "http://x/all.txt");
+        assert_eq!(rules[0]["entCount"], 3);
+        assert_eq!(rules[0]["lastUpdate"], 100);
+
+        let (status, body) = get_json(&state, "/api/sub/interval").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["data"].as_i64(),
+            Some(14_400_000),
+            "sub/interval 的 data 必须是裸数字，实际 {}",
+            body["data"]
+        );
+    }
+
+    /// `geoIpInfo` 的真实聚合：对每个去重 IP 查库，四个维度输出 KV 数组（按 value 降序）。
+    #[tokio::test]
+    async fn geo_ip_aggregates_distinct_banned_ips() {
+        use pbh_core::geoip::{
+            CityData, CountryData, IpGeoData, NetworkData, StaticGeoIp,
+        };
+        use pbh_core::model::TorrentData;
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let record = |ip: &str, ban_at_ms: i64| pbh_db::HistoryRecord {
+            ban_at_ms,
+            unban_at_ms: 0,
+            ip: ip.to_string(),
+            port: 6881,
+            peer_id: Some("peer".into()),
+            peer_client_name: Some("client".into()),
+            peer_uploaded: Some(1),
+            peer_downloaded: Some(2),
+            peer_progress: 0.1,
+            downloader_progress: 0.2,
+            torrent: TorrentData {
+                hash: "hash-1".into(),
+                name: "t".into(),
+                progress: 1.0,
+                total_size: 1_000_000,
+                piece_size: 0,
+                pieces_have: 0,
+                completed_override: None,
+                dlspeed: 0,
+                upspeed: 0,
+                is_private: Some(false),
+            },
+            module_name: "peer-id-blacklist".into(),
+            rule_name: r#"{"key":"R","params":[]}"#.into(),
+            description: r#"{"key":"D","params":[]}"#.into(),
+            flags: Some("U".into()),
+            downloader: "qb".into(),
+            structured_data: None,
+            peer_geoip: None,
+        };
+        // 三个去重 IP：两个有地理信息，一个查不到（计为 N/A）
+        for (ip, ms) in [("1.2.3.4", 1_000i64), ("5.6.7.8", 2_000), ("9.9.9.9", 3_000)] {
+            db.insert_history(&record(ip, ms)).unwrap();
+        }
+
+        let mut geo = StaticGeoIp::new();
+        geo.insert(
+            "1.2.3.4".parse().unwrap(),
+            IpGeoData {
+                city: Some(CityData {
+                    name: Some("Beijing".into()),
+                    cn_province: Some("北京市".into()),
+                    cn_city: Some("北京".into()),
+                    ..Default::default()
+                }),
+                country: Some(CountryData {
+                    name: Some("中国".into()),
+                    iso: None,
+                }),
+                network: Some(NetworkData {
+                    isp: Some("电信".into()),
+                    net_type: None,
+                }),
+                as_data: None,
+            },
+        );
+        geo.insert(
+            "5.6.7.8".parse().unwrap(),
+            IpGeoData {
+                city: Some(CityData {
+                    cn_province: Some("上海市".into()),
+                    cn_city: Some("上海".into()),
+                    ..Default::default()
+                }),
+                country: Some(CountryData {
+                    name: Some("中国".into()),
+                    iso: None,
+                }),
+                network: Some(NetworkData {
+                    isp: Some("联通".into()),
+                    net_type: None,
+                }),
+                as_data: None,
+            },
+        );
+
+        let mut state = test_state(db);
+        state.geo = Some(Arc::new(geo));
+        let (status, body) = get_json(
+            &state,
+            "/api/chart/geoIpInfo?bannedOnly=true&startAt=0&endAt=10000",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let data = body["data"].clone();
+
+        // region：中国 2 / N/A 1，按 value 降序
+        let region = data["region"].as_array().expect("region 数组");
+        assert_eq!(region.len(), 2);
+        assert_eq!(region[0], json!({ "key": "中国", "value": 2 }));
+        assert_eq!(region[1], json!({ "key": "N/A", "value": 1 }));
+
+        // city：上游是 `cnProvince + " " + cnCity`
+        let city = data["city"].as_array().expect("city 数组");
+        let keys: Vec<&str> = city.iter().map(|kv| kv["key"].as_str().unwrap()).collect();
+        assert!(keys.contains(&"北京市 北京"), "city 取值: {keys:?}");
+        assert!(keys.contains(&"上海市 上海"));
+        assert!(keys.contains(&"N/A"));
+
+        let isp = data["isp"].as_array().expect("isp 数组");
+        let isp_keys: Vec<&str> = isp.iter().map(|kv| kv["key"].as_str().unwrap()).collect();
+        assert!(isp_keys.contains(&"电信") && isp_keys.contains(&"联通"));
+
+        let province = data["province"].as_array().expect("province 数组");
+        let p_keys: Vec<&str> = province.iter().map(|kv| kv["key"].as_str().unwrap()).collect();
+        assert!(p_keys.contains(&"北京市") && p_keys.contains(&"上海市"));
     }
 
     #[tokio::test]

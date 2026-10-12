@@ -487,6 +487,20 @@ async fn main() -> anyhow::Result<()> {
         },
         btn_network: btn_network_slot.clone(),
         tasks: background_tasks.clone(),
+        // 与 ban wave 的 `history.peer_geoip` 落库共用同一份 GeoIP provider
+        geo: geo.clone(),
+        // 脚本管理目录与 `expression-engine` 模块加载脚本用同一解析规则
+        scripts_dir: Some(
+            pbh_core::modules::expression_engine::resolve_scripts_dir(
+                cfg.profile
+                    .module
+                    .expression_engine
+                    .as_ref()
+                    .and_then(|e| e.scripts_dir.as_deref()),
+            ),
+        ),
+        // `laboratory.yml` 与 `config.yml` 同目录（对齐上游 `<config_dir>/laboratory.yml`）
+        lab_path: cfg_path.parent().map(|p| p.join("laboratory.yml")),
     };
     let app = build_router(state);
     let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;

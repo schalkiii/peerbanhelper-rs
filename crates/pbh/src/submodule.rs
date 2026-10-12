@@ -102,24 +102,34 @@ impl SubModule for RuleSubBackend {
             )
             .map(|m| m.entry_counts().into_iter().collect())
             .unwrap_or_default();
+        // 字段对齐上游 `RuleSubInfoEntity`（WebUI `ruleBrief`）：
+        // `ruleId/ruleName/subUrl/enabled/lastUpdate/entCount`。
+        // 上游 `list()` 是「按 config 的 ruleId 逐个读 DB 实体」，这里同样以 config 为准、
+        // 用 `rule_sub_info` 覆盖 lastUpdate/entCount（未刷新过的规则回退到 config 与内存计数）。
         rules
             .rules
             .iter()
             .map(|(id, rule)| {
+                let info = self.db.get_rule_sub_info(id).ok().flatten();
                 json!({
-                    "id": id,
-                    "name": rule.name,
-                    "url": rule.url,
+                    "ruleId": id,
+                    "ruleName": rule.name,
+                    "subUrl": rule.url,
                     "enabled": rule.enabled,
-                    "entries": counts.get(id).copied().unwrap_or(0),
+                    "lastUpdate": info.as_ref().and_then(|i| i.last_update).unwrap_or(0),
+                    "entCount": info
+                        .as_ref()
+                        .and_then(|i| i.ent_count)
+                        .unwrap_or_else(|| counts.get(id).copied().unwrap_or(0) as i64),
                 })
             })
             .collect()
     }
 
     fn add_rule(&self, rule: &Value) -> Result<(), String> {
+        // WebUI `AddRuleItem` 提交 `{ruleId, ruleName, subUrl}`（上游 `SubInfoDTO` 同形）
         let id = rule
-            .get("id")
+            .get("ruleId")
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| "缺少规则 ID".to_string())?
@@ -145,10 +155,11 @@ impl SubModule for RuleSubBackend {
                 .rules
                 .get_mut(id)
                 .ok_or_else(|| format!("规则 {id} 不存在"))?;
-            if let Some(name) = rule.get("name").and_then(|v| v.as_str()) {
+            // WebUI `UpdateRuleItem` 提交 `{ruleName, subUrl}`；`ToggleRuleEnable` 提交 `{enabled}`
+            if let Some(name) = rule.get("ruleName").and_then(|v| v.as_str()) {
                 existing.name = name.to_string();
             }
-            if let Some(url) = rule.get("url").and_then(|v| v.as_str()) {
+            if let Some(url) = rule.get("subUrl").and_then(|v| v.as_str()) {
                 existing.url = url.to_string();
             }
             if let Some(enabled) = rule.get("enabled").and_then(|v| v.as_bool()) {
@@ -221,7 +232,7 @@ impl SubModule for RuleSubBackend {
     }
 }
 
-/// 从 Web 请求体解析单条订阅配置（与上游 `RuleSubscribe` 实体同形）。
+/// 从 Web 请求体解析单条订阅配置（字段对齐上游 `SubInfoDTO`：`ruleId/ruleName/subUrl`）。
 fn parse_subscription(rule: &Value) -> Result<IpRuleSubscriptionConfig, String> {
     Ok(IpRuleSubscriptionConfig {
         enabled: rule
@@ -229,12 +240,12 @@ fn parse_subscription(rule: &Value) -> Result<IpRuleSubscriptionConfig, String> 
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
         name: rule
-            .get("name")
+            .get("ruleName")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
         url: rule
-            .get("url")
+            .get("subUrl")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "缺少订阅 URL".to_string())?
             .to_string(),

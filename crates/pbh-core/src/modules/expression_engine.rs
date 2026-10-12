@@ -46,7 +46,10 @@ pub struct ExpressionEngine {
 }
 
 /// 解析脚本目录：显式配置优先；其次 `PBH_DATA_DIR/scripts`；最后回退 `data/scripts`。
-fn resolve_scripts_dir(explicit: Option<&str>) -> PathBuf {
+///
+/// 公开给脚本管理端点复用——**管理（增删改）与引擎加载必须解析到同一目录**，
+/// 否则会出现「界面上保存了脚本、引擎却加载不到」的偏差。
+pub fn resolve_scripts_dir(explicit: Option<&str>) -> PathBuf {
     if let Some(d) = explicit {
         return PathBuf::from(d);
     }
