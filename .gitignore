@@ -5,8 +5,10 @@
 # 本地运行数据（配置、数据库、订阅缓存、GeoIP 库）
 /data/
 
-# 会话日志（构建/clippy/test 输出）
+# 会话日志（构建/clippy/test 输出）；`*.log.err` 是长跑采样的 stderr 重定向产物，
+# `*.log` 匹配不到它，曾因此被误提交进仓库（2026-10-13 清理）
 *.log
+*.log.err
 
 # 长跑采样输出（运行时产物，脚本默认落在仓库根目录）
 longrun_samples.jsonl

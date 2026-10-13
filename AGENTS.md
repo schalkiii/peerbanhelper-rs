@@ -76,6 +76,9 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
 - pending-6（36h 长跑冻结）已降级观察项：修复后长跑与生产无真冻结复现；
   wave 全链路 phase 打点保留为下次冻结的定位手段
 - 工作区：`target/live/` 历史对跑归档（0.64 GB）与 `probe_java_db.py` 已于 2026-10-11
+  经用户确认删除；`gen_bench_fixture.ps1`（无文档引用的早期基准脚本）与
+  `longrun_pbh.log.err`（0 字节，被误提交入库）已于 2026-10-13 经用户确认删除，
+  `.gitignore` 同步补 `*.log.err` 防复发
   经用户确认删除
 
 ## 下一步候选
