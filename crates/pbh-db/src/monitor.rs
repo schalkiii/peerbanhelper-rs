@@ -1031,7 +1031,7 @@ fn map_metrics_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<MetricsTrackRo
 /// 该列仍是 TEXT，按 `f64` 取会 `Invalid column type Text`，使
 /// `GET /api/modules/swarm-tracking/details` 返回 500（2026-10-11 生产缺陷）。
 /// 这里先按数值读，失败再按文本解析（与 [`text_like`] 同一思路）。
-fn real_like(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64> {
+pub(crate) fn real_like(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<f64> {
     match row.get::<_, f64>(index) {
         Ok(v) => Ok(v),
         Err(_) => {

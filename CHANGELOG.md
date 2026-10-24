@@ -76,6 +76,9 @@
   `downloaders:`，`profile.yml` 的未知段同样保留。
 - 上游 `persist.vacuum-interval-days` 的启动 VACUUM 在 v9.5.1 中**调用被注释**
   （仅实验室手动实验），故不实现，避免与上游行为不一致。
+- **BTN submit_swarm 兼容 Java 迁移库**：上游手误把 `tracked_swarm.peer_progress`
+  建成 `TEXT`，此前按 `f64` 读取导致每轮 `submit_swarm 数据源查询失败`（生产 WARN）。
+  改为 REAL 优先、文本回退（复用 `real_like`），并补 TEXT 列回归测试。
 
 ### fix: 撤销 PCB「每 IP 副本」偏差
 

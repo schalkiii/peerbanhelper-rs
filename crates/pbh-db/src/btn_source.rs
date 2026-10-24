@@ -23,6 +23,7 @@ use pbh_core::model::TorrentData;
 use rusqlite::params;
 use tracing::warn;
 
+use crate::monitor::real_like;
 use crate::Database;
 
 /// `HistoryEntity`（表 `history`）的一行：[`Database::insert_history`] 的输入。
@@ -194,10 +195,12 @@ impl Database {
                 torrent_is_private: row.get::<_, Option<i64>>(4)?.map(|v| v != 0),
                 torrent_size: row.get(5)?,
                 downloader: row.get(6)?,
-                downloader_progress: row.get(7)?,
+                // Java 迁移库把 `peer_progress` 建成 TEXT（手误）；保留 REAL 优先、
+                // 文本回退的读取方式，避免 BTN submit_swarm 持续失败。
+                downloader_progress: real_like(row, 7)?,
                 peer_id: row.get(8)?,
                 peer_client_name: row.get(9)?,
-                peer_progress: row.get(10)?,
+                peer_progress: real_like(row, 10)?,
                 // 上游 `BtnSwarm.from`：`toPeerTraffic ← uploaded`、`fromPeerTraffic ← downloaded`
                 to_peer_traffic: row.get(11)?,
                 to_peer_traffic_offset: row.get(12)?,
@@ -559,5 +562,44 @@ mod tests {
         let source = source(&db);
         assert!(source.legacy_peer_snapshot().is_empty());
         assert!(source.legacy_ban_snapshot().is_empty());
+    }
+
+    /// Java 迁移库把 `tracked_swarm.peer_progress` 建成 TEXT：submit_swarm 必须按
+    /// REAL 优先、文本回退读取，不能整页查询失败（2026-10-25 生产 WARN 回归）。
+    #[test]
+    fn swarm_history_reads_text_peer_progress_from_java_migrated_schema() {
+        let db = db();
+        {
+            let conn = db.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute_batch(
+                "DROP TABLE tracked_swarm;
+                 CREATE TABLE tracked_swarm (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                     ip TEXT NOT NULL, port INTEGER NOT NULL, info_hash TEXT NOT NULL,
+                     torrent_is_private INTEGER NULL, torrent_size INTEGER NOT NULL,
+                     downloader TEXT NOT NULL, downloader_progress REAL NOT NULL,
+                     peer_id TEXT NULL, client_name TEXT NULL,
+                     peer_progress TEXT NOT NULL,
+                     uploaded INTEGER NOT NULL, uploaded_offset INTEGER NOT NULL,
+                     upload_speed INTEGER NOT NULL, downloaded INTEGER NOT NULL,
+                     downloaded_offset INTEGER NOT NULL, download_speed INTEGER NOT NULL,
+                     last_flags TEXT NULL, first_time_seen INTEGER NOT NULL,
+                     last_time_seen INTEGER NOT NULL, download_speed_max INTEGER NOT NULL,
+                     upload_speed_max INTEGER NOT NULL
+                 );
+                 INSERT INTO tracked_swarm
+                     (ip, port, info_hash, torrent_is_private, torrent_size, downloader,
+                      downloader_progress, peer_id, client_name, peer_progress, uploaded,
+                      uploaded_offset, upload_speed, downloaded, downloaded_offset,
+                      download_speed, last_flags, first_time_seen, last_time_seen,
+                      download_speed_max, upload_speed_max)
+                 VALUES ('1.2.3.4', 6881, 'hash', 0, 1024, 'qb', 0.5, 'peer', 'client',
+                         '0.25', 10, 1, 2, 20, 2, 3, 'U', 100, 200, 4, 5);",
+            )
+            .unwrap();
+        }
+        let rows = db.page_swarm_history(0, 0, 10).expect("TEXT 列应可读");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].peer_progress, 0.25);
     }
 }

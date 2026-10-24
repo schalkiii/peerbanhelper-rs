@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **27 个测试目标、644 个用例**。运行：
+> `cargo test --workspace -- --list`，共 **27 个测试目标、645 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -204,6 +204,7 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | 配置保存保留未知键 + `client` 布局转换 | `pbh/src/config.rs::tests::save_preserves_unknown_keys_and_converts_upstream_client_layout` |
 | 下载器探测识别（Transmission/qBittorrent/非下载器） | `pbh-downloader/src/discovery.rs::tests` |
 | live snapshot 读写与清空 | `pbh-core/src/live.rs::tests` |
+| BTN submit_swarm 读取 Java 迁移库的 `peer_progress TEXT` 列 | `pbh-db/src/btn_source.rs::tests::swarm_history_reads_text_peer_progress_from_java_migrated_schema` |
 
 > 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口，测试耗时
 > 约 8–14s；这是端点行为的一部分（上游同样扫描监听端口）。
