@@ -111,7 +111,7 @@ release）窗口 11.3h 对账——**module-mismatch 为 0**（修复前 26 条�
   **IPv6 同段共享 range 实体**（同段其它 IP 的增量也计入 max）下**虚高**，导致
   excessive 误封。上游公式相同（`ProgressCheatBlocker.java:236`），但 Java 对同 IP
   同输入不封——**需对照两侧 tracking 序列与 torrent 维度**定位偏差点。
-  修复（两处，2026-10-06）：① on_unban 对齐上游——保留内存判定基线（last_report_uploaded），仅由 wave 层删 DB 行；② **RangeKey 加 ip 分量**（⚠️ **这是已知偏差，不是上游对齐**：Java 的缓存键是 `CacheKeyPrefix(downloader, torrentId, prefix)`，见 `ProgressCheatBlocker.java:469`；第 220 行的 5 元组只是 `task.setComment` 的日志字符串）——range 实体改为「每 IP 独立副本」而非同段共享，持久化加载跳过 range 行（无 ip 列无法还原副本键，重启后 range 从零重计）。该偏差已在 PLAN §4.2 登记；恢复上游共享键会改变封禁决策，需实机双跑复验后再决定。新增单元回归 pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded。修复后 pcb_excessive 对跑复验：.92 不再误封（仅 fast test 全量重放，与 Java 一致），.91（真 excessive 2G）仍正常封禁。
+  修复（两处，2026-10-06）：① on_unban 对齐上游——保留内存判定基线（last_report_uploaded），仅由 wave 层删 DB 行；② RangeKey 曾被改为含 ip 分量（每 IP 副本）。**2026-10-25 复核后已撤销 ②**：Java 的缓存键是 `CacheKeyPrefix(downloader, torrentId, prefix)`（`ProgressCheatBlocker.java:469`；第 220 行的 5 元组只是 `task.setComment` 的日志字符串），上游为同前缀共享实体；本移植已恢复共享键并重新加载 `pcb_range` 行，新增 `pcb_shares_range_entity_across_ips_in_same_prefix` 锁定该语义。另保留单元回归 pcb_fast_test_then_excessive_does_not_double_count_constant_uploaded。修复后 pcb_excessive 对跑复验：.92 不再误封（仅 fast test 全量重放，与 Java 一致），.91（真 excessive 2G）仍正常封禁。
 - **module-mismatch 26 条**：全部集中在 `240e:f7:c000:311::/56` 多拨重灾段，
   **两侧都封了这些 IP**（IP 级一致），仅归因模块不同（Java=AutoRangeBan 为主、
   Rust=MultiDialingBlocker 为主，双向少数）——多拨与连锁在同段交替先触发的
@@ -197,6 +197,16 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | IP 黑名单 `netType` 双形态读取 + camelCase/`datacenter` 往返 | `pbh-web/src/api/ipblacklist.rs::tests::net_type_*` |
 | `ip/test` 单 IP 与 IPv4 地址总数口径 | `pbh-web/src/api/ipblacklist.rs::tests::ip_test_*` |
 | WebUI 端点清单补 `PUT /api/downloaders` 与 `…/torrent/{id}/peers` | `webui_contract_all_endpoints_exist_and_match_shape` |
+| PCB 同 /56 不同 IP 共享 range 计数器 | `pbh-golden/tests/l2_modules.rs::pcb_shares_range_entity_across_ips_in_same_prefix` |
+| ExternalSwitch 环境变量/整型回退 | `pbh-core/src/external_switch.rs::tests` |
+| PTR 服务器解析与禁用态 | `pbh-core/src/ptr.rs::tests` |
+| 代理环境变量应用 | `pbh-core/src/proxy.rs::tests` |
+| 配置保存保留未知键 + `client` 布局转换 | `pbh/src/config.rs::tests::save_preserves_unknown_keys_and_converts_upstream_client_layout` |
+| 下载器探测识别（Transmission/qBittorrent/非下载器） | `pbh-downloader/src/discovery.rs::tests` |
+| live snapshot 读写与清空 | `pbh-core/src/live.rs::tests` |
+
+> 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口，测试耗时
+> 约 8–14s；这是端点行为的一部分（上游同样扫描监听端口）。
 
 ## 5. 生产部署替代 Java 版评估（2026-09-25）
 

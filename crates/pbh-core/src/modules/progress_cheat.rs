@@ -157,15 +157,11 @@ impl PcbPersistRow {
     }
 }
 
-/// 前缀实体键：`(downloader, torrent, prefix, ip)`。
-///
-/// **与上游的已知偏差（需在 PLAN §4.2 登记）**：上游 `CacheKeyPrefix(downloader,
-/// torrentId, prefix)` 是同前缀**共享**实体（`ProgressCheatBlocker.java:469`；
-/// 第 220 行的 5 元组只是 `task.setComment` 的日志字符串，不是缓存键）。本移植按
-/// 10.9 天对跑的 46 行 excessive 误封改为「每 IP 独立副本」，持久化仍按 prefix 写入
-/// （flush 时后写覆盖 `pcb_range` 的同一行）。恢复共享键会改变封禁决策，需实机双跑
-/// 验证后再决定。
-type RangeKey = (String, String, String, String);
+/// 前缀实体键：`(downloader, torrent, prefix)` —— 对齐上游 `CacheKeyPrefix`
+/// （`ProgressCheatBlocker.java:469`：同前缀的不同 IP **共享**同一个 range 实体，
+/// 上传增量累加到同一计数器）。第 220 行的 5 元组只是 `task.setComment` 的日志字符串，
+/// 不是缓存键。
+type RangeKey = (String, String, String);
 /// IP 实体键：`(downloader, torrent, ip)` —— 对齐 Java `CacheKeyAddr`。
 ///
 /// 注意：**上游的键不含端口**。若把端口计入键，同一 IP 的不同端口会被当作不同实体，
@@ -202,20 +198,18 @@ impl PcbStore {
 
     /// 从持久化行恢复状态（对齐 `loadFromDatabase` 命中数据库的分支）。
     ///
-    /// range 行只按 prefix 持久化（无 ip 列），而运行态 RangeKey 含 ip 分量——
-    /// 无法还原 per-IP 副本键，故 **跳过 range 行**：重启后 range 从零重计
-    /// （对齐上游 addrCache 180s TTL 过期后重载的行为），判定连续性由 addr 行
-    /// （含 `last_report_uploaded` 基线）保障。
+    /// range 行按 prefix 持久化，运行态 `RangeKey` 同样只含 prefix —— 直接还原，
+    /// 重启后同前缀的上传增量累计不会丢失（对齐上游 `pcb_range` 落库/重载语义）。
     pub fn load(&mut self, rows: impl IntoIterator<Item = PcbPersistRow>) {
         for row in rows {
             let entity = row.to_entity();
+            let key = (row.downloader_id, row.torrent_id, row.key);
             match row.kind {
                 PcbEntityKind::Addr => {
-                    self.addr
-                        .insert((row.downloader_id, row.torrent_id, row.key), entity);
+                    self.addr.insert(key, entity);
                 }
                 PcbEntityKind::Range => {
-                    // 键含 ip 分量而持久化行无 ip，跳过（见方法注释）
+                    self.range.insert(key, entity);
                 }
             }
         }
@@ -224,7 +218,7 @@ impl PcbStore {
     /// 取出并清除所有「自上次落库后变更过」的实体（对齐 `batchFlushBackDatabase*` 的 `isDirty` 过滤）。
     pub fn dirty_rows(&mut self) -> Vec<PcbPersistRow> {
         let mut out = Vec::new();
-        for ((dl, torrent, key, _ip), entity) in self.range.iter_mut() {
+        for ((dl, torrent, key), entity) in self.range.iter_mut() {
             if entity.dirty {
                 out.push(PcbPersistRow::from_entity(
                     PcbEntityKind::Range,
@@ -384,13 +378,12 @@ impl RuleModule for ProgressCheatBlocker {
 
         let prefix_string = prefix_block(&peer.ip, c.ipv4_prefix_length, c.ipv6_prefix_length)
             .unwrap_or_else(|| peer.ip.clone());
-        // 已知偏差：range 实体为「每 IP 独立副本」而非上游的同段共享（见 RangeKey
-        // 文档注释）。DB 仍按 prefix 行存储（`pcb_range`），副本 flush 时后写覆盖。
+        // range 实体按 `(downloader, torrent, prefix)` 共享（对齐上游 `CacheKeyPrefix`），
+        // 同前缀不同 IP 的上传增量累加到同一计数器。
         let range_key = (
             downloader_id.to_string(),
             torrent.id().to_string(),
             prefix_string,
-            peer.ip.clone(),
         );
         let addr_key = (
             downloader_id.to_string(),
@@ -536,7 +529,12 @@ impl ProgressCheatBlocker {
                         ),
                     );
                 }
-            } else if completed_size > 0 && computed_uploaded > completed_size {
+            } else if !crate::external_switch::boolean(
+                "pbh.pcb.disable-completed-excessive",
+                false,
+            ) && completed_size > 0
+                && computed_uploaded > completed_size
+            {
                 let threshold = (computed_completed_size.max(c.torrent_minimum_size) as f64
                     * c.excessive_threshold) as i64;
                 if computed_uploaded > threshold {

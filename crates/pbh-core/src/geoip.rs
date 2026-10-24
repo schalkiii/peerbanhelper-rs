@@ -322,33 +322,10 @@ pub const SWITCH_USER_LOCALE: &str = "pbh.userLocale";
 pub const DEFAULT_GEOIP_CACHE_TIMEOUT_MS: i64 = 300_000;
 pub const DEFAULT_GEOIP_CACHE_SIZE: u32 = 300;
 
-/// 对齐 `ExternalSwitch.parse`：环境变量（键名 `小写点分键` → `大写下划线`）。
-///
-/// Java 侧还会先查系统属性、并支持 `--key=value` 启动参数；本移植版只保留环境变量一级，
-/// 键名转换规则与上游 `args.replace(".", "_").replace("-", "_").toUpperCase(Locale.ROOT)` 一致。
-pub fn external_switch(key: &str) -> Option<String> {
-    let env_key = key.replace(['.', '-'], "_").to_uppercase();
-    match std::env::var(env_key) {
-        Ok(value) if !value.is_empty() => Some(value),
-        _ => None,
-    }
-}
-
-/// 对齐 `ExternalSwitch.parseBoolean`
-pub fn external_switch_bool(key: &str, def: bool) -> bool {
-    match external_switch(key) {
-        // Java `Boolean.parseBoolean`：仅 "true"（忽略大小写）为真
-        Some(value) => value.eq_ignore_ascii_case("true"),
-        None => def,
-    }
-}
-
-/// 对齐 `ExternalSwitch.parseInt`
-pub fn external_switch_i64(key: &str, def: i64) -> i64 {
-    external_switch(key)
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .unwrap_or(def)
-}
+/// 兼容旧调用点：统一转发到 [`crate::external_switch`]（环境变量 + 启动参数）。
+pub use crate::external_switch::{
+    boolean as external_switch_bool, integer as external_switch_i64, parse as external_switch,
+};
 
 /// `IPDBManager` 构造函数的开关：为真时完全不加载 GeoIP 数据库（四维度全部不命中）
 pub fn geoip_force_disabled() -> bool {

@@ -5,7 +5,10 @@
 //! 本阶段把两者合并到同一个 `config.yml` 的 `profile:` 段，便于单文件部署。
 
 use pbh_core::btn_transport::BtnNetworkConfig;
-use pbh_core::config::{IpDatabaseConfig, ProfileConfig};
+use pbh_core::config::{
+    IpDatabaseConfig, LookupConfig, PerformanceConfig, ProfileConfig, ProxyConfig,
+    ResolversConfig,
+};
 use pbh_core::remap::{BanlistRemapping, IpRemapConfig, RemapConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -59,6 +62,18 @@ pub struct AppConfig {
     /// `logger:` 段（对齐上游 `config.yml` 的 `logger`）
     #[serde(default)]
     pub logger: LoggerConfig,
+    /// `lookup:` 段（`lookup.dns-reverse-lookup`）
+    #[serde(default)]
+    pub lookup: LookupConfig,
+    /// `resolvers:` 段（PTR 查询使用的 DNS 服务器）
+    #[serde(default)]
+    pub resolvers: ResolversConfig,
+    /// `proxy:` 段（出站 HTTP 代理）
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    /// `performance:` 段（Windows EcoQoS）
+    #[serde(default)]
+    pub performance: PerformanceConfig,
 }
 
 /// `logger:` 段：目前仅覆盖 ban wave 完成日志的隐藏开关
@@ -370,6 +385,9 @@ pub struct ServerConfig {
     /// 与 CLI `--dry-run` 任一开启即生效；WebUI 配置页修改后 reload 热应用。
     #[serde(default, rename = "dry-run")]
     pub dry_run: bool,
+    /// 允许任意来源的 CORS（对齐上游 `server.allow-cors`；默认 false）
+    #[serde(default, rename = "allow-cors")]
+    pub allow_cors: bool,
 }
 
 impl ServerConfig {
@@ -513,6 +531,7 @@ fn default_server() -> ServerConfig {
         external_address: None,
         prefix: None,
         dry_run: false,
+        allow_cors: false,
     }
 }
 fn default_database() -> DatabaseConfig {
@@ -545,6 +564,10 @@ impl Default for AppConfig {
             clients: None,
             push_notification: None,
             logger: LoggerConfig::default(),
+            lookup: LookupConfig::default(),
+            resolvers: ResolversConfig::default(),
+            proxy: ProxyConfig::default(),
+            performance: PerformanceConfig::default(),
             analytics: true,
         }
     }
@@ -645,8 +668,24 @@ impl AppConfig {
     /// 若加载自上游布局（`<data>/config/config.yml`），同步维护同目录的 `profile.yml`，
     /// 保证 Java 端与本移植可以共用同一数据目录（`profile` 段独立成文件）。
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
-        let text = serde_yaml::to_string(self)?;
-        std::fs::write(path, text)?;
+        // 与上游 `mergeYaml` 一致：以现有文件为基底增量覆盖，保留 WebUI/本移植
+        // 未建模的键（`gui` / `pbh-plus-key` / `proxy` 等），避免保存一次配置就丢配置。
+        let mut document = read_yaml_document(path);
+        let mut overlay = serde_yaml::to_value(self)?;
+        if let Some(mapping) = overlay.as_mapping_mut() {
+            // 内部别名不落盘：下载器统一写 `downloaders`、推送统一写 `push`
+            // （字段的 serde 名就是 `client` / `push-notification`）
+            for key in ["client", "clients", "push-notification", "push_notification"] {
+                mapping.remove(serde_yaml::Value::String(key.into()));
+            }
+        }
+        if let Some(mapping) = document.as_mapping_mut() {
+            // 上游布局的别名：内容已并入 `downloaders` / `push`，移除避免下次加载重复
+            mapping.remove(serde_yaml::Value::String("client".into()));
+            mapping.remove(serde_yaml::Value::String("push-notification".into()));
+        }
+        merge_yaml(&mut document, &overlay);
+        std::fs::write(path, serde_yaml::to_string(&document)?)?;
         let from_config_dir = path
             .parent()
             .and_then(|parent| parent.file_name())
@@ -654,10 +693,36 @@ impl AppConfig {
             .unwrap_or(false);
         if from_config_dir {
             let profile_path = path.with_file_name("profile.yml");
-            let profile_text = serde_yaml::to_string(&self.profile)?;
-            std::fs::write(profile_path, profile_text)?;
+            let mut profile_document = read_yaml_document(&profile_path);
+            merge_yaml(&mut profile_document, &serde_yaml::to_value(&self.profile)?);
+            std::fs::write(profile_path, serde_yaml::to_string(&profile_document)?)?;
         }
         Ok(())
+    }
+}
+
+/// 读取 YAML 文档；文件不存在/无法解析时返回空映射（保存时以空基底合并）。
+fn read_yaml_document(path: &Path) -> serde_yaml::Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_yaml::from_str::<serde_yaml::Value>(&text).ok())
+        .filter(serde_yaml::Value::is_mapping)
+        .unwrap_or_else(|| serde_yaml::Value::Mapping(Default::default()))
+}
+
+/// 递归合并：`overlay` 存在的键覆盖 `base`，列表整体替换；未提交的键保留。
+fn merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
+    if let (Some(base_map), Some(overlay_map)) = (base.as_mapping_mut(), overlay.as_mapping()) {
+        for (key, value) in overlay_map {
+            match base_map.get_mut(key) {
+                Some(existing) => merge_yaml(existing, value),
+                None => {
+                    base_map.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        *base = overlay.clone();
     }
 }
 
@@ -836,6 +901,64 @@ push-notification:
         cfg.save_to(&path).unwrap();
         let profile_text = std::fs::read_to_string(dir.join("config").join("profile.yml")).unwrap();
         assert!(profile_text.contains("check-interval"), "{profile_text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 保存主配置时保留未建模键（上游 `mergeYaml` 语义），并把上游 `client:` 布局
+    /// 转换为 `downloaders:`（避免下次加载重复）；profile.yml 的未知段同样保留。
+    #[test]
+    fn save_preserves_unknown_keys_and_converts_upstream_client_layout() {
+        let dir = std::env::temp_dir().join(format!("pbh-config-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config_dir = dir.join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("config.yml");
+        std::fs::write(
+            &path,
+            r#"
+config-version: 48
+gui: auto
+pbh-plus-key: []
+server:
+  http: 9898
+  address: "0.0.0.0"
+  token: "abc"
+  prefix: "http://127.0.0.1:9898"
+  allow-cors: false
+client:
+  uuid-1:
+    name: "qB"
+    type: "qbittorrent"
+    endpoint: "http://127.0.0.1:8080"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config_dir.join("profile.yml"),
+            "check-interval: 5000\ncustom-section:\n  keep: true\n",
+        )
+        .unwrap();
+
+        let mut cfg: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        cfg.normalize_upstream();
+        cfg.save_to(&path).unwrap();
+
+        let saved: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["gui"], "auto");
+        assert!(saved.get("pbh-plus-key").is_some());
+        assert!(saved.get("client").is_none(), "client 应转换为 downloaders");
+        assert_eq!(saved["downloaders"][0]["name"], "qB");
+
+        let profile: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(config_dir.join("profile.yml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            profile["custom-section"]["keep"], true,
+            "profile 未建模键应保留"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -151,7 +151,13 @@ impl RuleModule for IdleConnectionDosProtection {
             match peer.peer_flag() {
                 None => return CheckResult::pass(&module),
                 Some(flags) => {
-                    if flags.interesting || flags.remote_interested {
+                    // 上游 `externalSwitch[ignore-if-any-interested]`（默认 true）
+                    if (flags.interesting || flags.remote_interested)
+                        && crate::external_switch::boolean(
+                            "pbh.module.idle-connection-dos-protection.ignore-if-any-interested",
+                            true,
+                        )
+                    {
                         return CheckResult::pass(&module);
                     }
                 }

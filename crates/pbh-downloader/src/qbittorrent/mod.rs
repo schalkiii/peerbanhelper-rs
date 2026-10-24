@@ -106,10 +106,16 @@ impl QBittorrentDownloader {
     /// 下载器是否声明 `RANGE_BAN_IP` 能力。
     ///
     /// 对齐上游 `AbstractQbittorrent.getFeatureFlags()`：
-    /// `lastSemver >= 5.3.0 || lastSemver >= 5.3.0-alpha1 || lastSemver == 5.2.0-beta1`，
-    /// 且外部开关 `pbh.downloader.qBittorrent.enableRangeBanIp`（默认 true）打开。
-    /// 本实现不提供外部开关机制，视为始终为 true。
+    /// 版本满足 `>= 5.3.0` / `== 5.2.0-beta1`（或外部开关
+    /// `pbh.downloader.qBittorrent.ignoreRangeBanIpCondition` 强制），且
+    /// `pbh.downloader.qBittorrent.enableRangeBanIp`（默认 true）打开。
     pub fn supports_range_ban(&self) -> bool {
+        if !pbh_core::external_switch::boolean(
+            "pbh.downloader.qBittorrent.enableRangeBanIp",
+            true,
+        ) {
+            return false;
+        }
         let v = self
             .last_version
             .lock()
@@ -118,7 +124,12 @@ impl QBittorrentDownloader {
         if v.trim().is_empty() {
             return false;
         }
-        version_at_least(&v, 5, 3, 0) || v.trim().eq_ignore_ascii_case("5.2.0-beta1")
+        version_at_least(&v, 5, 3, 0)
+            || v.trim().eq_ignore_ascii_case("5.2.0-beta1")
+            || pbh_core::external_switch::boolean(
+                "pbh.downloader.qBittorrent.ignoreRangeBanIpCondition",
+                false,
+            )
     }
 
     /// 附加认证：Bearer（API Key）不用于 auth/login、auth/logout。
@@ -215,7 +226,12 @@ impl QBittorrentDownloader {
         } else {
             (4, 5, 0)
         };
-        if !version_at_least(&version, min_major, min_minor, min_patch) {
+        if !version_at_least(&version, min_major, min_minor, min_patch)
+            && !pbh_core::external_switch::boolean(
+                "pbh.downloader.qBittorrent.bypassVersionCheck",
+                false,
+            )
+        {
             return Ok(LoginResult::require_take_actions(
                 format!(
                     "unsupported qBittorrent version: {version} (require >= {min_major}.{min_minor}.{min_patch})"
@@ -225,7 +241,13 @@ impl QBittorrentDownloader {
         }
 
         let first_healthy = !self.healthy.swap(true, Ordering::SeqCst);
-        if first_healthy && self.config.disable_same_ip_multi_connection {
+        if first_healthy
+            && self.config.disable_same_ip_multi_connection
+            && pbh_core::external_switch::boolean(
+                "pbh.downloader.qbittorrent.disableSameIpMultiConnection",
+                true,
+            )
+        {
             let form = self.set_preferences(
                 serde_json::json!({ "enable_multi_connections_from_same_ip": false }),
             );
@@ -268,6 +290,13 @@ impl Downloader for QBittorrentDownloader {
     }
     fn downloader_type(&self) -> &'static str {
         "qbittorrent"
+    }
+    fn max_concurrent_peer_requests(&self) -> usize {
+        pbh_core::external_switch::integer(
+            "pbh.downloader.qBittorrent.maxConcurrentPeerRequestSlots",
+            128,
+        )
+        .max(1) as usize
     }
     /// 对齐 `AbstractQbittorrent.getFeatureFlags()`：
     /// `UNBAN_IP` / `TRAFFIC_STATS` / `LIVE_UPDATE_BT_PROTOCOL_PORT` 恒定声明，

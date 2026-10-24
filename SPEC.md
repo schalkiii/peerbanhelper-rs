@@ -309,8 +309,8 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   并记录 `fast_pcb_test_executed`，同一 peer 只触发一次。
 - 状态实体与缓存键 **[GOLDEN]**：
   - 前缀实体键 `(downloader, torrent, prefix)`，`prefix` 为 IPv4/32、IPv6/56 的 `toPrefixBlock`；
-    > **已知偏差**：本移植运行态按 `(downloader, torrent, prefix, ip)` 存每 IP 副本（上游
-    > 同前缀共享，`ProgressCheatBlocker.java:469`），已在 PLAN §4.2 登记；恢复共享键需双跑复验。
+    同前缀的不同 IP **共享**该实体，上传增量累加到同一计数器（对齐 `CacheKeyPrefix`）；
+    `pcb_range` 行在重启后加载，range 计数不清零。
   - IP 实体键 `(downloader, torrent, **ip**)`——**不含端口**。若把端口计入键，
     同一 IP 的多个端口会各自累加上传增量，导致 `computedUploaded` 虚高而误判「过量下载」/进度差。
   - 解封窗口（`ban-delay-window`）到期判定为 `now > window_end`（严格大于）。
@@ -398,8 +398,11 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 
 ## 6. 配置契约
 
-- `config.yml`：`server.http`(9898)、`server.address`、`server.token`、
-  `database.type`(sqlite)、`persist.ban-logs-keep-days`(180)、`persist.banlist`(true) 等。
+- `config.yml`：`server.http`(9898)、`server.address`、`server.token`、`server.allow-cors`(false)、
+  `database.type`(sqlite)、`persist.ban-logs-keep-days`(180)、`persist.banlist`(true)、
+  `lookup.dns-reverse-lookup`(false)、`resolvers.use-system`(true)/`servers`(普通 DNS)、
+  `proxy.setting`(0)/`host`/`port`/`non-proxy-hosts`、`performance.windows-ecoqos-api`(true) 等。
+  保存配置时与现有文件**增量合并**，未建模的键保留。
 - `profile.yml`：`check-interval`(5000)、`ban-duration`(1209600000=14 天)、
   `ignore-peers-from-addresses`、`module.*`（各模块 enabled/ban-duration/规则集）。
   本阶段把 profile 段并入 `config.yml` 的 `profile:` 下（单文件部署），字段名与语义不变。
@@ -478,6 +481,20 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   为 `peer_records` 行数；`geo` 实时查询；`btnQueryAvailable` 取决于 `ip_query` 能力。
 - **`GET /api/statistic/counter`**：`wastedTraffic` = 累计被封禁 peer 的 `uploaded`
   （对齐 `InMemoryMetrics#recordPeerBan`）。
+- **`POST /api/downloaders/scan` / `POST /api/oobe/scanDownloader`**：枚举本机 TCP LISTEN
+  端点并探测 qBittorrent / Transmission / BiglyBT / BitComet，返回
+  `[{host, port, type, pid, added}]` 裸数组；已在配置中的端口 `added=ADDED`，
+  未发现时为空数组。
+- **`GET /api/downloaders/{id}/torrents|peers`**：读取本轮 wave 的 live snapshot
+  （torrents 按 `rtUploadSpeed`、peers 按 `uploadSpeed` 倒序），不额外访问下载器；
+  torrent 不在本轮快照时返回空数组。
+- **PTR / 代理 / CORS / EcoQoS**：`lookup.dns-reverse-lookup` 开启时封禁元数据异步回填
+  `reverseLookup`、peers 列表返回 `ptrRecord`（`/api/peer/{ip}` 与上游一致始终尝试，
+  3s 超时）；`proxy.*` 在启动期写入进程环境变量；`server.allow-cors` 或
+  `pbh.allowCors` 启用任意来源 CORS；`performance.windows-ecoqos-api` 应用 Windows EcoQoS。
+- **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`
+  启动参数覆盖；已接线 PCB completed-excessive、idle ignore-if-any-interested、
+  qBittorrent 四个开关与逐下载器并发槽位。
 - 静态资源：`/` 托管 WebUI（`data/static`，缺失时返回占位页）。
 - 统一响应体 `{success, message, data}`。
 

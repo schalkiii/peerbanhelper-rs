@@ -4,6 +4,8 @@ pub mod aria2;
 pub mod biglybt;
 pub mod bitcomet;
 pub mod deluge;
+/// 本机下载器自动发现（对齐上游 `DownloaderDiscovery`）
+pub mod discovery;
 pub mod http;
 pub mod qbittorrent;
 pub mod transmission;
@@ -159,6 +161,19 @@ pub trait Downloader: Send + Sync {
     fn ban_peers<'a>(&'a self, peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>>;
     fn replace_banned_ips<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>>;
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>>;
+
+    /// 同一轮 wave 内并发拉取 peers 的槽位数。
+    ///
+    /// 对齐上游 `AbstractDownloader#getMaxConcurrentPeerRequestSlots()`：默认 16，
+    /// qBittorrent / BiglyBT 为 128、Deluge 为 32，均可用
+    /// `pbh.downloader.<Name>.maxConcurrentPeerRequestSlots` 覆盖。
+    fn max_concurrent_peer_requests(&self) -> usize {
+        pbh_core::external_switch::integer(
+            "pbh.downloader.AbstractDownloader.maxConcurrentPeerRequestSlots",
+            16,
+        )
+        .max(1) as usize
+    }
 
     /// 读取当前限速，返回 `(upload, download)`。
     ///

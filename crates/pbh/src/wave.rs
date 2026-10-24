@@ -223,7 +223,6 @@ pub struct WaveEngine {
     /// 演练模式（`--dry-run` 或 `server.dry-run`）：照常判定与落库，但不向下载器
     /// 下发封禁/解封/限速。共享 AtomicBool 以支持 WebUI 修改配置后热生效。
     pub dry_run: Arc<AtomicBool>,
-    pub max_concurrent: usize,
     /// 告警/推送管理器（对齐上游注入到 `DigestionSession` → `RunCheckModuleOrgan` 的
     /// `AlertManager`）
     pub alert_manager: Arc<AlertManager>,
@@ -232,6 +231,8 @@ pub struct WaveEngine {
     /// 这些模块不参与 peer 判定，只消费「拉取到的 peers」与定时任务，因此挂在 wave 上：
     /// 每拉到一份 peers 就派发一次 `onPeersRetrieved`（对齐上游回调时机）。
     pub monitor: Arc<crate::monitor::MonitorHost>,
+    /// PTR 反查器（`lookup.dns-reverse-lookup`；关闭时封禁元数据保持 `"N/A"`）
+    pub ptr: Arc<pbh_core::ptr::PtrLookup>,
     /// IP 库（`history.peer_geoip` 落库用；缺省 = 未装 IP 库，落 NULL）。
     ///
     /// 与 [`crate::monitor::MonitorHost`] 的落库 sink 共用同一份 provider（对齐上游
@@ -246,6 +247,8 @@ pub struct WaveEngine {
     /// 由 wave 每轮写入、`btn_legacy::LegacyAwareSubmitSource` 消费
     /// （对齐上游 `DownloaderServer` 的 livePeers 数据源）。
     pub live_peers: crate::btn_legacy::LivePeerMap,
+    /// Web 下载器详情页的实时快照（下载器 → torrent + peers），每轮 wave 重建。
+    pub live_snapshot: pbh_core::live::LiveSnapshot,
 }
 
 impl WaveEngine {
@@ -256,6 +259,9 @@ impl WaveEngine {
 
     /// 执行一轮 ban wave。
     pub async fn run_once(&self, now_ms: i64) -> WaveReport {
+        // 实时快照：对齐上游 `endSession` 的整表替换——每轮开始清空，
+        // 由各下载器任务重新写入；登录失败/已删除的下载器本轮不产生数据。
+        self.live_snapshot.clear();
         // BTN 遗留协议 live peers：对齐上游 `endSession` 的整表替换——每轮开始清空全表，
         // 由各下载器任务重新写入；登录失败/已删除的下载器本轮不产生任何行（旧数据随之消失）。
         {
@@ -636,6 +642,22 @@ impl WaveEngine {
             if let Ok(mut metrics) = self.metrics.lock() {
                 metrics.wasted_traffic += b.peer_uploaded.max(0) as u64;
             }
+            // 对齐上游 `banPeer`：异步 PTR 反查（`lookup.dns-reverse-lookup`），
+            // 完成后回填 `banMetadata.reverseLookup`；不阻塞 wave。
+            if self.ptr.enabled() {
+                let ip = b.entry.ip.clone();
+                let ptr = self.ptr.clone();
+                let ban_list = self.ban_list().clone();
+                std::thread::spawn(move || {
+                    if let Some(host) = ptr.lookup(&ip) {
+                        if host != ip {
+                            if let Ok(mut list) = ban_list.lock() {
+                                list.set_reverse_lookup(&ip, host);
+                            }
+                        }
+                    }
+                });
+            }
             // 单条封禁日志（上游 `Lang.BAN_PEER`，仅 `action != BAN_FOR_DISCONNECT` 时打印；
             // ban-for-disconnect 静默，对齐 `DownloaderServerImpl` 第 252 行）
             if !b.ban_for_disconnect {
@@ -831,7 +853,8 @@ impl WaveEngine {
             .await
             .map_err(|e| format!("{} torrents: {e}", dl.id()))?;
         debug!("dl {} 快照 {} 个 torrent，开始并发拉取 peers", dl.id(), torrents.len());
-        let sem = Arc::new(Semaphore::new(self.max_concurrent.max(1)));
+        // 对齐上游 `AbstractDownloader#getMaxConcurrentPeerRequestSlots()`（逐下载器）
+        let sem = Arc::new(Semaphore::new(dl.max_concurrent_peer_requests().max(1)));
         let features = dl.feature_flags();
         let mut joins = Vec::new();
 
@@ -843,6 +866,7 @@ impl WaveEngine {
             let alert_manager = self.alert_manager.clone();
             let monitor = self.monitor.clone();
             let live_peers = self.live_peers.clone();
+            let live_snapshot = self.live_snapshot.clone();
             joins.push(tokio::spawn(async move {
                 let _permit = permit_sem.acquire().await.ok();
                 let peers = match dl.fetch_peers(&torrent).await {
@@ -872,6 +896,8 @@ impl WaveEngine {
                         .or_default()
                         .extend(crate::btn_legacy::peer_rows_from(&torrent, &peers));
                 }
+                // Web 下载器详情页快照（torrent 名称/速度等完整字段）
+                live_snapshot.insert(dl.id(), torrent.clone(), peers.clone());
                 let ctx = CheckContext { now_ms, features };
                 let mut out = TorrentOutput {
                     peer_count: peers.len(),
@@ -1454,11 +1480,12 @@ mod tests {
             statuses: Arc::new(StdMutex::new(Vec::new())),
             persist_banlist: false,
             dry_run: Arc::new(AtomicBool::new(false)),
-            max_concurrent: 1,
             login_gates: Default::default(),
             live_peers: crate::btn_legacy::new_live_peer_map(),
+            live_snapshot: pbh_core::live::new_live_snapshot(),
             alert_manager,
             monitor,
+            ptr: Arc::new(pbh_core::ptr::PtrLookup::disabled()),
             geo: None,
         }
     }

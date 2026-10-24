@@ -32,3 +32,6 @@ socket2 = "0.6"
 # BTN 上报载荷 gzip（对齐上游 okio.GzipSink）与 InfoHash 哈希盐（对齐 guava Hashing.crc32）
 flate2 = { workspace = true }
 crc32fast = { workspace = true }
+# 系统 DNS PTR 反查（对齐上游 dnsjava `DNSLookupImpl` 的 use-system 分支）：
+# 走 getnameinfo，Windows/macOS/Linux 行为一致，避免自实现 Winsock/注册表解析。
+dns-lookup = "2"

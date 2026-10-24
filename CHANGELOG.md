@@ -44,13 +44,44 @@
   安排等待窗口」分支提前 `return pass()`，导致该轮漏掉 rewind 判定。改为安排窗口
   后继续执行（`ProgressCheatBlocker.java:312-374`）。
 
-### docs: 登记 PCB 前缀实体偏差与未覆盖能力
+### feat: 关闭 PLAN §4.1 的剩余能力缺口（2026-10-25 续）
 
-- PCB `RangeKey` 的「每 IP 独立副本」**不是**上游行为：Java 缓存键是 3 元组
-  `(downloader, torrent, prefix)`（`ProgressCheatBlocker.java:469`），第 220 行的
-  5 元组只是日志字符串。该偏差已更正注释并登记到 `PLAN.md §4.2`，恢复共享键需
-  实机双跑复验。同时登记 PTR 反查、ExternalSwitch、代理/CORS/VACUUM、下载器发现、
-  配置页未覆盖节等差距。
+- **PCB 恢复上游共享 range 实体**：`RangeKey` 改回 `(downloader, torrent, prefix)`，
+  同前缀不同 IP 的上传增量合并（`computedUploaded = max(peer, addr, range)`）；
+  `pcb_range` 行重启后可加载，不再从零重计。移除上一轮登记的「每 IP 副本」偏差，
+  新增 `pcb_shares_range_entity_across_ips_in_same_prefix` 回归。
+- **ExternalSwitch**：新增 `pbh-core::external_switch`（环境变量原样键/大写下划线键 +
+  `key=value` 启动参数覆盖），接线 `pbh.pcb.disable-completed-excessive`、
+  `pbh.module.idle-connection-dos-protection.ignore-if-any-interested`、
+  qBittorrent 的 `bypassVersionCheck` / `enableRangeBanIp` / `ignoreRangeBanIpCondition` /
+  `disableSameIpMultiConnection`，以及逐下载器并发槽位
+  `pbh.downloader.<Name>.maxConcurrentPeerRequestSlots`（qB/BiglyBT 128、Deluge 32、其它 16）。
+- **PTR 反查**：新增 `lookup.dns-reverse-lookup` 与 `resolvers.{use-system,servers}`；
+  封禁元数据异步回填 `reverseLookup`、`/api/peer/{ip}` 的 `ptrLookup`、
+  peers 列表的 `ptrRecord`。系统解析器走 `dns-lookup`（getnameinfo，跨平台），
+  显式服务器走内置 UDP PTR 客户端；DoH URL 暂不支持（跳过并记日志）。
+- **代理 / CORS / EcoQoS**：`proxy.setting` 0/1/2 在启动期映射到
+  `HTTP(S)_PROXY` / `NO_PROXY`（reqwest 全局生效）；`server.allow-cors`
+  （或 `pbh.allowCors`）启用任意来源 CORS；`performance.windows-ecoqos-api`
+  通过 `SetProcessInformation(ProcessPowerThrottling)` 应用 Windows EcoQoS。
+- **下载器自动发现**：枚举本机 TCP LISTEN 端点（Windows `GetExtendedTcpTable` /
+  Linux `/proc/net/tcp*`，其它平台用默认端口兜底），探测并识别
+  qBittorrent / Transmission / BiglyBT / BitComet；`/api/downloaders/scan` 与
+  OOBE scan 已接入。
+- **下载器详情改用 live snapshot**：wave 每轮维护 `下载器 → torrent + peers` 快照，
+  `/api/downloaders/{id}/torrents|peers` 直接读取并按上游排序，不再额外请求下载器。
+- **配置保存保留未知键**：`save_to` 改为与现有 YAML 增量合并，WebUI/本移植未建模的
+  `gui` / `pbh-plus-key` / `proxy` 等键不再被清空；上游 `client:` 布局保存时转换为
+  `downloaders:`，`profile.yml` 的未知段同样保留。
+- 上游 `persist.vacuum-interval-days` 的启动 VACUUM 在 v9.5.1 中**调用被注释**
+  （仅实验室手动实验），故不实现，避免与上游行为不一致。
+
+### fix: 撤销 PCB「每 IP 副本」偏差
+
+- 复核确认 Java 缓存键是 3 元组 `(downloader, torrent, prefix)`
+  （`ProgressCheatBlocker.java:469`，第 220 行的 5 元组只是日志字符串），
+  已恢复上游同前缀共享实体与 range 行重载（详见上方「关闭 PLAN §4.1 剩余能力缺口」）。
+  `PLAN.md` / `docs/TESTING.md` 中关于该偏差的记录同步更正。
 
 ## 9.5.1-rs.2（2026-10-13）
 

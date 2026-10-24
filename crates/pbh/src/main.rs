@@ -1,6 +1,7 @@
 mod backend;
 mod btn_legacy;
 mod config;
+mod ecoqos;
 mod monitor;
 mod push;
 mod ring;
@@ -22,7 +23,7 @@ use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
 use pbh_core::Pipeline;
 use pbh_db::{Database, DbBtnSubmitSource, DbMetadataStore, DbMonitorSink};
 use pbh_downloader::http::ReqwestFetcher;
-use pbh_web::{build_router, AppState, DownloaderStatus, Metrics, RingLog};
+use pbh_web::{build_router_with_cors, AppState, DownloaderStatus, Metrics, RingLog};
 use ring::RingLayer;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -67,7 +68,14 @@ async fn main() -> anyhow::Result<()> {
         .with(RingLayer::new(ring_log.clone()))
         .init();
 
-    let args = Args::parse();
+    // 上游 `ExternalSwitch` 支持 `key=value` 启动参数；这些参数不归 clap 管，
+    // 先从 argv 中剔除，再由 `external_switch::parse` 读取。
+    let cli_args: Vec<String> = std::env::args()
+        .filter(|argument| {
+            !(argument.starts_with("--pbh.") || argument.starts_with("pbh."))
+        })
+        .collect();
+    let args = Args::parse_from(cli_args);
     let data_dir = args.data.clone();
     std::fs::create_dir_all(&data_dir)?;
     // 暴露数据目录给库内按 `<data>/...` 解析的路径（expression-engine 脚本目录等，
@@ -75,6 +83,12 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("PBH_DATA_DIR", &data_dir);
 
     let (mut cfg, cfg_path) = config::AppConfig::load_or_create(&data_dir)?;
+    // 代理必须在构造任何 HTTP 客户端之前写入环境变量（reqwest 默认读环境代理）
+    pbh_core::proxy::apply_env(&cfg.proxy);
+    if cfg.performance.windows_ecoqos_api {
+        let applied = ecoqos::apply();
+        debug!("Windows EcoQoS: {}", if applied { "已应用" } else { "应用失败（忽略）" });
+    }
     if let Some(port) = args.port {
         cfg.server.http = port;
     }
@@ -265,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
     let btn_network_slot: pbh_core::btn_transport::SharedBtnNetwork = Default::default();
     // BTN 遗留协议 live peers 快照（wave 每轮写入；见 btn_legacy 模块文档）
     let live_peer_map = btn_legacy::new_live_peer_map();
+    let live_snapshot = pbh_core::live::new_live_snapshot();
     let _btn_transport: Option<std::thread::JoinHandle<()>> = if cfg.btn.is_active() {
         // 阻塞式 HTTP 客户端自带 tokio 运行时，**必须**在工作线程内部构造
         // （在 async 上下文里构造/析构会 panic：`Cannot drop a runtime in a context
@@ -451,6 +466,12 @@ async fn main() -> anyhow::Result<()> {
             t
         }
     };
+    // PTR 反查器：`lookup.dns-reverse-lookup` 控制封禁元数据/peers 列表；
+    // `/api/peer/{ip}` 与上游一致始终尝试解析。
+    let ptr = std::sync::Arc::new(pbh_core::ptr::PtrLookup::from_config(
+        &cfg.resolvers,
+        cfg.lookup.dns_reverse_lookup,
+    ));
     let state = AppState {
         db: db.clone(),
         token: Arc::new(Mutex::new(cfg.server.token.clone())),
@@ -466,6 +487,8 @@ async fn main() -> anyhow::Result<()> {
         backend: backend.clone(),
         log_ring: ring_log.clone(),
         global_pause: global_pause.clone(),
+        ptr: ptr.clone(),
+        live_snapshot: live_snapshot.clone(),
         sub_module: {
             // 规则订阅 Web 后端：共享运行时规则配置，增删改即时回写 config 文件
             let http = reqwest::Client::builder()
@@ -502,7 +525,9 @@ async fn main() -> anyhow::Result<()> {
         // `laboratory.yml` 与 `config.yml` 同目录（对齐上游 `<config_dir>/laboratory.yml`）
         lab_path: cfg_path.parent().map(|p| p.join("laboratory.yml")),
     };
-    let app = build_router(state);
+    let allow_cors = cfg.server.allow_cors
+        || pbh_core::external_switch::parse("pbh.allowCors").is_some();
+    let app = build_router_with_cors(state, allow_cors);
     let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     info!("Web 服务监听: http://{bind}");
@@ -571,12 +596,13 @@ async fn main() -> anyhow::Result<()> {
         statuses,
         persist_banlist: cfg.persist.banlist,
         dry_run: dry_run_flag.clone(),
-        max_concurrent: 128,
         alert_manager,
         monitor,
+        ptr,
         geo,
         login_gates,
         live_peers: live_peer_map,
+        live_snapshot,
     };
 
     let period = Duration::from_millis(cfg.profile.check_interval.max(500));

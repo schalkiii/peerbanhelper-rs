@@ -261,6 +261,49 @@ fn pcb_shares_address_entity_across_ports_of_same_ip() {
     );
 }
 
+/// 上游 `CacheKeyPrefix(downloader, torrent, prefix)` 是**同前缀共享**实体：
+/// 同 /56 下不同 IPv6 的上传增量会累加进同一个 range 计数器，`computedUploaded`
+/// 取 `max(peer.uploaded, addr.total, range.total)`。
+#[test]
+fn pcb_shares_range_entity_across_ips_in_same_prefix() {
+    let pcb = ProgressCheatBlocker::new(PcbConfig {
+        fast_pcb_test_percentage: 0.0,
+        ..PcbConfig::default()
+    });
+    // 3 GB 种子：excessive 阈值 = 4.5 GB
+    let t = torrent(3_000_000_000, 0, 0);
+    // A：上传 1.6 GB（自身未达阈值），与 B 同属 2001:db8:1:0::/56
+    let a = peer(
+        "2001:db8:1:2::1",
+        1000,
+        Some("-qB4500-y"),
+        Some("qBittorrent/4.5.0"),
+        1000,
+        1_600_000_000,
+        1.0,
+    );
+    assert_eq!(pcb.check("d", &t, &a, &ctx(0)).action, PeerAction::NoAction);
+    // B：自身 4.0 GB（< 4.5 GB），但共享 range = 5.6 GB -> BAN
+    let b = peer(
+        "2001:db8:1:2::2",
+        1000,
+        Some("-qB4500-y"),
+        Some("qBittorrent/4.5.0"),
+        1000,
+        4_000_000_000,
+        1.0,
+    );
+    let r = pcb.check("d", &t, &b, &ctx(0));
+    assert_eq!(
+        r.action,
+        PeerAction::Ban,
+        "同 /56 的 range 计数器必须合并（上游共享语义），实际 {:?} {}",
+        r.action,
+        r.reason
+    );
+    assert_eq!(r.rule, "excessiveMaxDownloadThreshold");
+}
+
 #[test]
 fn pcb_desync_waits_one_window_then_bans() {
     let pcb = ProgressCheatBlocker::new(PcbConfig {

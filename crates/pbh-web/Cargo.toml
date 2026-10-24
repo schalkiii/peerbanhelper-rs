@@ -10,6 +10,8 @@ pbh-core = { workspace = true }
 pbh-db = { workspace = true }
 pbh-downloader = { workspace = true }
 axum = { workspace = true }
+# `server.allow-cors` 的 CORS 层（workspace 已含 fs/cors/trace 特性）
+tower-http = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"

@@ -13,14 +13,22 @@ pub mod banlist;
 pub mod btn_transport;
 pub mod config;
 pub mod defaults;
+/// 上游 `ExternalSwitch`：环境变量 / 启动参数覆盖内部行为开关
+pub mod external_switch;
 pub mod geoip;
 pub mod geoip_update;
 pub mod i18n;
 pub mod iputil;
+/// 本轮 wave 的实时 torrent/peer 快照（Web 下载器详情页数据源）
+pub mod live;
 pub mod model;
 pub mod module;
 pub mod modules;
 pub mod pipeline;
+/// 出站 HTTP 代理（`proxy.*` → 进程环境变量，启动期应用）
+pub mod proxy;
+/// PTR 反查（`lookup.dns-reverse-lookup` + `resolvers.*`）
+pub mod ptr;
 pub mod remap;
 pub mod rule;
 

@@ -90,6 +90,10 @@ pub struct AppState {
     /// IPDB 再聚合，而非读取落库 JSON——落库 JSON 只保留了精简字段，不足以还原
     /// city/province/isp/region 四个维度。
     pub geo: Option<Arc<dyn pbh_core::geoip::GeoIpProvider>>,
+    /// PTR 反查器（`/api/peer/{ip}` 始终尝试；peers 列表受 `lookup.dns-reverse-lookup` 控制）
+    pub ptr: Arc<pbh_core::ptr::PtrLookup>,
+    /// 本轮 wave 的实时 torrent/peer 快照（下载器详情端点数据源）
+    pub live_snapshot: pbh_core::live::LiveSnapshot,
     /// 自定义脚本目录（`GET/PUT/DELETE /api/expression-engine/*`）。
     ///
     /// 与 `expression-engine` 模块加载脚本用的是同一路径（见
@@ -149,6 +153,12 @@ async fn api_not_found() -> Response {
 }
 
 pub fn build_router(state: AppState) -> Router {
+    build_router_with_cors(state, false)
+}
+
+/// 与 [`build_router`] 相同，`allow_cors = true` 时追加任意来源的 CORS 层
+/// （对齐上游 `server.allow-cors` 的 `anyHost` 规则）。
+pub fn build_router_with_cors(state: AppState, allow_cors: bool) -> Router {
     // 需要 Token 鉴权的 API（对齐上游 Role.USER_READ / USER_WRITE 分组）
     let api_authed = api::api_routes().layer(middleware::from_fn_with_state(
         state.clone(),
@@ -161,7 +171,7 @@ pub fn build_router(state: AppState) -> Router {
     // 「后端缺端点」的事实（2026-10-07 生产教训）
     let api = api_public.merge(api_authed).fallback(api_not_found);
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         // 封禁列表端点：下载器（Transmission 等）匿名拉取，不走 Token 鉴权（对齐上游 Role.ANYONE）
         .route("/blocklist/p2p-plain-format", get(blocklist_p2p_plain))
@@ -169,7 +179,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/blocklist/dat-emule", get(blocklist_dat_emule))
         .nest("/api", api)
         .fallback(static_handler)
-        .with_state(state)
+        .with_state(state);
+    if allow_cors {
+        router.layer(tower_http::cors::CorsLayer::very_permissive())
+    } else {
+        router
+    }
 }
 
 /// 生成随机规则名（对齐上游 `UUID.randomUUID().toString().replace("-", "")`）。
@@ -935,6 +950,8 @@ mod tests {
             btn_network: Default::default(),
             tasks: Arc::new(BackgroundTaskRegistry::new()),
             geo: None,
+            ptr: Arc::new(pbh_core::ptr::PtrLookup::disabled()),
+            live_snapshot: pbh_core::live::new_live_snapshot(),
             scripts_dir: None,
             lab_path: None,
         }

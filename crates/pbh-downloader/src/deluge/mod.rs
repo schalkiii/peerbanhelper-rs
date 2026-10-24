@@ -272,6 +272,13 @@ impl Downloader for DelugeDownloader {
     fn downloader_type(&self) -> &'static str {
         "deluge"
     }
+    fn max_concurrent_peer_requests(&self) -> usize {
+        pbh_core::external_switch::integer(
+            "pbh.downloader.Deluge.maxConcurrentPeerRequestSlots",
+            32,
+        )
+        .max(1) as usize
+    }
 
     /// 对齐 `AbstractDownloader.getFeatureFlags()`：`Deluge` 未覆写，故仅 `UNBAN_IP`。
     fn feature_flags(&self) -> Vec<String> {

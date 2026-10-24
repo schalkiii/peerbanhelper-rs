@@ -303,6 +303,13 @@ impl Downloader for BiglyBtDownloader {
     fn downloader_type(&self) -> &'static str {
         "biglybt"
     }
+    fn max_concurrent_peer_requests(&self) -> usize {
+        pbh_core::external_switch::integer(
+            "pbh.downloader.BiglyBT.maxConcurrentPeerRequestSlots",
+            128,
+        )
+        .max(1) as usize
+    }
 
     /// 对齐 `BiglyBT.getFeatureFlags()`：集合与顺序均与上游一致（恒含 `RANGE_BAN_IP`）。
     fn feature_flags(&self) -> Vec<String> {

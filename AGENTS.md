@@ -32,6 +32,15 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
 - 检索结果只作线索，**以两侧源码为准**：输出里必须核对 Java 的 `file:line` 与
   Rust 对应实现，不能只凭检索片段下结论。
 
+## 行为开关（调试/排障）
+
+对齐上游 `ExternalSwitch`：环境变量可用原样键（`pbh.pcb.disable-completed-excessive=true`）
+或大写下划线（`PBH_PCB_DISABLE_COMPLETED_EXCESSIVE=true`），启动参数 `--pbh.xxx=...` 优先。
+已接线：PCB completed-excessive、idle ignore-if-any-interested、qBittorrent
+bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMultiConnection、
+`pbh.downloader.<Name>.maxConcurrentPeerRequestSlots`、`pbh.forceDisableIPDB`、
+`pbh.allowCors`。完整清单见 SPEC §7。
+
 ## 目录与约定
 
 - crates：`pbh`（bin + 组装）、`pbh-core`（规则引擎/模块）、`pbh-downloader`、`pbh-db`、

@@ -647,6 +647,88 @@ impl Default for IpDatabaseConfig {
     }
 }
 
+/// `config.yml` 的 `proxy` 段（对齐上游 `HTTPUtil` 的代理选择）。
+///
+/// `setting`：0 = 不使用代理，1 = 跟随系统，2 = 使用 `host:port` HTTP 代理。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    #[serde(default)]
+    pub setting: i64,
+    #[serde(default = "default_proxy_host")]
+    pub host: String,
+    #[serde(default = "default_proxy_port")]
+    pub port: u16,
+    #[serde(rename = "non-proxy-hosts", default = "default_non_proxy_hosts")]
+    pub non_proxy_hosts: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            setting: 0,
+            host: default_proxy_host(),
+            port: default_proxy_port(),
+            non_proxy_hosts: default_non_proxy_hosts(),
+        }
+    }
+}
+
+fn default_proxy_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_proxy_port() -> u16 {
+    7890
+}
+
+fn default_non_proxy_hosts() -> String {
+    "localhost|127.*|192.168.*|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.20.*|172.21.*|172.22.*|172.23.*|172.24.*|172.25.*|172.26.*|172.27.*|172.28.*|172.29.*|172.30.*|172.31.*|*.local|*.lan".to_string()
+}
+
+/// `config.yml` 的 `performance` 段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceConfig {
+    /// Windows EcoQoS（省电优先）开关（上游默认 true）
+    #[serde(rename = "windows-ecoqos-api", default = "default_true")]
+    pub windows_ecoqos_api: bool,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            windows_ecoqos_api: true,
+        }
+    }
+}
+
+/// `config.yml` 的 `lookup` 段（对齐上游 `lookup.dns-reverse-lookup`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LookupConfig {
+    #[serde(rename = "dns-reverse-lookup", default)]
+    pub dns_reverse_lookup: bool,
+}
+
+/// `config.yml` 的 `resolvers` 段（对齐上游 `DNSLookupImpl#reloadConfig`）。
+///
+/// `servers` 支持普通 DNS 服务器（IP / `IP:port`）；DoH URL 暂不支持，构造解析器时
+/// 会跳过并记日志（见 `pbh_core::ptr`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolversConfig {
+    #[serde(rename = "use-system", default = "default_true")]
+    pub use_system: bool,
+    #[serde(default)]
+    pub servers: Vec<String>,
+}
+
+impl Default for ResolversConfig {
+    fn default() -> Self {
+        Self {
+            use_system: true,
+            servers: Vec::new(),
+        }
+    }
+}
+
 fn default_database_city() -> String {
     "GeoLite2-City".to_string()
 }

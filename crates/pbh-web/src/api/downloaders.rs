@@ -25,16 +25,32 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> R
     }
 }
 
-/// `POST /api/downloaders/scan`：局域网下载器扫描（上游 `DownloaderDiscovery`）。
+/// `POST /api/downloaders/scan`：本机下载器扫描（上游 `DownloaderDiscovery`）。
 ///
-/// 本移植未实现 mDNS/端口探测，返回空结果——手动添加下载器为主路径。
-pub async fn scan() -> Response {
-    // 上游返回 `List<DiscoveredDownloader>`（不是 `{downloaders: [...]}` 包装）
-    (
-        StatusCode::OK,
-        crate::std_resp(true, None, json!([])),
-    )
-        .into_response()
+/// 枚举本机 LISTEN 端点并探测 qBittorrent / Transmission / BiglyBT / BitComet；
+/// 已在配置中的端口标记为 `ADDED`。返回裸数组（上游 `List<DiscoveredDownloader>`）。
+pub async fn scan(State(state): State<AppState>) -> Response {
+    let ids: Vec<String> = state
+        .downloaders
+        .lock()
+        .map(|list| list.iter().map(|status| status.id.clone()).collect())
+        .unwrap_or_default();
+    let mut added_ports = Vec::new();
+    for id in ids {
+        if let Some(meta) = state.backend.downloader_meta(&id) {
+            if let Some(port) = endpoint_port(&meta.endpoint) {
+                added_ports.push(port);
+            }
+        }
+    }
+    let found = pbh_downloader::discovery::scan(&added_ports).await;
+    (StatusCode::OK, crate::std_resp(true, None, json!(found))).into_response()
+}
+
+fn endpoint_port(endpoint: &str) -> Option<u16> {
+    let rest = endpoint.split("://").nth(1).unwrap_or(endpoint);
+    let host_port = rest.split('/').next()?;
+    host_port.rsplit_once(':')?.1.parse().ok()
 }
 
 /// `GET /api/downloaders/test`：测试配置连通性（body 为 `{config}`）。
@@ -168,7 +184,11 @@ pub(crate) fn torrent_data_json(t: &pbh_core::model::TorrentData) -> Value {
 ///
 /// WebUI 的活动种子 Peer 弹窗直接读 `record.peer.address.ip` / `record.peer.uploadSpeed`
 /// / `record.geo.*`；返回扁平对象会让这些列全部空白。
-fn peer_wrapper_json(p: &pbh_core::model::PeerData, geo: Value) -> Value {
+fn peer_wrapper_json(
+    p: &pbh_core::model::PeerData,
+    geo: Value,
+    ptr_record: Option<String>,
+) -> Value {
     json!({
         "peer": {
             // 对齐 `PeerAddress` 的全部序列化字段（`address` 为 transient，不输出）
@@ -196,7 +216,7 @@ fn peer_wrapper_json(p: &pbh_core::model::PeerData, geo: Value) -> Value {
         },
         "geo": geo,
         // PTR 仅在 `lookup.dns-reverse-lookup` 开启时解析（默认关闭 ⇒ null）
-        "ptrRecord": Value::Null,
+        "ptrRecord": ptr_record,
     })
 }
 
@@ -207,28 +227,26 @@ fn peer_wrapper_json(p: &pbh_core::model::PeerData, geo: Value) -> Value {
 /// progress, rtUploadSpeed, rtDownloadSpeed)`：WebUI「活动种子」的速度列直接读
 /// `rtUploadSpeed` / `rtDownloadSpeed`，缺失会渲染成 `NaN undefined/s`。
 pub async fn torrents(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let Some(downloader) = state.backend.downloader(&id) else {
+    if state.backend.downloader(&id).is_none() {
         return (
             StatusCode::NOT_FOUND,
             crate::std_resp(false, Some("DOWNLOADER_NOT_FOUND"), Value::Null),
         )
             .into_response();
-    };
-    match downloader.fetch_torrents().await {
-        Ok(torrents) => {
-            let results = torrents.iter().map(torrent_data_json).collect::<Vec<_>>();
-            (
-                StatusCode::OK,
-                crate::std_resp(true, Some("OK"), json!(results)),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            crate::std_resp(false, Some(&e.to_string()), Value::Null),
-        )
-            .into_response(),
     }
+    // 上游读取 `getLivePeersSnapshot()`（最近一轮 wave），不再单独请求下载器
+    let mut torrents = state.live_snapshot.torrents(&id);
+    torrents.sort_by(|a, b| {
+        b.upspeed
+            .cmp(&a.upspeed)
+            .then(b.dlspeed.cmp(&a.dlspeed))
+    });
+    let results = torrents.iter().map(torrent_data_json).collect::<Vec<_>>();
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!(results)),
+    )
+        .into_response()
 }
 
 /// `GET /api/downloaders/{id}/torrent/{torrent_id}/peers`：指定种子的实时 Peer 列表。
@@ -236,50 +254,30 @@ pub async fn peers(
     State(state): State<AppState>,
     Path((id, torrent_id)): Path<(String, String)>,
 ) -> Response {
-    let Some(downloader) = state.backend.downloader(&id) else {
+    if state.backend.downloader(&id).is_none() {
         return (
             StatusCode::NOT_FOUND,
             crate::std_resp(false, Some("DOWNLOADER_NOT_FOUND"), Value::Null),
         )
             .into_response();
-    };
-    let torrents = match downloader.fetch_torrents().await {
-        Ok(torrents) => torrents,
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                crate::std_resp(false, Some(&e.to_string()), Value::Null),
-            )
-                .into_response()
-        }
-    };
-    let Some(torrent) = torrents.iter().find(|t| t.hash == torrent_id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            crate::std_resp(false, Some("TORRENT_NOT_FOUND"), Value::Null),
-        )
-            .into_response();
-    };
-    match downloader.fetch_peers(torrent).await {
-        Ok(mut peers) => {
-            // 上游按 `uploadSpeed` 倒序（`handlePeersInTorrentOnDownloader`）
-            peers.sort_by_key(|peer| std::cmp::Reverse(peer.up_speed));
-            let results = peers
-                .iter()
-                .map(|p| peer_wrapper_json(p, crate::api::query_geo(&state, &p.ip)))
-                .collect::<Vec<_>>();
-            (
-                StatusCode::OK,
-                crate::std_resp(true, Some("OK"), json!(results)),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            crate::std_resp(false, Some(&e.to_string()), Value::Null),
-        )
-            .into_response(),
     }
+    // 上游从 live snapshot 过滤：下载器存在但 torrent 不在本轮快照时返回空数组
+    let mut peers = state.live_snapshot.peers(&id, &torrent_id);
+    // 上游按 `uploadSpeed` 倒序（`handlePeersInTorrentOnDownloader`）
+    peers.sort_by_key(|peer| std::cmp::Reverse(peer.up_speed));
+    let ptr_enabled = state.ptr.enabled();
+    let results = peers
+        .iter()
+        .map(|p| {
+            let ptr = ptr_enabled.then(|| state.ptr.lookup(&p.ip)).flatten();
+            peer_wrapper_json(p, crate::api::query_geo(&state, &p.ip), ptr)
+        })
+        .collect::<Vec<_>>();
+    (
+        StatusCode::OK,
+        crate::std_resp(true, Some("OK"), json!(results)),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -311,6 +309,7 @@ mod tests {
         let value = peer_wrapper_json(
             &sample_peer(),
             serde_json::json!({ "country": { "iso": "US" } }),
+            Some("host.example.com.".into()),
         );
         let peer = &value["peer"];
         assert_eq!(peer["address"]["ip"], "1.2.3.4");
@@ -324,6 +323,6 @@ mod tests {
         assert_eq!(peer["progress"], 0.5);
         assert_eq!(peer["flags"], "d U");
         assert_eq!(value["geo"]["country"]["iso"], "US");
-        assert!(value["ptrRecord"].is_null());
+        assert_eq!(value["ptrRecord"], "host.example.com.");
     }
 }

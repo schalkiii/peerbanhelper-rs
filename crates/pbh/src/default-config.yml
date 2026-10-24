@@ -6,6 +6,8 @@ server:
   address: "0.0.0.0"
   # 访问令牌；留空时首次启动会随机生成并写回本文件（对齐上游：空 token = 未完成初始化）
   token: ""
+  # 允许任意来源的 CORS（仅使用外部 WebUI 时启用；上游默认 false）
+  allow-cors: false
 
 database:
   # 当前阶段仅支持 sqlite
@@ -39,11 +41,34 @@ btn:
 # 任一数据库缺失/损坏 ⇒ 不注入 GeoIP 数据源，`ip-address-blocker` 的
 # asn / region / city / net-type 四个维度全部不命中（与上游 IPDB 初始化失败一致）
 ip-database:
-  # 允许自动更新 GeoIP 数据库文件（上游 IPDBManager#setupIPDB；下载/解压未移植，见 PLAN.md）
+  # 允许自动更新 GeoIP 数据库文件（对齐上游 IPDBManager#setupIPDB 与 45 天周期）
   auto-update: true
   database-city: "GeoLite2-City"
   database-asn: "GeoLite2-ASN"
   database-geocn: "GeoCN"
+
+# DNS 反查（对齐上游 config.yml 的 lookup / resolvers 段）
+lookup:
+  # 是否在封禁记录 / peers 列表中反查 PTR（上游默认 false）
+  dns-reverse-lookup: false
+resolvers:
+  # 使用系统 DNS（getnameinfo）参与 PTR 查询
+  use-system: true
+  # 额外 DNS 服务器（IP 或 IP:port）；DoH URL 暂不支持
+  servers: []
+
+# 出站 HTTP 代理（对齐上游 config.yml 的 proxy 段；修改后需重启）
+# setting: 0=不使用代理 1=跟随系统 2=使用下方 host:port
+proxy:
+  setting: 0
+  host: "127.0.0.1"
+  port: 7890
+  non-proxy-hosts: "localhost|127.*|192.168.*|10.*|172.16.*|*.local|*.lan"
+
+# 性能选项
+performance:
+  # Windows EcoQoS（省电优先，可能推迟定时任务）；上游默认 true
+  windows-ecoqos-api: true
 
 # 对应上游 profile.yml
 profile:

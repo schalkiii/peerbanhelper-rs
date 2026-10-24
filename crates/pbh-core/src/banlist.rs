@@ -312,6 +312,18 @@ impl BanList {
         records
     }
 
+    /// 异步 PTR 反查完成后回填封禁元数据（对齐上游 `banMetadata.setReverseLookup`）。
+    /// 记录在反查完成前已解封时忽略。
+    pub fn set_reverse_lookup(&mut self, ip: &str, value: String) -> bool {
+        match self.entries.get_mut(ip) {
+            Some(record) => {
+                record.metadata.reverse_lookup = value;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn contains(&self, ip: &str) -> bool {
         self.entries.contains_key(ip)
     }

@@ -49,8 +49,8 @@ pub async fn info(
         "uploadedToPeer": access.4,
         "downloadedFromPeer": access.5,
         "geo": crate::api::query_geo(&state, &host),
-        // PTR 反查需要真实 DNS 查询（上游 3s 超时）；本移植暂未接线
-        "ptrLookup": Value::Null,
+        // 上游 `handleInfo` 不检查 `lookup.dns-reverse-lookup`，始终尝试 PTR（3s 超时）
+        "ptrLookup": state.ptr.lookup(&host),
         "btnQueryAvailable": btn_query_available,
     });
     let _ = params;
