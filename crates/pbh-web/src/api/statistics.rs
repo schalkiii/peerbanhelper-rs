@@ -37,7 +37,7 @@ pub async fn counter(State(state): State<AppState>) -> Response {
         "peerUnbanCounter": metrics.peer_unbans,
         "banlistCounter": banned_ips,
         "bannedIpCounter": banned_ips,
-        "wastedTraffic": 0,
+        "wastedTraffic": metrics.wasted_traffic,
         "trackedSwarmCount": tracked,
         "peersBlockRate": if tracked > 0 { metrics.peer_bans as f64 / tracked as f64 } else { 0.0 },
         "weeklySessions": state

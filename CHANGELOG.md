@@ -3,6 +3,55 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 未发布（2026-10-25）
+
+### feat(review): XERJ 双索引 + 写码前参考检索工作流
+
+- XERJ 本机节点建两个索引：本项目 `pbh-rs`、上游 Java 基线 `pbh-java`（v9.5.1）。
+  写码前先检索上游如何实现同类逻辑，再落到本移植；命令与刷新方式写入 `AGENTS.md`。
+- 全量 review 覆盖规则模块、qBittorrent 适配器、Web API、配置与持久化；修复项如下。
+
+### fix(web): 五处前端静默错配（review 发现）
+
+- `GET /api/downloaders/{id}/torrent/{torrentId}/peers` 返回扁平对象，前端按
+  `record.peer.address.ip` / `record.peer.uploadSpeed` / `record.geo.*` 读取 ⇒
+  活动种子 Peer 弹窗整表空白。改为上游 `PopulatedPeerDTO(peer, geo, ptrRecord)`
+  嵌套结构，并按 `uploadSpeed` 倒序；端点补入契约清单 + 单测锁定嵌套字段。
+- `GET /api/general/profile` 的 `banned_peer_id` / `banned_client_name` / `ptr_rules`
+  是 JSON **字符串**数组，前端模型要求对象数组 ⇒ 规则表空白、保存后回写失败。
+  读取时解析为对象、保存时转回字符串；模块 `ban_duration: 0` 按上游显示为
+  `"default"`；`PUT` 改为上游 `mergeYaml` 式**增量合并**，保存 profile 不再清空
+  WebUI 未展示的模块段（如 `ptr-blacklist`）。
+- IP 黑名单 `netType` 读写全断：读取查了归一化后不存在的 `net-type` 键；写入用
+  kebab 键名而前端提交 camelCase，且漏掉 `datacenter` ⇒ 设置页勾选无效。统一以
+  前端 `netTypeArray` 的 camelCase 为准（`dataCenter` 作为别名），9 键全覆盖。
+- `/api/modules/ipblacklist/ip/test`：IPv4 的 `count` 误按 128 位计算、纯 IP 被
+  `IpNet` 解析拒绝。改为按地址族计算（IPv4 /24 = 256）并接受单 IP；`generatedCidr`
+  输出前缀块（主机位清零，对齐 `toCompressedString`）。
+- `/api/bans?search=` 只匹配 IP；恢复上游「IP + peer id/client/torrent/规则/描述」
+  匹配面，并返回真实 `ipGeoData`（此前恒 null）。`/api/peer/{ip}` 恢复 GeoIP、
+  `torrentAccessCount` 口径（记录行数）、`found = 封禁数>0 || 访问数>0`、
+  `btnQueryAvailable`（检查 `ip_query` 能力）。
+- `/api/statistic/counter` 的 `wastedTraffic` 恒 0；按上游 `recordPeerBan` 语义
+  在每次封禁时累加 `peer.uploaded`。
+- `GET /api/general/config` 补 `privacy.analytics` 视图；`PUT /api/general/config`
+  的 `privacy.analytics` 映射回内部 `analytics`（此前配置页匿名统计开关无效）。
+- 下载器扫描端点返回 `[]`（对齐上游 `List`，此前是 `{downloaders: []}`）。
+
+### fix(core): PCB 首次安排等待窗口时漏跑进度倒退检测
+
+- 上游 `differenceTest` 返回 null 后仍继续执行 `progressRewind`；本移植在「首次
+  安排等待窗口」分支提前 `return pass()`，导致该轮漏掉 rewind 判定。改为安排窗口
+  后继续执行（`ProgressCheatBlocker.java:312-374`）。
+
+### docs: 登记 PCB 前缀实体偏差与未覆盖能力
+
+- PCB `RangeKey` 的「每 IP 独立副本」**不是**上游行为：Java 缓存键是 3 元组
+  `(downloader, torrent, prefix)`（`ProgressCheatBlocker.java:469`），第 220 行的
+  5 元组只是日志字符串。该偏差已更正注释并登记到 `PLAN.md §4.2`，恢复共享键需
+  实机双跑复验。同时登记 PTR 反查、ExternalSwitch、代理/CORS/VACUUM、下载器发现、
+  配置页未覆盖节等差距。
+
 ## 9.5.1-rs.2（2026-10-13）
 
 ### fix(web): 收尾两项——oobe/init 令牌落盘 + 契约清单补 downloaders/{id}

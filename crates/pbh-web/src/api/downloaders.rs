@@ -29,9 +29,10 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<Value>) -> R
 ///
 /// 本移植未实现 mDNS/端口探测，返回空结果——手动添加下载器为主路径。
 pub async fn scan() -> Response {
+    // 上游返回 `List<DiscoveredDownloader>`（不是 `{downloaders: [...]}` 包装）
     (
         StatusCode::OK,
-        crate::std_resp(true, None, json!({ "downloaders": [] })),
+        crate::std_resp(true, None, json!([])),
     )
         .into_response()
 }
@@ -163,6 +164,43 @@ pub(crate) fn torrent_data_json(t: &pbh_core::model::TorrentData) -> Value {
     })
 }
 
+/// 一条实时 peer → 上游 `PopulatedPeerDTO(peer, geo, ptrRecord)`。
+///
+/// WebUI 的活动种子 Peer 弹窗直接读 `record.peer.address.ip` / `record.peer.uploadSpeed`
+/// / `record.geo.*`；返回扁平对象会让这些列全部空白。
+fn peer_wrapper_json(p: &pbh_core::model::PeerData, geo: Value) -> Value {
+    json!({
+        "peer": {
+            // 对齐 `PeerAddress` 的全部序列化字段（`address` 为 transient，不输出）
+            "address": {
+                "downloaderRawIp": p.raw_ip,
+                "downloaderRawPort": p.port,
+                "teredoClientIp": Value::Null,
+                "teredoClientUdpPort": 0,
+                "nattedClientIp": Value::Null,
+                "nattedClientPort": 0,
+                "ip": p.ip,
+                "port": p.port,
+                "natTranslated": false,
+                "teredoTranslated": false,
+            },
+            "rawIp": p.raw_ip,
+            "id": p.peer_id.clone().unwrap_or_default(),
+            "clientName": p.client_name.clone().unwrap_or_default(),
+            "downloaded": p.downloaded,
+            "downloadSpeed": p.dl_speed,
+            "uploaded": p.uploaded,
+            "uploadSpeed": p.up_speed,
+            "progress": p.progress,
+            "flags": pbh_core::modules::monitor::lt_std_string_opt(p.flags.as_deref()),
+        },
+        "geo": geo,
+        // PTR 仅在 `lookup.dns-reverse-lookup` 开启时解析（默认关闭 ⇒ null）
+        "ptrRecord": Value::Null,
+    })
+}
+
+
 /// `GET /api/downloaders/{id}/torrents`：实时种子列表。
 ///
 /// 对齐上游 `TorrentWrapper(id, size, completedSize, name, hash, privateTorrent,
@@ -223,19 +261,12 @@ pub async fn peers(
             .into_response();
     };
     match downloader.fetch_peers(torrent).await {
-        Ok(peers) => {
+        Ok(mut peers) => {
+            // 上游按 `uploadSpeed` 倒序（`handlePeersInTorrentOnDownloader`）
+            peers.sort_by_key(|peer| std::cmp::Reverse(peer.up_speed));
             let results = peers
                 .iter()
-                .map(|p| {
-                    json!({
-                        "address": p.ip,
-                        "port": p.port,
-                        "peerId": p.peer_id,
-                        "clientName": p.client_name,
-                        "uploadSpeed": p.up_speed,
-                        "downloadSpeed": p.dl_speed,
-                    })
-                })
+                .map(|p| peer_wrapper_json(p, crate::api::query_geo(&state, &p.ip)))
                 .collect::<Vec<_>>();
             (
                 StatusCode::OK,
@@ -248,5 +279,51 @@ pub async fn peers(
             crate::std_resp(false, Some(&e.to_string()), Value::Null),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pbh_core::model::PeerData;
+
+    fn sample_peer() -> PeerData {
+        PeerData {
+            client_name: Some("qBittorrent 5.0".into()),
+            peer_id: Some("-qB5000-".into()),
+            dl_speed: 12,
+            downloaded: 34,
+            up_speed: 56,
+            uploaded: 78,
+            progress: 0.5,
+            flags: Some("d U".into()),
+            ip: "1.2.3.4".into(),
+            port: 6881,
+            raw_ip: "1.2.3.4:6881".into(),
+            connection: None,
+        }
+    }
+
+    /// WebUI 的活动种子 Peer 弹窗按 `record.peer.*` / `record.geo` 读取；
+    /// 回归锁定嵌套结构，避免再次返回扁平对象导致整表空白。
+    #[test]
+    fn peer_wrapper_matches_populated_peer_dto_shape() {
+        let value = peer_wrapper_json(
+            &sample_peer(),
+            serde_json::json!({ "country": { "iso": "US" } }),
+        );
+        let peer = &value["peer"];
+        assert_eq!(peer["address"]["ip"], "1.2.3.4");
+        assert_eq!(peer["address"]["port"], 6881);
+        assert_eq!(peer["address"]["downloaderRawIp"], "1.2.3.4:6881");
+        assert_eq!(peer["rawIp"], "1.2.3.4:6881");
+        assert_eq!(peer["id"], "-qB5000-");
+        assert_eq!(peer["clientName"], "qBittorrent 5.0");
+        assert_eq!(peer["downloadSpeed"], 12);
+        assert_eq!(peer["uploadSpeed"], 56);
+        assert_eq!(peer["progress"], 0.5);
+        assert_eq!(peer["flags"], "d U");
+        assert_eq!(value["geo"]["country"]["iso"], "US");
+        assert!(value["ptrRecord"].is_null());
     }
 }

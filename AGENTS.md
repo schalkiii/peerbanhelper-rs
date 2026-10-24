@@ -18,6 +18,20 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
   MinGW 的 `cc` 是 C 构建依赖；**GNU coreutils 的 `link.exe` 会遮蔽 MSVC linker**，
   部署脚本已做 PATH 净化（仅移除 coreutils，保留 mingw）
 
+## 参考实现检索（写码前必做）
+
+改动规则判定、下载器语义、Web API 字段前，先检索上游 Java 如何实现同类逻辑，再对照本移植：
+
+- XERJ 节点（本机常驻；未启动时 `xerj --insecure --port 9300 --data-dir ~/xerj-data`）：
+  `xerj search --url http://127.0.0.1:9300 --prefix pbh-java "progress cheat excessive" -k 5`
+- 已建两个索引：`pbh-rs`（本项目）与 `pbh-java`（上游 v9.5.1）；
+  `xerj def --url http://127.0.0.1:9300 --prefix pbh-java <Symbol>` 可直接定位符号。
+- 索引刷新：上游/本项目源码变动后重跑
+  `xerj autoindex D:/workspace/upstream-PeerBanHelper --prefix pbh-java --url http://127.0.0.1:9300`
+  （本项目同理，前缀 `pbh-rs`）。
+- 检索结果只作线索，**以两侧源码为准**：输出里必须核对 Java 的 `file:line` 与
+  Rust 对应实现，不能只凭检索片段下结论。
+
 ## 目录与约定
 
 - crates：`pbh`（bin + 组装）、`pbh-core`（规则引擎/模块）、`pbh-downloader`、`pbh-db`、

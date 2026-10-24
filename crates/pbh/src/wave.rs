@@ -631,6 +631,11 @@ impl WaveEngine {
                 // 上游为 `log.error(Lang.DUPLICATE_BAN, ...)`
                 warn!("对等体 {} 重复封禁，将全量重放封禁列表", b.entry.ip);
             }
+            // 对齐上游 `InMemoryMetrics#recordPeerBan`：`wastedTraffic += peer.uploaded`
+            // （每次封禁都累计，包含 `BAN_FOR_DISCONNECT`）
+            if let Ok(mut metrics) = self.metrics.lock() {
+                metrics.wasted_traffic += b.peer_uploaded.max(0) as u64;
+            }
             // 单条封禁日志（上游 `Lang.BAN_PEER`，仅 `action != BAN_FOR_DISCONNECT` 时打印；
             // ban-for-disconnect 静默，对齐 `DownloaderServerImpl` 第 252 行）
             if !b.ban_for_disconnect {

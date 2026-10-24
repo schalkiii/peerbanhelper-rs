@@ -309,6 +309,8 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   并记录 `fast_pcb_test_executed`，同一 peer 只触发一次。
 - 状态实体与缓存键 **[GOLDEN]**：
   - 前缀实体键 `(downloader, torrent, prefix)`，`prefix` 为 IPv4/32、IPv6/56 的 `toPrefixBlock`；
+    > **已知偏差**：本移植运行态按 `(downloader, torrent, prefix, ip)` 存每 IP 副本（上游
+    > 同前缀共享，`ProgressCheatBlocker.java:469`），已在 PLAN §4.2 登记；恢复共享键需双跑复验。
   - IP 实体键 `(downloader, torrent, **ip**)`——**不含端口**。若把端口计入键，
     同一 IP 的多个端口会各自累加上传增量，导致 `computedUploaded` 虚高而误判「过量下载」/进度差。
   - 解封窗口（`ban-delay-window`）到期判定为 `now > window_end`（严格大于）。
@@ -455,6 +457,27 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   - `GET /api/sub/interval`、`PATCH /api/sub/interval`：刷新间隔（`check-interval-ms`，下限 60000）。
   - 增删改即时回写 `config.yml` 的 `module.ip-address-blocker-rules` 段，并触发一次刷新；
     刷新成功落 `rule_sub_log`（历史）与 `rule_sub_info`（当前状态）。
+- **配置读写（对齐 `PBHGeneralController` 的 Web 视图）**：
+  - `GET /api/general/profile`：`banned-peer-id` / `banned-client-name` / `ptr-rules`
+    返回**对象数组**（上游把 JSON 字符串解析成对象）；模块 `ban-duration: 0` 返回 `"default"`。
+  - `PUT /api/general/profile`：对象数组转回 JSON 字符串；按上游 `mergeYaml` **增量合并**
+    （WebUI 未提交的模块段，如 `ptr-blacklist`，必须保留）。
+  - `GET /api/general/config` 补 `privacy.analytics` 视图；`PUT /api/general/config`
+    的 `privacy.analytics` 映射回内部 `analytics`（上游配置页按 `privacy.analytics` 绑定）。
+- **`GET /api/downloaders/{id}/torrent/{torrentId}/peers`**：返回
+  `[{peer: PeerWrapper, geo: IPGeoData|null, ptrRecord: string|null}]`，按 `uploadSpeed`
+  倒序（上游 `PopulatedPeerDTO`）；`peer.address.ip/port` 与 `peer.uploadSpeed` 等直接供前端表格。
+- **`GET /api/modules/ipblacklist/{ruleType}` / `PUT`**：`ruleType=netType` 使用 WebUI 的
+  camelCase 集合（`wideband` / `baseStation` / … / `datacenter`；`dataCenter` 作为输入别名），
+  读写兼容 map / list 两种 `net-type` 配置形态。
+- **`GET /api/modules/ipblacklist/ip/test`**：接受单 IP 与 CIDR；`count` 为该地址族的
+  地址总数（IPv4 /24 = 256）；`generatedCidr` 为主机位清零的前缀块。
+- **`GET /api/bans?search=`**：匹配 IP、peer id、client name、torrent 名称/hash、规则与描述；
+  `ipGeoData` 返回实时 GeoIP（未装库为 null）。
+- **`GET /api/peer/{ip}`**：`found = banCount>0 || torrentAccessCount>0`；`torrentAccessCount`
+  为 `peer_records` 行数；`geo` 实时查询；`btnQueryAvailable` 取决于 `ip_query` 能力。
+- **`GET /api/statistic/counter`**：`wastedTraffic` = 累计被封禁 peer 的 `uploaded`
+  （对齐 `InMemoryMetrics#recordPeerBan`）。
 - 静态资源：`/` 托管 WebUI（`data/static`，缺失时返回占位页）。
 - 统一响应体 `{success, message, data}`。
 

@@ -53,9 +53,10 @@ pub async fn oobe_test_downloader(State(state): State<AppState>, Json(body): Jso
 /// 本移植未实现上游的 `DownloaderDiscovery`（mDNS/端口探测），返回空结果——
 /// OOBE 向导引导用户手动填写下载器地址（主路径不受影响）。
 pub async fn oobe_scan_downloader() -> Response {
+    // 上游返回 `List<DiscoveredDownloader>`；本移植未实现 mDNS/端口探测 ⇒ 空列表
     (
         StatusCode::OK,
-        crate::std_resp(true, None, json!({ "downloaders": [] })),
+        crate::std_resp(true, None, json!([])),
     )
         .into_response()
 }

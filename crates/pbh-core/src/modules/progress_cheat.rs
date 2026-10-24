@@ -157,13 +157,14 @@ impl PcbPersistRow {
     }
 }
 
-/// 前缀实体键：`(downloader, torrent, prefix, ip)` —— 对齐上游缓存键
-/// （`ProgressCheatBlocker.java:220` 的 5 元组含 `peerIp` 与 port）。
+/// 前缀实体键：`(downloader, torrent, prefix, ip)`。
 ///
-/// **语义要点**：上游的 range 实体是「每 IP 独立副本」（缓存键含 ip/port），同 prefix
-/// 的不同 IP 各自累加各自的副本，flush 时后写覆盖 `pcb_range` 的同 prefix 行；
-/// 若按纯前缀共享实体，多拨段下 `computed_uploaded`（max 三者）会被同段其它 IP 的
-/// 上传增量推高，造成 excessive 误判（10.9 天对跑实测 46 行误封）。
+/// **与上游的已知偏差（需在 PLAN §4.2 登记）**：上游 `CacheKeyPrefix(downloader,
+/// torrentId, prefix)` 是同前缀**共享**实体（`ProgressCheatBlocker.java:469`；
+/// 第 220 行的 5 元组只是 `task.setComment` 的日志字符串，不是缓存键）。本移植按
+/// 10.9 天对跑的 46 行 excessive 误封改为「每 IP 独立副本」，持久化仍按 prefix 写入
+/// （flush 时后写覆盖 `pcb_range` 的同一行）。恢复共享键会改变封禁决策，需实机双跑
+/// 验证后再决定。
 type RangeKey = (String, String, String, String);
 /// IP 实体键：`(downloader, torrent, ip)` —— 对齐 Java `CacheKeyAddr`。
 ///
@@ -383,10 +384,8 @@ impl RuleModule for ProgressCheatBlocker {
 
         let prefix_string = prefix_block(&peer.ip, c.ipv4_prefix_length, c.ipv6_prefix_length)
             .unwrap_or_else(|| peer.ip.clone());
-        // 对齐上游缓存键（`ProgressCheatBlocker.java:220` 的 5 元组含 ip/port）：
-        // range 实体是「每 IP 独立副本」而非同段共享——否则多拨段下 computed_uploaded
-        // 会被同段其它 IP 的上传增量推高（10.9 天对跑实测 46 行 excessive 误封）。
-        // DB 仍按 prefix 行存储（`pcb_range`），副本 flush 时后写覆盖，对齐上游。
+        // 已知偏差：range 实体为「每 IP 独立副本」而非上游的同段共享（见 RangeKey
+        // 文档注释）。DB 仍按 prefix 行存储（`pcb_range`），副本 flush 时后写覆盖。
         let range_key = (
             downloader_id.to_string(),
             torrent.id().to_string(),
@@ -577,10 +576,10 @@ impl ProgressCheatBlocker {
             && peer.is_uploading_to_peer()
         {
             if !self.window_scheduled(range, addr) {
+                // 上游 `differenceTest` 返回 null 后**继续执行** progressRewind——
+                // 这里不能提前返回，否则首次安排等待窗口的那一轮会漏掉进度倒退判定。
                 self.schedule_window(range, addr, now);
-                return CheckResult::pass(&module);
-            }
-            if self.window_expired(range, addr, now) {
+            } else if self.window_expired(range, addr, now) {
                 range.progress_difference_counter += 1;
                 addr.progress_difference_counter += 1;
                 self.reset_window(range, addr);

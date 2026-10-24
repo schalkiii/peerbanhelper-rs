@@ -30,7 +30,51 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Router,
 };
+use serde_json::{json, Value};
 use std::collections::HashMap;
+
+/// `IPGeoData` → 上游 Web API 的 JSON 形态（完整字段，非落库精简版）。
+///
+/// Web API 使用未开启 `@JsonUtil.Hidden` 排除策略的 Gson，因此 `city.iso` /
+/// `country.name` / `as.organization` 等字段也会输出；前端 IP 详情与 Peer 列表
+/// 依赖这些字段（落库用的 [`pbh_db::peer_geoip_json`] 是精简版，不能直接复用）。
+pub(crate) fn ip_geo_json(geo: &pbh_core::geoip::IpGeoData) -> Value {
+    json!({
+        "city": geo.city.as_ref().map(|c| json!({
+            "name": c.name,
+            "iso": c.iso,
+        })),
+        "country": geo.country.as_ref().map(|c| json!({
+            "name": c.name,
+            "iso": c.iso,
+        })),
+        "as": geo.as_data.as_ref().map(|a| json!({
+            "number": a.number,
+            "organization": a.organization,
+            "ipAddress": a.ip_address,
+            "network": a.network.as_ref().map(|n| json!({
+                "ipAddress": n.ip_address,
+                "prefixLength": n.prefix_length,
+            })),
+        })),
+        "network": geo.network.as_ref().map(|n| json!({
+            "isp": n.isp,
+            "netType": n.net_type,
+        })),
+    })
+}
+
+/// 按 IP 实时查询 GeoIP；未安装 IP 库或地址非法时返回 `null`（对齐上游 `IPDBManager`）。
+pub(crate) fn query_geo(state: &crate::AppState, ip: &str) -> Value {
+    state
+        .geo
+        .as_ref()
+        .and_then(|provider| {
+            pbh_core::iputil::parse_addr(ip).and_then(|addr| provider.query(addr))
+        })
+        .map(|geo| ip_geo_json(&geo))
+        .unwrap_or(Value::Null)
+}
 
 /// 不需要 Token 鉴权的路由（对齐上游 Role.ANYONE 的端点）。
 pub fn public_routes() -> Router<crate::AppState> {

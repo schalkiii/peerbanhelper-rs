@@ -26,19 +26,32 @@ pub async fn info(
         .db
         .peer_access_summary(&host)
         .unwrap_or((0, 0, 0, 0, 0, 0));
-    let found = access.0 > 0;
+    // 上游 `handleInfo`：`found = banCount > 0 || torrentAccessCount > 0`，
+    // `torrentAccessCount` 取 `peer_records` 的**行数**（不是去重种子数）。
+    let found = ban_count > 0 || access.0 > 0;
+    let btn_query_available = state
+        .btn_network
+        .get()
+        .map(|network| {
+            network
+                .abilities()
+                .iter()
+                .any(|ability| ability.kind == pbh_core::btn_transport::BtnAbilityKind::IpQuery)
+        })
+        .unwrap_or(false);
     let data = json!({
         "found": found,
         "address": host,
         "banCount": ban_count,
-        "torrentAccessCount": access.1,
+        "torrentAccessCount": access.0,
         "firstTimeSeen": access.2,
         "lastTimeSeen": access.3,
         "uploadedToPeer": access.4,
         "downloadedFromPeer": access.5,
-        "geo": null,
-        "ptrLookup": null,
-        "btnQueryAvailable": false,
+        "geo": crate::api::query_geo(&state, &host),
+        // PTR 反查需要真实 DNS 查询（上游 3s 超时）；本移植暂未接线
+        "ptrLookup": Value::Null,
+        "btnQueryAvailable": btn_query_available,
     });
     let _ = params;
     (StatusCode::OK, crate::std_resp(true, None, data)).into_response()

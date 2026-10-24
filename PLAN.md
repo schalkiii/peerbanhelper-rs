@@ -131,7 +131,21 @@
 ### 4.1 与上游差异的对齐项
 
 > 原则：有差异就写在这里，说明现状与上游行为，按影响排序逐项关闭。
-> 当前**无未关闭项**（GeoIP 进度 UI 与 PTR 架构已对齐并移入 §3.5/§3.6）。
+> 2026-10-25 review 已关闭 Web API 的 5 组字段/结构错配与 PCB rewind 漏检（见 CHANGELOG）；
+> 以下为**仍未关闭**的项（默认配置下大多无行为差异）：
+>
+> 1. **PTR 反查未接线**（`lookup.dns-reverse-lookup`）：封禁记录 `reverseLookup` 恒
+>    `"N/A"`，`/api/peer/{ip}` 的 `ptrLookup` 恒 null。现有 `SystemPtrResolver` 只读
+>    `/etc/resolv.conf`，Windows 默认部署无解析器。该开关默认关闭。
+> 2. **外部开关（ExternalSwitch / `-Dpbh.*`）未移植**：`pbh.pcb.disable-completed-excessive`、
+>    `pbh.module.idle-connection-dos-protection.ignore-if-any-interested`（默认 true，默认
+>    行为一致）、`pbh.downloader.qBittorrent.*` 等不可用。
+> 3. **`proxy.*` / `server.allow-cors` / `persist.vacuum-interval-days` 未实现**；
+>    下载器自动发现（`POST /api/downloaders/scan`、OOBE scan）返回空列表（形状已对齐）。
+> 4. **配置页未覆盖节**：`lookup` / `proxy` / `resolvers` / `performance` 读写为空操作；
+>    保存主配置按内部模型重写，上游文件中的未知键不会保留（profile 已改为增量合并）。
+> 5. **`/api/downloaders/{id}/torrents|peers` 实时拉取**而非上游 live snapshot：多一次
+>    下载器请求，返回内容语义一致（Peers 的 `PopulatedPeerDTO` 结构已对齐）。
 
 ### 4.2 已知且保留的行为差异（说明，不计划「修复」）
 
@@ -144,6 +158,11 @@
 - GeoIP 更新失败策略：上游「下载失败仍 move 空临时文件」会截断既有数据库，本移植失败时
   一律保留原文件（不复刻该缺陷）。
 - 每日流量阈值告警等上游默认关闭的功能：默认配置下无行为差异，仅 `enabled: true` 时生效。
+- **PCB 前缀实体改为「每 IP 独立副本」**（`ProgressCheatBlocker` 的 `RangeKey`）：上游缓存键是
+  3 元组 `(downloader, torrent, prefix)`（`ProgressCheatBlocker.java:469`，同前缀共享），
+  第 220 行的 5 元组只是日志字符串。本移植按 10.9 天对跑的 46 行 excessive 误封改为每 IP
+  副本，**这是已登记的有意偏差**，且重启后 range 计数从零（持久化行无 ip 列）。
+  恢复上游共享键会改变封禁决策，需实机双跑复验后再决定；判定链路的其余部分逐行对齐。
 - **AutoSTUN 的 Web 状态面**：核心能力（TCP STUN / UDP NAT 探测 / TCP 转发器，见 §3.6）已实现并经
   `ip-remapping.auto-stun.enabled` 在 `main.rs` 接线；但 `/api/autostun/status` 返回的是**静态
   「未启用」结构**（`AppState::auto_stun_status()`），不反映真实 registry 状态；写操作

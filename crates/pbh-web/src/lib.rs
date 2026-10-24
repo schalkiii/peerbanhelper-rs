@@ -44,6 +44,9 @@ pub struct Metrics {
     pub peer_bans: u64,
     /// 累计解封次数
     pub peer_unbans: u64,
+    /// 累计「浪费的流量」：每个被封禁 peer 的 `uploaded`（对齐上游
+    /// `InMemoryMetrics#recordPeerBan` 的 `wastedTraffic += peer.uploaded`）
+    pub wasted_traffic: u64,
 }
 
 #[derive(Clone)]
@@ -2578,6 +2581,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.expect("响应体");
         let body: Value = serde_json::from_slice(&bytes).expect("必须是 JSON");
-        assert!(body.pointer("/data/downloaders").and_then(|v| v.as_array()).is_some());
+        // 上游返回 `List<DiscoveredDownloader>`（裸数组），不是 `{downloaders: []}`
+        assert!(body.get("data").and_then(Value::as_array).is_some());
     }
 }

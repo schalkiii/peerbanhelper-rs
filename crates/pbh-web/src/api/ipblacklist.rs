@@ -39,6 +39,65 @@ fn response_key(rule_type: &str) -> Option<&'static str> {
     }
 }
 
+/// 前端 `netTypeArray` 的 9 个取值 ↔ `profile.yml` 的 kebab 开关键。
+///
+/// 注意 `datacenter`：上游 `ProfileUpdateScript` 迁移时写成 `dataCenter`，而 WebUI
+/// 的 `netTypeArray` 用的是 `datacenter`（`IPBlackList#checkIPDB` 两种都接受）。
+/// 这里统一以 WebUI 的写法为准（`dataCenter` 作为输入别名），否则设置页勾选
+/// 「数据中心」后读写两侧对不上。
+const NET_TYPE_KEYS: [(&str, &str); 9] = [
+    ("wideband", "wideband"),
+    ("baseStation", "base-station"),
+    ("governmentAndEnterpriseLine", "government-and-enterprise-line"),
+    ("businessPlatform", "business-platform"),
+    ("backboneNetwork", "backbone-network"),
+    ("ipPrivateNetwork", "ip-private-network"),
+    ("internetCafe", "internet-cafe"),
+    ("iot", "iot"),
+    ("datacenter", "datacenter"),
+];
+
+fn normalize_net_type(token: &str) -> String {
+    match token {
+        "dataCenter" => "datacenter".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 读取 `net-type`：兼容 kebab 布尔映射（出厂 profile.yml）与字符串列表（上游迁移后）两种形态。
+fn read_net_types(section: &Value) -> Vec<String> {
+    let Some(value) = section
+        .get("net_type")
+        .or_else(|| section.get("net-type"))
+    else {
+        return Vec::new();
+    };
+    match value {
+        Value::Object(flags) => NET_TYPE_KEYS
+            .iter()
+            .filter(|(_, key)| flags.get(*key).and_then(|v| v.as_bool()).unwrap_or(false))
+            .map(|(token, _)| (*token).to_string())
+            .collect(),
+        Value::Array(list) => list
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(normalize_net_type)
+            .filter(|token| NET_TYPE_KEYS.iter().any(|(known, _)| known == token))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 写入 `net-type`：统一落 kebab 布尔映射（配置解析两种形态都接受）。
+fn write_net_types(section: &mut Value, selected: &[String]) {
+    let selected: Vec<String> = selected.iter().map(|s| normalize_net_type(s)).collect();
+    let flags: serde_json::Map<String, Value> = NET_TYPE_KEYS
+        .iter()
+        .map(|(token, key)| ((*key).to_string(), Value::Bool(selected.iter().any(|s| s == token))))
+        .collect();
+    section["net_type"] = Value::Object(flags);
+}
+
 fn read_section(state: &AppState) -> Result<Value, String> {
     let doc = state.backend.read_config("profile")?;
     Ok(doc
@@ -89,19 +148,12 @@ pub async fn get_rule(State(state): State<AppState>, Path(rule_type): Path<Strin
         }
     };
     let value = match rule_type.as_str() {
-        // netType 在 profile 中是对象（wideband 等 8 键布尔），上游以 Set<String>
-        // 语义暴露：返回值为 true 的键名列表
+        // netType 以 WebUI 的 camelCase 集合语义暴露（兼容 map / list 两种配置形态）
         "netType" => Value::Array(
-            section
-                .get("net-type")
-                .and_then(|v| v.as_object())
-                .map(|m| {
-                    m.iter()
-                        .filter(|(_, v)| v.as_bool().unwrap_or(false))
-                        .map(|(k, _)| Value::String(k.clone()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            read_net_types(&section)
+                .into_iter()
+                .map(Value::String)
+                .collect(),
         ),
         _ => section.get(profile_key(&rule_type).unwrap_or_default()).cloned().unwrap_or(Value::Array(vec![])),
     };
@@ -170,26 +222,16 @@ fn mutate(state: &AppState, kind: &str, body: &Value, add: bool) -> Result<(), S
     let mut section = read_section(state)?;
 
     if kind == "netType" {
-        // 数组 → 对象（8 键布尔映射）：列表里出现的键为 true，其余 false
-        let names = [
-            "wideband",
-            "base-station",
-            "government-and-enterprise-line",
-            "business-platform",
-            "backbone-network",
-            "ip-private-network",
-            "internet-cafe",
-            "iot",
-        ];
+        // 数组 → kebab 布尔映射（9 个键，含 datacenter）；兼容 `dataCenter` 别名
         let selected: Vec<String> = incoming
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
-        let obj: serde_json::Map<String, Value> = names
-            .iter()
-            .map(|k| (k.to_string(), Value::Bool(selected.iter().any(|s| s == k))))
-            .collect();
-        section[p_key] = Value::Object(obj);
+        write_net_types(&mut section, &selected);
         return write_section(state, &section);
     }
 
@@ -224,30 +266,113 @@ pub async fn test_ip(Json(body): Json<Value>) -> Response {
         )
             .into_response();
     };
-    match ip_str.parse::<ipnet::IpNet>() {
-        Ok(net) => {
-            let lower = net.network();
-            let upper = net.broadcast();
-            let count = net.prefix_len();
-            (
-                StatusCode::OK,
-                crate::std_resp(
-                    true,
-                    None,
-                    json!({
-                        "from": lower.to_string(),
-                        "to": upper.to_string(),
-                        "generatedCidr": net.to_string(),
-                        "count": format!("{}", 1u128 << (128 - count as u128)),
-                    }),
-                ),
-            )
-                .into_response()
-        }
-        Err(_) => (
+    match parse_ip_test(ip_str) {
+        Some((from, to, generated_cidr, count)) => (
+            StatusCode::OK,
+            crate::std_resp(
+                true,
+                None,
+                json!({
+                    "from": from,
+                    "to": to,
+                    "generatedCidr": generated_cidr,
+                    "count": count,
+                }),
+            ),
+        )
+            .into_response(),
+        None => (
             StatusCode::BAD_REQUEST,
             crate::std_resp(false, Some("IP_BLACKLIST_PUT_IP_INVALID_IP"), Value::Null),
         )
             .into_response(),
+    }
+}
+
+/// 解析单 IP / CIDR 的 `(from, to, generatedCidr, count)`。
+///
+/// 上游 `IPAddressUtil.getIPAddress` 同时接受单 IP 与 CIDR；`getCount()` 的口径是
+/// 该地址族的**地址总数**（IPv4 /24 = 256；IPv6 /64 = 2^64）。
+fn parse_ip_test(ip_str: &str) -> Option<(String, String, String, String)> {
+    if let Ok(net) = ip_str.parse::<ipnet::IpNet>() {
+        let lower = net.network();
+        let upper = net.broadcast();
+        let bits = match lower {
+            std::net::IpAddr::V4(_) => 32u32,
+            std::net::IpAddr::V6(_) => 128u32,
+        };
+        let host_bits = bits - u32::from(net.prefix_len());
+        let count = if host_bits >= 128 {
+            // 2^128（IPv6 /0）超出 u128 上限
+            "340282366920938463463374607431768211456".to_string()
+        } else {
+            (1u128 << host_bits).to_string()
+        };
+        // 上游 `toCompressedString()` 输出的是前缀块（主机位清零），不是输入的原始写法
+        let generated_cidr = ipnet::IpNet::new(lower, net.prefix_len())
+            .map(|block| block.to_string())
+            .unwrap_or_else(|_| net.to_string());
+        return Some((lower.to_string(), upper.to_string(), generated_cidr, count));
+    }
+    ip_str.parse::<std::net::IpAddr>().ok().map(|addr| {
+        (
+            addr.to_string(),
+            addr.to_string(),
+            addr.to_string(),
+            "1".to_string(),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ip_test_accepts_single_host_and_counts_ipv4_hosts() {
+        assert_eq!(
+            parse_ip_test("1.2.3.4"),
+            Some(("1.2.3.4".into(), "1.2.3.4".into(), "1.2.3.4".into(), "1".into()))
+        );
+        assert_eq!(
+            parse_ip_test("1.2.3.4/24"),
+            Some((
+                "1.2.3.0".into(),
+                "1.2.3.255".into(),
+                "1.2.3.0/24".into(),
+                "256".into()
+            ))
+        );
+        assert_eq!(
+            parse_ip_test("::1"),
+            Some(("::1".into(), "::1".into(), "::1".into(), "1".into()))
+        );
+    }
+
+    #[test]
+    fn net_type_reads_both_config_forms_and_uses_webui_tokens() {
+        let flags = json!({ "net-type": { "wideband": true, "datacenter": true } });
+        assert_eq!(
+            read_net_types(&flags),
+            vec!["wideband".to_string(), "datacenter".to_string()]
+        );
+        let list = json!({ "net_type": ["baseStation", "dataCenter"] });
+        assert_eq!(
+            read_net_types(&list),
+            vec!["baseStation".to_string(), "datacenter".to_string()]
+        );
+    }
+
+    #[test]
+    fn net_type_write_roundtrip_includes_datacenter() {
+        let mut section = json!({});
+        write_net_types(&mut section, &["datacenter".into(), "iot".into()]);
+        assert_eq!(section["net_type"]["datacenter"], true);
+        assert_eq!(section["net_type"]["iot"], true);
+        assert_eq!(section["net_type"]["wideband"], false);
+        assert_eq!(
+            read_net_types(&section),
+            vec!["iot".to_string(), "datacenter".to_string()]
+        );
     }
 }

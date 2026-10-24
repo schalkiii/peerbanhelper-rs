@@ -8,6 +8,7 @@ use crate::config::{AppConfig, DownloaderConfig, PushProviderConfig, PushSection
 use crate::push::{AlertLevel, AlertManager, PushManager};
 use crate::wave::DownloaderEntry;
 
+use pbh_core::config::ProfileConfig;
 use pbh_core::pipeline::Pipeline;
 use pbh_core::remap::RemapConfig;
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
@@ -289,13 +290,25 @@ impl WebBackend for PbhBackend {
         let cfg = self.snapshot();
         let root = serde_yaml::to_value(&cfg).map_err(|e| e.to_string())?;
         match name {
-            "config" => Ok(normalize_keys(&root)),
+            "config" => {
+                // 上游配置文件是 `privacy.analytics`，WebUI 配置页也按该路径绑定；
+                // 本移植内部字段是顶层 `analytics`，这里补出上游视图。
+                let mut view = normalize_keys(&root);
+                if let Some(object) = view.as_object_mut() {
+                    let analytics = object
+                        .get("analytics")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    object.insert("privacy".into(), json!({ "analytics": analytics }));
+                }
+                Ok(view)
+            }
             "profile" => {
                 let profile = root
                     .get("profile")
                     .cloned()
                     .unwrap_or(serde_yaml::Value::Null);
-                Ok(normalize_keys(&profile))
+                Ok(profile_web_view(normalize_keys(&profile)))
             }
             other => Err(format!("CONFIG_NOT_FOUND: {other}")),
         }
@@ -303,17 +316,42 @@ impl WebBackend for PbhBackend {
 
     fn write_config(&self, name: &str, data: &Value) -> Result<(), String> {
         // 与上游一致：写回前先把 JSON 的 `_` 键还原为 YAML 的 `-` 键
-        let yaml_value = denormalize_json(data);
+        let mut yaml_value = denormalize_json(data);
         match name {
             "config" => {
+                // 配置页按上游路径提交 `privacy.analytics`；映射回内部顶层 `analytics`
+                if let Some(analytics) = yaml_value
+                    .get("privacy")
+                    .and_then(|privacy| privacy.get("analytics"))
+                    .and_then(serde_yaml::Value::as_bool)
+                {
+                    if let Some(mapping) = yaml_value.as_mapping_mut() {
+                        mapping.insert(
+                            serde_yaml::Value::String("analytics".into()),
+                            serde_yaml::Value::Bool(analytics),
+                        );
+                    }
+                }
                 let parsed = serde_yaml::from_value::<AppConfig>(yaml_value)
                     .map_err(|e| format!("配置校验失败: {e}"))?;
                 self.save_config(&parsed)?;
             }
             "profile" => {
+                // 前端只提交它认识的段落（例如 `ptr-blacklist` 不在 WebUI 模型里）；
+                // 上游 `PBHGeneralController.mergeYaml` 是**增量合并**，未提交的段落
+                // 必须保留，否则保存一次 profile 就会把 WebUI 未展示的模块配置重置。
+                let mut merged =
+                    serde_yaml::to_value(self.snapshot().profile).map_err(|e| e.to_string())?;
+                let overlay = profile_for_save(yaml_value);
+                deep_merge_yaml(&mut merged, &overlay);
+                let parsed = serde_yaml::from_value::<ProfileConfig>(merged)
+                    .map_err(|e| format!("配置校验失败: {e}"))?;
                 let mut root = serde_yaml::to_value(self.snapshot()).map_err(|e| e.to_string())?;
                 if let Some(mapping) = root.as_mapping_mut() {
-                    mapping.insert(serde_yaml::Value::String("profile".into()), yaml_value);
+                    mapping.insert(
+                        serde_yaml::Value::String("profile".into()),
+                        serde_yaml::to_value(parsed).map_err(|e| e.to_string())?,
+                    );
                 }
                 let parsed = serde_yaml::from_value::<AppConfig>(root)
                     .map_err(|e| format!("配置校验失败: {e}"))?;
@@ -776,6 +814,92 @@ fn normalize_keys(value: &serde_yaml::Value) -> Value {
     }
 }
 
+/// profile 里以 JSON 字符串形式存储、但 WebUI 模型要求对象数组的三个字段。
+const PROFILE_RULE_FIELDS: [(&str, &str); 3] = [
+    ("peer_id_blacklist", "banned_peer_id"),
+    ("client_name_blacklist", "banned_client_name"),
+    ("ptr_blacklist", "ptr_rules"),
+];
+
+/// `GET /api/general/profile` 的响应整形（对齐上游 `handleConfigGet`）：
+/// - `banned-peer-id` / `banned-client-name` / `ptr-rules` 的 JSON 字符串 → 对象；
+/// - 模块 `ban-duration: 0` → `"default"`（前端用字符串 `default` 表示跟随全局）。
+fn profile_web_view(mut root: Value) -> Value {
+    let Some(module) = root.get_mut("module").and_then(Value::as_object_mut) else {
+        return root;
+    };
+    for (name, section) in module.iter_mut() {
+        let Some(section) = section.as_object_mut() else {
+            continue;
+        };
+        if let Some((_, field)) = PROFILE_RULE_FIELDS.iter().find(|(n, _)| n == name) {
+            if let Some(Value::Array(items)) = section.get_mut(*field) {
+                for item in items.iter_mut() {
+                    if let Value::String(text) = item {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                            *item = parsed;
+                        }
+                    }
+                }
+            }
+        }
+        if section.get("ban_duration").and_then(Value::as_i64) == Some(0) {
+            section.insert("ban_duration".into(), Value::String("default".into()));
+        }
+    }
+    root
+}
+
+/// `PUT /api/general/profile` 的落盘整形：对象规则数组 → 上游的 JSON 字符串列表。
+fn profile_for_save(mut root: serde_yaml::Value) -> serde_yaml::Value {
+    let Some(module) = root
+        .get_mut("module")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return root;
+    };
+    for (name, field) in PROFILE_RULE_FIELDS {
+        // `denormalize_json` 已把 `_` 还原为 `-`，这里按上游 YAML 的键名查找
+        let Some(section) = module
+            .get_mut(serde_yaml::Value::String(name.replace('_', "-")))
+            .and_then(serde_yaml::Value::as_mapping_mut)
+        else {
+            continue;
+        };
+        let Some(sequence) = section
+            .get_mut(serde_yaml::Value::String(field.replace('_', "-")))
+            .and_then(serde_yaml::Value::as_sequence_mut)
+        else {
+            continue;
+        };
+        for item in sequence.iter_mut() {
+            if item.is_mapping() {
+                if let Ok(text) = serde_json::to_string(item) {
+                    *item = serde_yaml::Value::String(text);
+                }
+            }
+        }
+    }
+    root
+}
+
+/// 递归合并 YAML 映射（对齐上游 `PBHGeneralController.mergeYaml`：只覆盖提交的键，
+/// 列表整体替换，未提交的段落保留）。
+fn deep_merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
+    if let (Some(base_map), Some(overlay_map)) = (base.as_mapping_mut(), overlay.as_mapping()) {
+        for (key, value) in overlay_map {
+            match base_map.get_mut(key) {
+                Some(existing) => deep_merge_yaml(existing, value),
+                None => {
+                    base_map.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        *base = overlay.clone();
+    }
+}
+
 /// 把 WebUI 提交的 JSON 转回 YAML：映射键的 `_` 替换为 `-`。
 fn denormalize_json(value: &Value) -> serde_yaml::Value {
     match value {
@@ -814,4 +938,90 @@ fn push_channel_parts(channel: &Value) -> Result<(String, serde_yaml::Mapping), 
         );
     }
     Ok((name, section))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前端 `Profile` 模型要求规则数组是对象；上游 `handleConfigGet` 会做同样的转换。
+    #[test]
+    fn profile_web_view_turns_rule_strings_into_objects_and_zero_duration_into_default() {
+        let raw = json!({
+            "module": {
+                "peer_id_blacklist": {
+                    "ban_duration": 0,
+                    "banned_peer_id": ["{\"method\":\"STARTS_WITH\",\"content\":\"-hp\"}"],
+                },
+                "ptr_blacklist": {
+                    "ban_duration": 259200000,
+                    "ptr_rules": ["{\"method\":\"EQUALS\",\"content\":\"example.com\"}"],
+                }
+            }
+        });
+        let view = profile_web_view(raw);
+        assert_eq!(
+            view["module"]["peer_id_blacklist"]["ban_duration"],
+            "default"
+        );
+        assert_eq!(
+            view["module"]["peer_id_blacklist"]["banned_peer_id"][0]["method"],
+            "STARTS_WITH"
+        );
+        assert_eq!(
+            view["module"]["ptr_blacklist"]["ptr_rules"][0]["content"],
+            "example.com"
+        );
+        assert_eq!(view["module"]["ptr_blacklist"]["ban_duration"], 259_200_000);
+    }
+
+    #[test]
+    fn profile_for_save_serializes_rule_objects_back_to_json_strings() {
+        let input: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+module:
+  peer-id-blacklist:
+    banned-peer-id:
+      - { method: STARTS_WITH, content: "-hp" }
+"#,
+        )
+        .unwrap();
+        let output = profile_for_save(input);
+        let items = output["module"]["peer-id-blacklist"]["banned-peer-id"]
+            .as_sequence()
+            .unwrap();
+        let text = items[0].as_str().expect("规则应转为 JSON 字符串");
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["method"], "STARTS_WITH");
+        assert_eq!(parsed["content"], "-hp");
+    }
+
+    /// 上游 `mergeYaml` 只覆盖提交的键：WebUI 模型里没有 `ptr-blacklist`，
+    /// 保存 profile 时不能把它丢掉。
+    #[test]
+    fn deep_merge_keeps_sections_absent_from_the_webui_model() {
+        let mut base: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+module:
+  ptr-blacklist:
+    enabled: true
+  peer-id-blacklist:
+    enabled: true
+    banned-peer-id: []
+"#,
+        )
+        .unwrap();
+        let overlay: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+module:
+  peer-id-blacklist:
+    enabled: false
+"#,
+        )
+        .unwrap();
+        deep_merge_yaml(&mut base, &overlay);
+        assert_eq!(base["module"]["ptr-blacklist"]["enabled"], true);
+        assert_eq!(base["module"]["peer-id-blacklist"]["enabled"], false);
+        assert!(base["module"]["peer-id-blacklist"]["banned-peer-id"].is_sequence());
+    }
 }

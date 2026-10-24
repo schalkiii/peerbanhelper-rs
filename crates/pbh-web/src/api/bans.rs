@@ -91,9 +91,30 @@ pub(crate) fn ban_dto(state: &AppState, locale: &str, ip: &str, metadata: &BanMe
             "rule": render_component(&metadata.rule, &state.translator, locale),
             "description": render_component(&metadata.description, &state.translator, locale),
         },
-        // 上游从 IP 库现查；本移植的历史记录已带 `peer_geoip`，列表视图不额外查询
-        "ipGeoData": Value::Null,
+        // 上游从 IP 库现查（`PBHBanController.getBanResponseStream` 的 `ipGeoData`）
+        "ipGeoData": crate::api::query_geo(state, ip),
     })
+}
+
+/// 上游 `GET /api/bans?search=` 的匹配面：`BanList` 键的标准形式 + `BanMetadata.toString()`
+/// （覆盖 peer id / client name / torrent 名称与 hash / 规则与描述）。
+fn matches_search(state: &AppState, locale: &str, ip: &str, metadata: &BanMetadata, needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    let rule = render_component(&metadata.rule, &state.translator, locale);
+    let description = render_component(&metadata.description, &state.translator, locale);
+    let candidates = [
+        ip.to_string(),
+        metadata.peer.id.clone(),
+        metadata.peer.client_name.clone(),
+        metadata.torrent.name.clone(),
+        metadata.torrent.hash.clone(),
+        metadata.downloader.name.clone(),
+        rule,
+        description,
+    ];
+    candidates
+        .iter()
+        .any(|candidate| candidate.to_lowercase().contains(&needle))
 }
 
 /// `GET /api/bans`：旧版 feed（`lastBanTime`+`limit`）与新分页（`page`+`pageSize`）。
@@ -118,7 +139,9 @@ pub async fn list(State(state): State<AppState>, Query(q): Query<BansQuery>) -> 
         if ignore_disconnect && record.ban_for_disconnect {
             continue;
         }
-        if !keyword.is_empty() && !record.ip.contains(&keyword) {
+        if !keyword.is_empty()
+            && !matches_search(&state, &locale, &record.ip, &record.metadata, &keyword)
+        {
             continue;
         }
         if let Some(last_ban_time) = q.last_ban_time {
