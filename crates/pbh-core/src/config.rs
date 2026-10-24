@@ -649,7 +649,8 @@ impl Default for IpDatabaseConfig {
 
 /// `config.yml` 的 `proxy` 段（对齐上游 `HTTPUtil` 的代理选择）。
 ///
-/// `setting`：0 = 不使用代理，1 = 跟随系统，2 = 使用 `host:port` HTTP 代理。
+/// `setting`：0 = 不额外配置（保留进程环境代理），1 = 跟随系统，2 = 使用
+/// `host:port` HTTP 代理。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     #[serde(default)]

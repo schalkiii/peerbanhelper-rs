@@ -58,7 +58,7 @@ resolvers:
   servers: []
 
 # 出站 HTTP 代理（对齐上游 config.yml 的 proxy 段；修改后需重启）
-# setting: 0=不使用代理 1=跟随系统 2=使用下方 host:port
+# setting: 0=不额外配置（保留环境代理） 1=跟随系统 2=使用下方 host:port
 proxy:
   setting: 0
   host: "127.0.0.1"
