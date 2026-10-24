@@ -161,7 +161,8 @@ PTR 反查（封禁记录 / peer 详情 / peers 列表）、本机下载器自�
 表达式引擎以 rhai 替代 AviatorScript 的语义边界、BTN 遗留协议上报快照的数据源、
 GeoIP 更新进度以日志代替后台任务 UI。封禁判定链路（含 PCB 前缀实体的同前缀共享语义）
 已与上游对齐；剩余边界主要是实现方式差异：DoH 解析器未支持、代理经进程环境变量应用
-（`pbh.downloader.bypassproxy` 不生效、改代理需重启）、macOS 下载器发现退化为默认端口探测。
+（setting=2 显式覆盖、0/1 保留环境；`pbh.downloader.bypassproxy` 不生效、改代理需重启）、
+macOS 下载器发现退化为默认端口探测。
 
 ---
 

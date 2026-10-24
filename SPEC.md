@@ -490,7 +490,8 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   torrent 不在本轮快照时返回空数组。
 - **PTR / 代理 / CORS / EcoQoS**：`lookup.dns-reverse-lookup` 开启时封禁元数据异步回填
   `reverseLookup`、peers 列表返回 `ptrRecord`（`/api/peer/{ip}` 与上游一致始终尝试，
-  3s 超时）；`proxy.*` 在启动期写入进程环境变量；`server.allow-cors` 或
+  3s 超时）；`proxy.setting=2` 在启动期写入进程代理环境变量（0/1 保留现有环境，
+  0 不强制清除）；`server.allow-cors` 或
   `pbh.allowCors` 启用任意来源 CORS；`performance.windows-ecoqos-api` 应用 Windows EcoQoS。
 - **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`
   启动参数覆盖；已接线 PCB completed-excessive、idle ignore-if-any-interested、

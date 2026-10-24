@@ -60,8 +60,9 @@
   封禁元数据异步回填 `reverseLookup`、`/api/peer/{ip}` 的 `ptrLookup`、
   peers 列表的 `ptrRecord`。系统解析器走 `dns-lookup`（getnameinfo，跨平台），
   显式服务器走内置 UDP PTR 客户端；DoH URL 暂不支持（跳过并记日志）。
-- **代理 / CORS / EcoQoS**：`proxy.setting` 0/1/2 在启动期映射到
-  `HTTP(S)_PROXY` / `NO_PROXY`（reqwest 全局生效）；`server.allow-cors`
+- **代理 / CORS / EcoQoS**：`proxy.setting=2` 在启动期写入
+  `HTTP(S)_PROXY` / `NO_PROXY`（reqwest 全局生效）；`0/1` 保留环境代理
+  （0 不强制清除，避免切断依赖 `HTTP_PROXY` 的部署——2026-10-25 生产实测）；`server.allow-cors`
   （或 `pbh.allowCors`）启用任意来源 CORS；`performance.windows-ecoqos-api`
   通过 `SetProcessInformation(ProcessPowerThrottling)` 应用 Windows EcoQoS。
 - **下载器自动发现**：枚举本机 TCP LISTEN 端点（Windows `GetExtendedTcpTable` /

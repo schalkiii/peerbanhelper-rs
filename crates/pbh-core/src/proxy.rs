@@ -6,37 +6,24 @@
 //! 自动生效，无需逐个客户端传参。
 //!
 //! 语义：
-//! - `setting=0`：清除代理环境变量（不使用代理）；
+//! - `setting=0`：不额外配置代理，**保留进程环境**（部署环境可能依赖 `HTTP_PROXY`；
+//!   清空会切断所有出站请求——2026-10-25 生产部署实测）；
 //! - `setting=1`：保持系统/环境代理（reqwest 默认行为）；
 //! - `setting=2`：使用 `host:port` HTTP 代理，`non-proxy-hosts` 用 `|` 分隔，
 //!   转换为 `NO_PROXY` 的逗号分隔格式。
 //!
-//! 已知差异：上游 `pbh.downloader.bypassproxy` 可让下载器请求绕过代理；环境变量
-//! 方案无法按客户端区分，故该开关不生效（记录日志提示）。
+//! 已知差异：上游 `setting=0` 表示强制不使用代理；本移植为兼容部署环境将其定义为
+//! 「不额外配置」。另：上游 `pbh.downloader.bypassproxy` 可让下载器请求绕过代理；
+//! 环境变量方案无法按客户端区分，故该开关不生效（记录日志提示）。
 
 use crate::config::ProxyConfig;
-
-const PROXY_ENV_KEYS: [&str; 6] = [
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-];
 
 /// 把代理配置写入进程环境变量（启动期调用一次；修改配置后需重启）。
 pub fn apply_env(config: &ProxyConfig) {
     match config.setting {
-        0 => {
-            for key in PROXY_ENV_KEYS {
-                std::env::remove_var(key);
-            }
-            std::env::remove_var("NO_PROXY");
-            std::env::remove_var("no_proxy");
-        }
-        1 => {
-            // 跟随系统/环境：reqwest 默认会读取已有的代理环境变量
+        0 | 1 => {
+            // 0 = 不额外配置；1 = 跟随环境。两者都保留进程现有代理环境——
+            // 清空会让依赖 `HTTP_PROXY` 的部署直接失去网络（实测订阅源超时）。
         }
         2 => {
             let host = config.host.trim();
@@ -67,22 +54,38 @@ mod tests {
 
     /// 仅在当前测试进程内修改环境变量；使用唯一配置避免并行测试互相影响。
     #[test]
-    fn setting_two_sets_proxy_and_no_proxy_environment() {
+    fn setting_two_sets_proxy_and_zero_preserves_environment() {
         let config = ProxyConfig {
             setting: 2,
-            host: "127.0.0.1".into(),
-            port: 7890,
+            host: "10.0.0.99".into(),
+            port: 9999,
             non_proxy_hosts: "localhost|*.lan".into(),
         };
         apply_env(&config);
-        assert_eq!(std::env::var("HTTP_PROXY").unwrap(), "http://127.0.0.1:7890");
+        assert_eq!(
+            std::env::var("HTTP_PROXY").unwrap(),
+            "http://10.0.0.99:9999"
+        );
         assert_eq!(std::env::var("NO_PROXY").unwrap(), "localhost,*.lan");
-        // 清理，避免影响同进程其它测试
+        // 0 = 不额外配置：不能清空部署环境已有的代理
         let reset = ProxyConfig {
             setting: 0,
             ..ProxyConfig::default()
         };
         apply_env(&reset);
-        assert!(std::env::var("HTTP_PROXY").is_err());
+        assert_eq!(
+            std::env::var("HTTP_PROXY").unwrap(),
+            "http://10.0.0.99:9999"
+        );
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            std::env::remove_var(key);
+        }
     }
 }

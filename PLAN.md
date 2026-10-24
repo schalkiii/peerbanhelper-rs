@@ -148,8 +148,9 @@
 >
 > 1. **DoH / 自定义 DNS 端口**：`resolvers.servers` 支持普通 DNS，但查询固定走 53 端口
 >    （`IP:port` 的端口部分被忽略）；`https://` DoH URL 暂不支持（构造时跳过并记日志）。
-> 2. **代理应用方式**：`proxy.setting` 在启动期映射到进程环境变量，因此
->    `pbh.downloader.bypassproxy`（下载器绕过代理）不生效，修改 `proxy.*` 需重启。
+> 2. **代理应用方式**：`proxy.setting=2` 在启动期写入进程代理环境变量；`0/1` 保留环境代理
+>    （上游 0 = 强制不用代理，本移植为兼容依赖 `HTTP_PROXY` 的部署改为「不额外配置」）；
+>    `pbh.downloader.bypassproxy` 不生效，修改 `proxy.*` 需重启。
 > 3. **ExternalSwitch 覆盖面**：仅接线行为相关开关（PCB/idle/qBittorrent/并发槽位/
 >    forceDisableIPDB/allowCors 等）；GUI、Sentry、MySQL 等基础设施开关不适用。
 > 4. **下载器发现平台差异**：Windows/Linux 枚举全部 TCP LISTEN；macOS 等平台退化为
