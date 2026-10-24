@@ -81,10 +81,14 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 4. 版本号约定：Cargo 版本对齐上游基线（9.5.1），移植自身的发布序列以 `-rs.N`
    后缀体现在 tag / Release 标题上
 
-## 当前状态（2026-10-13）
+## 当前状态（2026-10-25）
 
-- **已发布 9.5.1-rs.1（2026-10-09，首个 Release）**，产物为 Windows x64 的
-  pbh.exe + pbh-gui.exe（+ WebView2Loader.dll）；已推送 origin/main，本地与远端同步
+- **已发布 9.5.1-rs.2（2026-10-12；首个 Release 为 9.5.1-rs.1）**，产物为 Windows x64 的
+  pbh.exe + pbh-gui.exe（+ WebView2Loader.dll）；origin/main 与本地同步
+- **2026-10-25 全量 review + 能力补齐已推送 main（ee3a9d1）并部署生产**：
+  Web API 契约修复、PCB 共享 range、PTR 反查、ExternalSwitch、代理/CORS/EcoQoS、
+  下载器自动发现、live snapshot、配置保存保留未知键；644 测试全绿、clippy 零警告，
+  生产 health 200 / wave#1 正常。该批改动**尚未发 Release**（下一版本 rs.3）。
 - 生产运行：GUI + pbh（health 200）、看门狗 wave 心跳常驻；WebUI 前端可用
   （会话 cookie / 缓存策略 / SPA 回退 / 下载器 CRUD id 语义均已修复）
 - 2026-10-09~13 连续修复一批「前端静默显示异常」缺陷（字段名/结构未对齐上游）：
@@ -102,7 +106,6 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
   经用户确认删除；`gen_bench_fixture.ps1`（无文档引用的早期基准脚本）与
   `longrun_pbh.log.err`（0 字节，被误提交入库）已于 2026-10-13 经用户确认删除，
   `.gitignore` 同步补 `*.log.err` 防复发
-  经用户确认删除
 
 ## 下一步候选
 

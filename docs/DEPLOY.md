@@ -1,7 +1,7 @@
 # 生产部署：用 Rust 版（含原生 GUI）替换 Java 版
 
-> 适用版本：本仓库 2026-10-07 之后的 main（含 PCB `on_unban` / `RangeKey` 两项修复、
-> `--ip-only` 对账工具、Tauri GUI 壳）。
+> 适用版本：本仓库 2026-10-25 之后的 main（含 PCB 共享 range、PTR 反查、ExternalSwitch、
+> 代理/CORS/EcoQoS、下载器自动发现、live snapshot、`--ip-only` 对账工具与 Tauri GUI 壳）。
 >
 > 结论先行：**核心封禁判定链路已具备生产替代条件**，建议按「先并行观察 → 再切换」灰度迁移。
 

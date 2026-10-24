@@ -107,7 +107,9 @@ TCP 转发器与端口保活。`enabled: false`（默认）时严格直通、零
 axum 服务：Token 鉴权、健康检查、封禁列表/日志/统计/图表 API、下载器与推送渠道热管理
 （增删改即时生效）、手动封禁/解封、告警读写（dismiss / dismissAll / delete）、
 规则订阅管理（`/api/sub/*`）、`/api/peer/{ip}/btnQuery`、实时日志（SSE，对齐上游弃用 WebSocket 后的现状）、
-静态 WebUI 托管。
+静态 WebUI 托管。另支持配置页 `lookup` / `resolvers` / `proxy` / `performance` 段、
+PTR 反查（封禁记录 / peer 详情 / peers 列表）、本机下载器自动发现、可选任意来源 CORS；
+下载器详情与活动 Peer 列表由本轮 wave 的 live snapshot 提供。
 
 > 鉴权：`config.yml` 的 `server.token` 为空时，首次启动会随机生成并写回文件；空 token 下所有
 > 鉴权 API 返回 `303 /init`（对齐上游未完成初始化向导时的行为），不会匿名放行。
@@ -142,7 +144,7 @@ axum 服务：Token 鉴权、健康检查、封禁列表/日志/统计/图表 AP
 
 - 封禁流程每一步都有日志打点：万一程序停止响应，**日志最后一行就是卡住的位置**
 - 异常退出会记录退出原因（崩溃类型），不用再靠猜
-- 625 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
+- 644 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
 
 ### 界面即开即用（前端沿用上游，问题都在服务端修复）
 
@@ -269,7 +271,7 @@ peerbanhelper-rs/
 
 ## 验证
 
-- `cargo test --workspace`：**625 个测试全部通过**（单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
+- `cargo test --workspace`：**644 个测试全部通过**（单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
   L3 适配器 / L4 端到端 / 实机社区脚本判定）；`cargo clippy --workspace --all-targets -D warnings` 零警告
 - 行为等价性：mock 双跑（同一夹具分别喂给 Java/Rust，封禁集合逐 IP diff）与实机 dry-run 并行对跑
   （同配置/同下载器/同 GeoIP 库）均已验证，脚本见仓库根目录 `*_dualrun.ps1`

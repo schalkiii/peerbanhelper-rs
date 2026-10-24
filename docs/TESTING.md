@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
-> 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-13 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **27 个测试目标、625 个用例**。运行：
+> 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
+> `cargo test --workspace -- --list`，共 **27 个测试目标、644 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。

@@ -19,7 +19,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**625 个测试全部通过**（27 个测试目标；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**644 个测试全部通过**（27 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -125,6 +125,17 @@
 - [x] 双跑与基准脚本：`java_dualrun.ps1` / `rust_dualrun.ps1` / `prepare_live.ps1` / `live_dualrun.ps1`；
       实测数据回填 README
 - [x] 数据层对齐上游 + 部署布局兼容 + dry-run 模式；`PBH_DATA_DIR` 暴露给脚本目录解析
+
+### 3.11 2026-10-25 全量 review 与能力补齐
+
+- [x] Web API 契约修复：peers 嵌套结构、profile 规则对象/增量合并、IP 黑名单 netType、
+  bans 搜索与 GeoIP、peer info 字段、wastedTraffic、ip/test 计数
+- [x] PCB：恢复上游同前缀共享 range 实体与 `pcb_range` 重载；撤销「每 IP 副本」偏差
+- [x] ExternalSwitch（环境变量/启动参数）与关键开关、逐下载器并发槽位
+- [x] PTR 反查（`lookup` / `resolvers`）：封禁元数据、peer 详情、peers 列表
+- [x] `proxy` 三模式、`server.allow-cors`、Windows EcoQoS
+- [x] 下载器自动发现（Windows/Linux LISTEN 枚举 + 探测）；详情端点改用 live snapshot
+- [x] 配置保存增量合并（保留未建模键、上游 `client` 布局转换）
 
 ## 4. 计划与未完成（TODO）
 
@@ -242,3 +253,4 @@
 | 2026-09-21 | 监控 SQLite 持久化与监控 Web API；上传限速下发；GeoIP 自动更新、AutoSTUN 探测/转发、阈值告警推送；BTN 传输层与脚本规则；AviatorScript→rhai 迁移文档 | 417 → 480 |
 | 2026-09-22 | 数据层对齐上游 + 部署布局兼容 + dry-run 对跑；BTN 上报数据源（history + DbBtnSubmitSource + btnQuery）；规则订阅 Web 后端；mockqb 与双跑脚本；L5 双跑修复（IPv4-mapped 变体） | — |
 | 2026-09-23 | AviatorScript 兼容层（社区 `.av` 原样运行）；登录冷却计数口径重写；下发阶段对齐 `updateDownloader`；实机并行对跑与基准回填 | 530+ |
+| 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 644 |
