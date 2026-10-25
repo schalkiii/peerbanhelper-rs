@@ -716,7 +716,9 @@ pub fn version_at_least(v: &str, major: u32, minor: u32, patch: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BanEntry, LoginStatus};
     use serde_json::{json, Value};
+    use std::collections::VecDeque;
 
     #[test]
     fn version_compare() {
@@ -752,6 +754,12 @@ mod tests {
         requests: Mutex<Vec<Recorded>>,
         preferences: Mutex<(u16, String)>,
         set_preferences_status: Mutex<u16>,
+        build_info: Mutex<VecDeque<(u16, String)>>,
+        version: Mutex<(u16, String)>,
+        login: Mutex<(u16, String)>,
+        torrent_pages: Mutex<VecDeque<String>>,
+        properties: Mutex<HashMap<String, String>>,
+        peers: Mutex<String>,
     }
 
     impl QbMock {
@@ -764,6 +772,12 @@ mod tests {
                     json!({ "up_limit": 1_048_576, "dl_limit": 2_097_152 }).to_string(),
                 )),
                 set_preferences_status: Mutex::new(200),
+                build_info: Mutex::new(VecDeque::new()),
+                version: Mutex::new((200, "v5.0.0".to_string())),
+                login: Mutex::new((200, "Ok.".to_string())),
+                torrent_pages: Mutex::new(VecDeque::new()),
+                properties: Mutex::new(HashMap::new()),
+                peers: Mutex::new(r#"{"peers":{}}"#.to_string()),
             })
         }
 
@@ -787,6 +801,57 @@ mod tests {
                     url: req.url.clone(),
                     form: req.form.clone(),
                 });
+                if req.url.ends_with("/app/buildInfo") {
+                    let (status, body) = self
+                        .build_info
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| (200, r#"{"libtorrent":"2.0.9"}"#.to_string()));
+                    return Ok(HttpResponse::new(status, body));
+                }
+                if req.url.ends_with("/app/version") {
+                    let (status, body) = self.version.lock().unwrap().clone();
+                    return Ok(HttpResponse::new(status, body));
+                }
+                if req.url.ends_with("/auth/login") {
+                    let (status, body) = self.login.lock().unwrap().clone();
+                    return Ok(HttpResponse::new(status, body));
+                }
+                if req.url.contains("/torrents/info") {
+                    let page = self
+                        .torrent_pages
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| "[]".to_string());
+                    return Ok(HttpResponse::new(200, page));
+                }
+                if req.url.contains("/torrents/properties") {
+                    let hash = req
+                        .url
+                        .split("hash=")
+                        .nth(1)
+                        .unwrap_or("")
+                        .split('&')
+                        .next()
+                        .unwrap_or("");
+                    let body = self
+                        .properties
+                        .lock()
+                        .unwrap()
+                        .get(hash)
+                        .cloned()
+                        .unwrap_or_else(|| "{}".to_string());
+                    return Ok(HttpResponse::new(200, body));
+                }
+                if req.url.contains("/sync/torrentPeers") {
+                    let body = self.peers.lock().unwrap().clone();
+                    return Ok(HttpResponse::new(200, body));
+                }
+                if req.url.ends_with("/transfer/banPeers") {
+                    return Ok(HttpResponse::new(200, String::new()));
+                }
                 if req.url.ends_with("/app/preferences") {
                     let (status, body) = self.preferences.lock().unwrap().clone();
                     return Ok(HttpResponse::new(status, body));
@@ -906,6 +971,248 @@ mod tests {
             err.to_string()
                 .contains("Save qBittorrent shadow banlist error: statusCode=500"),
             "{err}"
+        );
+    }
+    fn torrent(hash: &str) -> TorrentData {
+        TorrentData {
+            hash: hash.into(),
+            name: "t".into(),
+            progress: 1.0,
+            total_size: 1000,
+            piece_size: 10,
+            pieces_have: 10,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        }
+    }
+
+    /// 会话有效时复用 Cookie：不调用 `/auth/login`；首次健康仍下发同 IP 多连接开关。
+    #[tokio::test]
+    async fn login_reuses_existing_session_and_skips_form_login() {
+        let mock = QbMock::new();
+        let dl = mock_downloader(mock.clone());
+        let result = dl.login().await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.version, "5.0.0");
+        let urls: Vec<String> = mock.requests().iter().map(|r| r.url.clone()).collect();
+        assert!(urls.iter().any(|u| u.ends_with("/app/version")));
+        assert!(!urls.iter().any(|u| u.ends_with("/auth/login")));
+        assert!(urls.iter().any(|u| u.ends_with("/app/setPreferences")));
+    }
+
+    /// 会话失效 -> 表单登录一次；版本低于 4.5.0 -> REQUIRE_TAKE_ACTIONS。
+    #[tokio::test]
+    async fn login_falls_back_to_form_and_enforces_version_gate() {
+        let mock = QbMock::new();
+        mock.build_info.lock().unwrap().push_back((403, String::new()));
+        let dl = mock_downloader(mock.clone());
+        let result = dl.login().await.unwrap();
+        assert!(result.success, "{:?} {}", result.status, result.message);
+        assert!(mock.requests().iter().any(|r| r.url.ends_with("/auth/login")));
+
+        let mock = QbMock::new();
+        *mock.version.lock().unwrap() = (200, "v4.4.9".to_string());
+        let dl = mock_downloader(mock);
+        let result = dl.login().await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.status, LoginStatus::RequireTakeActions);
+        assert!(result.message.contains("4.5.0"), "{}", result.message);
+    }
+
+    /// API Key 会话无效时直接凭据错误，不回退表单登录（对齐上游 login0 分支）。
+    #[tokio::test]
+    async fn api_key_login_does_not_fall_back_to_form() {
+        let mock = QbMock::new();
+        mock.build_info.lock().unwrap().push_back((403, String::new()));
+        let config = QBConfig {
+            api_key: Some("secret".into()),
+            ..QBConfig::default()
+        };
+        let dl = Arc::new(
+            QBittorrentDownloader::with_fetcher(
+                config,
+                mock.clone() as Arc<dyn HttpFetcher>,
+                Duration::from_secs(65),
+            )
+            .unwrap(),
+        );
+        let result = dl.login().await.unwrap();
+        assert_eq!(result.status, LoginStatus::IncorrectCredential);
+        assert!(!mock
+            .requests()
+            .iter()
+            .any(|r| r.url.ends_with("/auth/login")));
+    }
+
+    /// 分页按 hash 去重；`is_private` 缺失/分片字段缺失时用 properties 补全。
+    #[tokio::test]
+    async fn fetch_torrents_paginates_dedupes_and_fills_properties() {
+        let mock = QbMock::new();
+        let mut page1 = Vec::new();
+        for index in 0..100 {
+            let (is_private, piece_size, pieces_have) = match index {
+                0 => (Value::Null, 0, 0),
+                1 => (Value::Bool(false), 0, 0),
+                _ => (Value::Bool(false), 10, 10),
+            };
+            page1.push(json!({
+                "hash": format!("h{index}"),
+                "name": format!("t{index}"),
+                "progress": 1.0,
+                "total_size": 1000,
+                "piece_size": piece_size,
+                "pieces_have": pieces_have,
+                "is_private": is_private,
+            }));
+        }
+        mock.torrent_pages
+            .lock()
+            .unwrap()
+            .push_back(Value::Array(page1).to_string());
+        mock.torrent_pages.lock().unwrap().push_back(
+            json!([
+                { "hash": "h0" },
+                { "hash": "h100", "name": "t100", "progress": 1.0, "total_size": 1000,
+                  "piece_size": 10, "pieces_have": 10, "is_private": false }
+            ])
+            .to_string(),
+        );
+        mock.properties.lock().unwrap().insert(
+            "h0".into(),
+            r#"{"is_private":true,"piece_size":1000,"pieces_have":5}"#.into(),
+        );
+        mock.properties.lock().unwrap().insert(
+            "h1".into(),
+            r#"{"is_private":false,"piece_size":1000,"pieces_have":5}"#.into(),
+        );
+
+        let dl = mock_downloader(mock.clone());
+        let torrents = dl.fetch_torrents().await.unwrap();
+        assert_eq!(torrents.len(), 100, "101 个唯一 hash - 1 个私有");
+        assert!(!torrents.iter().any(|t| t.hash == "h0"), "私有种子应过滤");
+        let h1 = torrents.iter().find(|t| t.hash == "h1").expect("h1");
+        assert_eq!(h1.completed_size(), 5000, "properties 补全 piece_size*pieces_have");
+
+        let info_requests: Vec<_> = mock
+            .requests()
+            .into_iter()
+            .filter(|r| r.url.contains("/torrents/info"))
+            .collect();
+        assert_eq!(info_requests.len(), 2);
+        assert!(info_requests[0].url.contains("offset=0"));
+        assert!(info_requests[1].url.contains("offset=100"));
+        assert!(mock
+            .requests()
+            .iter()
+            .any(|r| r.url.contains("/torrents/properties?hash=h0")));
+    }
+
+    /// peer 过滤（Web/HTTPS、空 IP、onion）与地址翻译（NAT64 / IPv4-mapped）。
+    #[tokio::test]
+    async fn fetch_peers_filters_web_onion_and_translates_addresses() {
+        let mock = QbMock::new();
+        *mock.peers.lock().unwrap() = json!({
+            "peers": {
+                "1.2.3.4:1000": { "ip": "1.2.3.4", "port": 1000, "connection": "uTP",
+                                  "client": "qBittorrent", "peer_id_client": "-qB",
+                                  "up_speed": 10, "dl_speed": 20, "uploaded": 30,
+                                  "downloaded": 40, "progress": 0.5, "flags": "dU" },
+                "5.6.7.8:2000": { "ip": "5.6.7.8", "port": 2000, "connection": "Web" },
+                "9.9.9.9:3000": { "ip": "9.9.9.9", "port": 3000, "connection": "HTTPS" },
+                "10.0.0.1:4000": { "ip": "", "port": 4000, "connection": "uTP" },
+                "abc.onion:5000": { "ip": "abc.onion", "port": 5000, "connection": "uTP" },
+                "[64:ff9b::808:808]:6000": { "ip": "64:ff9b::808:808", "port": 6000, "connection": "uTP" },
+                "[::ffff:1.1.1.1]:7000": { "ip": "::ffff:1.1.1.1", "port": 7000, "connection": "uTP" }
+            }
+        })
+        .to_string();
+
+        let dl = mock_downloader(mock);
+        let peers = dl.fetch_peers(&torrent("h")).await.unwrap();
+        assert_eq!(peers.len(), 3, "{peers:?}");
+        let normal = peers
+            .iter()
+            .find(|p| p.raw_ip == "1.2.3.4:1000")
+            .expect("normal");
+        assert_eq!((normal.ip.as_str(), normal.port), ("1.2.3.4", 1000));
+        let nat64 = peers
+            .iter()
+            .find(|p| p.raw_ip.contains("64:ff9b"))
+            .expect("nat64");
+        assert_eq!((nat64.ip.as_str(), nat64.port), ("8.8.8.8", 6000));
+        let mapped = peers
+            .iter()
+            .find(|p| p.raw_ip.contains("::ffff:1.1.1.1"))
+            .expect("mapped");
+        assert_eq!(mapped.ip, "1.1.1.1");
+    }
+
+    /// 增量封禁用下载器原始 ip:port；全量列表按能力重映射；版本 >= 5.3.0 声明 RANGE_BAN_IP。
+    #[tokio::test]
+    async fn ban_payloads_and_range_ban_capability_follow_upstream() {
+        let mock = QbMock::new();
+        *mock.version.lock().unwrap() = (200, "v5.3.0".to_string());
+        let dl = mock_downloader(mock.clone());
+        assert!(
+            !dl.feature_flags().iter().any(|f| f == "RANGE_BAN_IP"),
+            "未登录无版本信息时不声明"
+        );
+        assert!(dl.login().await.unwrap().success);
+        assert!(dl.feature_flags().iter().any(|f| f == "RANGE_BAN_IP"));
+
+        dl.ban_peers(&[
+            BanEntry {
+                ip: "1.2.3.4".into(),
+                port: 1,
+                raw_ip: "1.2.3.4:1".into(),
+            },
+            BanEntry {
+                ip: "5.6.7.8".into(),
+                port: 2,
+                raw_ip: "5.6.7.8:2".into(),
+            },
+            BanEntry {
+                ip: "1.2.3.4".into(),
+                port: 1,
+                raw_ip: "1.2.3.4:1".into(),
+            },
+        ])
+        .await
+        .unwrap();
+        let increment = mock.request("/transfer/banPeers");
+        let peers_field = increment
+            .form
+            .as_ref()
+            .and_then(|form| form.iter().find(|(key, _)| key == "peers"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("");
+        assert_eq!(peers_field, "1.2.3.4:1|5.6.7.8:2");
+
+        dl.replace_banned_ips(&["1.2.3.4".into(), "2001:db8:1:2:3:4:5:6".into()])
+            .await
+            .unwrap();
+        let full = mock
+            .requests()
+            .into_iter()
+            .rev()
+            .find(|r| r.url.ends_with("/app/setPreferences"))
+            .expect("full ban list");
+        let banned = full.json_form()["banned_IPs"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let mut lines: Vec<&str> = banned.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            vec![
+                "1.2.3.4",
+                "2001:db8:1:2:3:4:5:6",
+                "2001:db8:1::/52",
+                "::ffff:102:304"
+            ]
         );
     }
 }

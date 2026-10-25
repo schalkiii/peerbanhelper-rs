@@ -570,17 +570,27 @@ mod tests {
                 "speed-limit-up": 1024,
                 "speed-limit-up-enabled": up_enabled,
                 "peer-port": 51413,
+                "version": "4.1.0",
+                "blocklist-enabled": true,
+                "blocklist-url": "http://127.0.0.1:9898/blocklist/p2p-plain-format",
             }
         })
         .to_string()
     }
 
+    type HeaderList = Vec<(String, String)>;
+    type RecordedHeaders = Vec<(String, HeaderList)>;
+
     /// JSON-RPC 的内存实现：记录请求体并按方法返回夹具。
     struct TrMock {
         requests: Mutex<Vec<Value>>,
+        request_headers: Mutex<RecordedHeaders>,
         /// `(method, 完整响应体, HTTP 状态码)` 的固定应答
         session_get: Mutex<(String, u16)>,
         session_set: Mutex<(String, u16)>,
+        blocklist_update: Mutex<(String, u16)>,
+        torrent_get: Mutex<(String, u16)>,
+        require_handshake: Mutex<bool>,
     }
 
     impl TrMock {
@@ -592,7 +602,28 @@ mod tests {
                     json!({ "result": "success", "arguments": {} }).to_string(),
                     200,
                 )),
+                blocklist_update: Mutex::new((
+                    json!({ "result": "success", "arguments": { "blocklist-size": 1 } })
+                        .to_string(),
+                    200,
+                )),
+                torrent_get: Mutex::new((
+                    json!({ "result": "success", "arguments": { "torrents": [] } }).to_string(),
+                    200,
+                )),
+                request_headers: Mutex::new(Vec::new()),
+                require_handshake: Mutex::new(false),
             })
+        }
+
+        fn request_headers_for(&self, method: &str) -> Vec<HeaderList> {
+            self.request_headers
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name == method)
+                .map(|(_, headers)| headers.clone())
+                .collect()
         }
 
         fn request(&self, method: &str) -> Value {
@@ -623,9 +654,22 @@ mod tests {
                     serde_json::from_str(req.body.as_deref().unwrap_or_default()).unwrap();
                 let method = body["method"].as_str().unwrap_or_default().to_string();
                 self.requests.lock().unwrap().push(body);
+                self.request_headers
+                    .lock()
+                    .unwrap()
+                    .push((method.clone(), req.headers.clone()));
+                if std::mem::replace(
+                    &mut *self.require_handshake.lock().unwrap(),
+                    false,
+                ) {
+                    return Ok(HttpResponse::new(409, String::new())
+                        .with_header(SESSION_HEADER, "test-session"));
+                }
                 let (response, status) = match method.as_str() {
                     "session-get" => self.session_get.lock().unwrap().clone(),
                     "session-set" => self.session_set.lock().unwrap().clone(),
+                    "blocklist-update" => self.blocklist_update.lock().unwrap().clone(),
+                    "torrent-get" => self.torrent_get.lock().unwrap().clone(),
                     other => panic!("未预期的 RPC 方法 {other}"),
                 };
                 Ok(HttpResponse::new(status, response))
@@ -742,5 +786,170 @@ mod tests {
         let dl = mock_downloader(mock);
         assert!(dl.get_speed_limiter().await.is_err());
         assert!(dl.set_speed_limiter(1_048_576, 2_097_152).await.is_err());
+    }
+    /// 首次 RPC 409 -> 取 `X-Transmission-Session-Id` 重试一次，重试请求携带该头。
+    #[tokio::test]
+    async fn rpc_handshake_retries_with_session_header() {
+        let mock = TrMock::new();
+        *mock.require_handshake.lock().unwrap() = true;
+        let dl = mock_downloader(mock.clone());
+        let result = dl.login().await.unwrap();
+        assert!(result.success, "{}", result.message);
+        let headers = mock.request_headers_for("session-get");
+        assert_eq!(headers.len(), 2, "409 + 重试");
+        assert!(!headers[0]
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(SESSION_HEADER)));
+        assert!(headers[1]
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case(SESSION_HEADER)
+                && value == "test-session"));
+    }
+
+    /// 版本 < 4.1.0 -> EXCEPTION；blocklist 未指向 PBH 时 session-set + blocklist-update。
+    #[tokio::test]
+    async fn login_enforces_version_and_configures_blocklist() {
+        let mock = TrMock::new();
+        *mock.session_get.lock().unwrap() = (
+            json!({
+                "result": "success",
+                "arguments": { "version": "4.0.9", "blocklist-enabled": true,
+                               "blocklist-url": "http://example.com/list" }
+            })
+            .to_string(),
+            200,
+        );
+        let dl = mock_downloader(mock);
+        let result = dl.login().await.unwrap();
+        assert_eq!(result.status, crate::LoginStatus::Exception);
+        assert!(result.message.contains("4.1.0"), "{}", result.message);
+
+        let mock = TrMock::new();
+        *mock.session_get.lock().unwrap() = (
+            json!({
+                "result": "success",
+                "arguments": { "version": "4.1.0", "blocklist-enabled": false,
+                               "blocklist-url": "" }
+            })
+            .to_string(),
+            200,
+        );
+        let dl = mock_downloader(mock.clone());
+        let result = dl.login().await.unwrap();
+        assert!(result.success, "{}", result.message);
+        let set_args = mock.arguments("session-set");
+        assert_eq!(set_args["blocklist-enabled"], true);
+        let url = set_args["blocklist-url"].as_str().unwrap_or_default();
+        assert!(
+            url.starts_with("http://127.0.0.1:9898/blocklist/p2p-plain-format?t="),
+            "{url}"
+        );
+        assert_eq!(mock.request("blocklist-update")["method"], "blocklist-update");
+    }
+
+    /// torrent-get：活跃过滤、私有过滤、completedSize = sizeWhenDone * percentDone，
+    /// peers 随 torrent-get 缓存（NAT64 翻译、base64 peer_id、缺失字段按 -1）。
+    #[tokio::test]
+    async fn fetch_torrents_filters_and_computes_completed_size() {
+        use base64::Engine as _;
+        let peer_id = base64::engine::general_purpose::STANDARD.encode(b"-TR3000-abcdefghijkl");
+        let body = json!({
+            "result": "success",
+            "arguments": { "torrents": [
+                { "hashString": "active", "name": "active", "peersConnected": 1,
+                  "rateDownload": 10, "rateUpload": 0, "percentDone": 0.5,
+                  "sizeWhenDone": 1000, "totalSize": 2000, "isPrivate": false,
+                  "peers": [
+                      { "address": "64:ff9b::808:808", "port": 6881,
+                        "peer_id": peer_id, "clientName": "qB", "flagStr": "D U",
+                        "progress": 0.2, "rateToClient": 5, "bytesToClient": 10,
+                        "rateToPeer": 6, "bytesToPeer": 20 },
+                      { "address": "1.2.3.4", "port": 51413 }
+                  ] },
+                { "hashString": "idle", "name": "idle", "peersConnected": 0,
+                  "rateDownload": 0, "rateUpload": 0, "percentDone": 1.0,
+                  "sizeWhenDone": 1000, "totalSize": 1000, "isPrivate": false },
+                { "hashString": "private", "name": "private", "peersConnected": 1,
+                  "rateDownload": 10, "rateUpload": 0, "percentDone": 1.0,
+                  "sizeWhenDone": 1000, "totalSize": 1000, "isPrivate": true }
+            ] }
+        })
+        .to_string();
+
+        let mock = TrMock::new();
+        *mock.torrent_get.lock().unwrap() = (body.clone(), 200);
+        let dl = mock_downloader(mock);
+        let torrents = dl.fetch_torrents().await.unwrap();
+        assert_eq!(torrents.len(), 2, "idle 被过滤；private 默认保留");
+        let active = torrents
+            .iter()
+            .find(|t| t.hash == "active")
+            .expect("active");
+        assert_eq!(active.completed_size(), 500);
+
+        let peers = dl.fetch_peers(active).await.unwrap();
+        assert_eq!(peers.len(), 2);
+        let nat64 = peers
+            .iter()
+            .find(|p| p.ip == "8.8.8.8")
+            .expect("nat64 peer");
+        assert_eq!(nat64.peer_id.as_deref(), Some("-TR3000-abcdefghijkl"));
+        assert_eq!(nat64.dl_speed, 5);
+        assert_eq!(nat64.uploaded, 20);
+        assert_eq!(nat64.raw_ip, "64:ff9b::808:808:6881");
+        let missing = peers.iter().find(|p| p.ip == "1.2.3.4").expect("missing");
+        assert_eq!(missing.dl_speed, -1);
+        assert_eq!(missing.uploaded, -1);
+        assert_eq!(missing.peer_id.as_deref(), Some(""));
+
+        let mock = TrMock::new();
+        *mock.torrent_get.lock().unwrap() = (body, 200);
+        let config = TRConfig {
+            ignore_private: true,
+            ..TRConfig::default()
+        };
+        let dl = Arc::new(
+            TransmissionDownloader::with_fetcher(config, RemapConfig::default(), mock).unwrap(),
+        );
+        let torrents = dl.fetch_torrents().await.unwrap();
+        assert_eq!(torrents.len(), 1, "ignore_private 时过滤私有种子");
+    }
+
+    /// 全量封禁只触发 blocklist-update；失败只记日志不抛错；ban_peers 为 no-op。
+    #[tokio::test]
+    async fn replace_banned_ips_triggers_blocklist_update_and_ban_peers_is_noop() {
+        let mock = TrMock::new();
+        let dl = mock_downloader(mock.clone());
+        dl.replace_banned_ips(&["1.2.3.4".into()]).await.unwrap();
+        assert_eq!(mock.request_headers_for("blocklist-update").len(), 1);
+
+        dl.ban_peers(&[BanEntry {
+            ip: "1.2.3.4".into(),
+            port: 6881,
+            raw_ip: "1.2.3.4:6881".into(),
+        }])
+        .await
+        .unwrap();
+        assert_eq!(
+            mock.request_headers_for("blocklist-update").len(),
+            1,
+            "ban_peers 不得触发 RPC"
+        );
+
+        let mock = TrMock::new();
+        *mock.blocklist_update.lock().unwrap() = (
+            json!({ "result": "invalid", "arguments": {} }).to_string(),
+            200,
+        );
+        let dl = mock_downloader(mock.clone());
+        dl.replace_banned_ips(&[]).await.unwrap();
+        assert!(
+            mock.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r["method"] == "session-set"),
+            "失败时把 blocklist URL 指向明显的失败地址"
+        );
     }
 }

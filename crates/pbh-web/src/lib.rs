@@ -1772,6 +1772,58 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "bans/ranks 必须 200");
     }
 
+    /// `/api/bans?search=` 覆盖 peer id / client / torrent 名称，并返回实时 GeoIP。
+    #[tokio::test]
+    async fn bans_search_matches_metadata_and_returns_geo() {
+        use pbh_core::banlist::{BanMetadata, BannedRecord};
+        use pbh_core::geoip::{CountryData, IpGeoData, StaticGeoIp};
+
+        let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let mut metadata = BanMetadata::minimal("1.2.3.4", "test-module", 1_000, 0);
+        metadata.peer.id = "peer-xyz".into();
+        metadata.peer.client_name = "client-abc".into();
+        metadata.torrent.name = "example-torrent".into();
+        metadata.torrent.hash = "hash-1".into();
+        state
+            .ban_list
+            .lock()
+            .unwrap()
+            .add_record(BannedRecord {
+                ip: "1.2.3.4".into(),
+                unban_at_ms: 0,
+                module: "test-module".into(),
+                ban_for_disconnect: false,
+                metadata,
+            });
+
+        let mut geo = StaticGeoIp::new();
+        geo.insert(
+            "1.2.3.4".parse().unwrap(),
+            IpGeoData {
+                country: Some(CountryData {
+                    name: Some("United States".into()),
+                    iso: Some("US".into()),
+                }),
+                ..Default::default()
+            },
+        );
+        state.geo = Some(Arc::new(geo));
+
+        let (status, body) = get_json(&state, "/api/bans?search=peer-xyz").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["total"], 1);
+        assert_eq!(body["data"]["results"][0]["address"], "1.2.3.4");
+        assert_eq!(
+            body["data"]["results"][0]["ipGeoData"]["country"]["iso"],
+            "US"
+        );
+
+        let (_, body) = get_json(&state, "/api/bans?search=example-torrent").await;
+        assert_eq!(body["data"]["total"], 1, "torrent 名称应可搜索");
+        let (_, body) = get_json(&state, "/api/bans?search=no-such-peer").await;
+        assert_eq!(body["data"]["total"], 0);
+    }
+
     #[tokio::test]
     async fn push_channels_endpoint() {
         let state = test_state(Arc::new(Database::open_in_memory().unwrap()));

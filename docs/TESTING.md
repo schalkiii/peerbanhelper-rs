@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **27 个测试目标、646 个用例**。运行：
+> `cargo test --workspace -- --list`，共 **28 个测试目标、659 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -205,6 +205,11 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | 下载器探测识别（Transmission/qBittorrent/非下载器） | `pbh-downloader/src/discovery.rs::tests` |
 | live snapshot 读写与清空 | `pbh-core/src/live.rs::tests` |
 | BTN submit_swarm 读取 Java 迁移库的 `peer_progress TEXT` 列 | `pbh-db/src/btn_source.rs::tests::swarm_history_reads_text_peer_progress_from_java_migrated_schema` |
+| qB 登录复用 / 表单回退 / API Key / 版本门槛 | `pbh-downloader/src/qbittorrent/mod.rs::tests::{login_reuses_existing_session_and_skips_form_login, login_falls_back_to_form_and_enforces_version_gate, api_key_login_does_not_fall_back_to_form}` |
+| qB 分页去重 / properties 补全 / peer 过滤与翻译 / 封禁载荷 | `pbh-downloader/src/qbittorrent/mod.rs::tests::{fetch_torrents_paginates_dedupes_and_fills_properties, fetch_peers_filters_web_onion_and_translates_addresses, ban_payloads_and_range_ban_capability_follow_upstream}` |
+| Transmission 409 握手 / 版本与 blocklist / torrents 过滤与 peers / 全量封禁 | `pbh-downloader/src/transmission/mod.rs::tests::{rpc_handshake_retries_with_session_header, login_enforces_version_and_configures_blocklist, fetch_torrents_filters_and_computes_completed_size, replace_banned_ips_triggers_blocklist_update_and_ban_peers_is_noop}` |
+| CIDR 重映射 property/golden（独立期望值，种子 `PBH_PROP_SEED`） | `pbh-core/tests/remap_property.rs` |
+| bans 搜索 peer/client/torrent + 实时 GeoIP | `tests::bans_search_matches_metadata_and_returns_geo` |
 
 > 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口，测试耗时
 > 约 8–14s；这是端点行为的一部分（上游同样扫描监听端口）。
