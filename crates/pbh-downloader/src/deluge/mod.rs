@@ -590,6 +590,7 @@ fn tl(key: &str, params: Vec<Param>) -> String {
 mod tests {
     use super::*;
     use crate::http::HttpResponse;
+    use crate::LoginStatus;
 
     /// 活跃 torrent 与 peers 的夹具（字段名对齐 PBH-Adapter-Deluge）。
     const ACTIVE_TORRENTS: &str = r#"[
@@ -660,6 +661,8 @@ mod tests {
         pub active_torrents: Mutex<String>,
         /// `core.get_config` 的 result（Deluge 的单位是 KiB/s）
         pub core_config: Mutex<Value>,
+        /// 为 true 时模拟传输层失败（连接被拒/超时）
+        pub transport_error: Mutex<bool>,
     }
 
     impl DelugeMock {
@@ -674,6 +677,7 @@ mod tests {
                     "max_download_speed": 2048,
                     "max_upload_speed": 1024,
                 })),
+                transport_error: Mutex::new(false),
             })
         }
 
@@ -711,6 +715,9 @@ mod tests {
         fn execute<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, anyhow::Result<HttpResponse>> {
             Box::pin(async move {
                 assert!(req.url.ends_with("/json"), "unexpected url {}", req.url);
+                if *self.transport_error.lock().unwrap() {
+                    anyhow::bail!("error sending request for url ({})", req.url);
+                }
                 let body: Value =
                     serde_json::from_str(req.body.as_deref().unwrap_or_default()).unwrap();
                 let method = body["method"].as_str().unwrap_or_default().to_string();
@@ -1079,5 +1086,49 @@ mod tests {
             peer_flag_string((1 << 17) | (1 << 19) | (1 << 20), 0),
             "K ? I E e P"
         );
+    }
+    /// 暂停状态在登录入口直接短路：不发起 `auth.login` / `system.listMethods`。
+    #[tokio::test]
+    async fn login_is_short_circuited_when_paused() {
+        let mock = DelugeMock::new();
+        let config = DelugeConfig {
+            id: "deluge-paused".into(),
+            name: "Deluge Paused".into(),
+            endpoint: "http://mock.local".into(),
+            password: "secret".into(),
+            paused: true,
+            ..DelugeConfig::default()
+        };
+        let deluge = Arc::new(
+            DelugeDownloader::with_fetcher(config, mock.clone() as Arc<dyn HttpFetcher>).unwrap(),
+        );
+        let login = deluge.login().await.unwrap();
+        assert_eq!(login.status, LoginStatus::Paused);
+        assert!(mock.methods().is_empty(), "暂停时不得发起任何 RPC");
+    }
+
+    /// 传输层失败（连接被拒/超时）转为 EXCEPTION，不进入登录冷却。
+    #[tokio::test]
+    async fn login_reports_transport_failure_as_exception() {
+        let mock = DelugeMock::new();
+        *mock.transport_error.lock().unwrap() = true;
+        let deluge = mock_downloader(mock);
+        let login = deluge.login().await.unwrap();
+        assert_eq!(login.status, LoginStatus::Exception);
+        assert!(!login.success);
+        assert!(!login.message.is_empty());
+    }
+    /// adapter 插件返回 JSON-RPC error：对齐上游 `catch (DelugeException)`，
+    /// 记日志后返回空列表（不抛错、不让整轮 wave 失败）。
+    #[tokio::test]
+    async fn torrents_rpc_error_returns_empty_list_like_upstream() {
+        let mock = DelugeMock::new();
+        *mock.rpc_error.lock().unwrap() = true;
+        let deluge = mock_downloader(mock);
+        let torrents = deluge
+            .fetch_torrents()
+            .await
+            .expect("上游吞掉 DelugeException");
+        assert!(torrents.is_empty());
     }
 }

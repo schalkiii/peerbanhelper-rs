@@ -757,6 +757,7 @@ fn tl(key: &str, params: Vec<Param>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LoginStatus;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -1383,5 +1384,24 @@ mod tests {
         assert_eq!(decode_peer_id_hex(""), "");
         // 非法十六进制：退回已解码前缀
         assert_eq!(decode_peer_id_hex("2d5g"), "-");
+    }
+    /// 暂停状态在登录入口直接短路：不发起任何 HTTP 请求。
+    #[tokio::test]
+    async fn login_is_short_circuited_when_paused() {
+        let mock = BiglyBtMock::new();
+        let config = BiglyBtConfig {
+            id: "biglybt-paused".into(),
+            name: "BiglyBT Paused".into(),
+            endpoint: "http://mock.local".into(),
+            token: "test-token".into(),
+            paused: true,
+            ..BiglyBtConfig::default()
+        };
+        let dl = Arc::new(
+            BiglyBtDownloader::with_fetcher(config, mock.clone() as Arc<dyn HttpFetcher>).unwrap(),
+        );
+        let login = dl.login().await.unwrap();
+        assert_eq!(login.status, LoginStatus::Paused);
+        assert!(mock.requests().is_empty(), "暂停时不得发起任何请求");
     }
 }
