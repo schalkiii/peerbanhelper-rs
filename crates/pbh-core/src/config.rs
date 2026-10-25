@@ -711,8 +711,8 @@ pub struct LookupConfig {
 
 /// `config.yml` 的 `resolvers` 段（对齐上游 `DNSLookupImpl#reloadConfig`）。
 ///
-/// `servers` 支持普通 DNS 服务器（IP / `IP:port`）；DoH URL 暂不支持，构造解析器时
-/// 会跳过并记日志（见 `pbh_core::ptr`）。
+/// `servers` 支持普通 DNS 服务器（IP / `IP:port`）与 DoH（`https://...`，RFC 8484 POST）；
+/// 无法解析的条目会跳过并记日志（见 `pbh_core::ptr`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolversConfig {
     #[serde(rename = "use-system", default = "default_true")]

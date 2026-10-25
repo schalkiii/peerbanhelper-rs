@@ -118,7 +118,7 @@ impl PtrResolver for SystemPtrResolver {
 static DNS_TRANSACTION_ID: AtomicU16 = AtomicU16::new(0);
 
 /// 构造 PTR 查询报文（RFC 1035：1 个 question，type=PTR(12)，class=IN，RD=1）。
-fn build_ptr_query(reverse_name: &str) -> Option<Vec<u8>> {
+pub(crate) fn build_ptr_query(reverse_name: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(17 + reverse_name.len());
     let id = DNS_TRANSACTION_ID
         .fetch_add(1, Ordering::Relaxed)
@@ -191,7 +191,7 @@ fn read_name(message: &[u8], mut offset: usize) -> Option<String> {
 }
 
 /// 从 DNS 响应里取第一条 PTR 记录（对齐 `PTRRecord#getTarget().toString()`）。
-fn parse_ptr_answer(message: &[u8]) -> Option<String> {
+pub(crate) fn parse_ptr_answer(message: &[u8]) -> Option<String> {
     if message.len() < 12 {
         return None;
     }

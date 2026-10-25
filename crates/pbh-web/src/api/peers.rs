@@ -39,6 +39,13 @@ pub async fn info(
                 .any(|ability| ability.kind == pbh_core::btn_transport::BtnAbilityKind::IpQuery)
         })
         .unwrap_or(false);
+    // PTR 解析会阻塞（UDP/DoH/系统解析器最长 3s），放到阻塞线程池
+    let ptr = state.ptr.clone();
+    let ptr_host = host.clone();
+    let ptr_lookup = tokio::task::spawn_blocking(move || ptr.lookup(&ptr_host))
+        .await
+        .ok()
+        .flatten();
     let data = json!({
         "found": found,
         "address": host,
@@ -50,7 +57,7 @@ pub async fn info(
         "downloadedFromPeer": access.5,
         "geo": crate::api::query_geo(&state, &host),
         // 上游 `handleInfo` 不检查 `lookup.dns-reverse-lookup`，始终尝试 PTR（3s 超时）
-        "ptrLookup": state.ptr.lookup(&host),
+        "ptrLookup": ptr_lookup,
         "btnQueryAvailable": btn_query_available,
     });
     let _ = params;

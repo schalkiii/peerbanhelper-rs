@@ -1,18 +1,27 @@
 //! PTR 反查（对齐上游 `DNSLookupImpl` + `lookup.dns-reverse-lookup`）。
 //!
 //! 解析链：
-//! 1. `resolvers.servers` 里的普通 DNS 服务器（IP / `IP:port`），按顺序查询；
+//! 1. `resolvers.servers` 按书写顺序尝试：
+//!    - 普通 DNS：`1.1.1.1`、`8.8.8.8:5353`、`[2001:4860:4860::8888]:53`；
+//!    - DoH：`https://dns.google/dns-query`（POST `application/dns-message`）；
 //! 2. `resolvers.use-system: true`（默认）时用系统解析器（`getnameinfo`）。
 //!
-//! 单次查询上限 3 秒（对齐上游 `ExtendedResolver.setTimeout(3s)`）；DoH URL 暂不支持，
-//! 构造时跳过并记录日志。未配置任何解析器时 [`PtrLookup::lookup`] 恒返回 `None`。
+//! 单次查询上限 3 秒（对齐上游 `ExtendedResolver.setTimeout(3s)`）。
+//! [`PtrLookup::lookup`] 是**阻塞**调用：Web 层须放在 `spawn_blocking` 中执行。
 
 use crate::config::ResolversConfig;
 use crate::iputil::reverse_dns_name;
-use crate::modules::ptr_blacklist::{PtrResolver, SystemPtrResolver, PTR_LOOKUP_TIMEOUT};
-use std::net::IpAddr;
+use crate::modules::ptr_blacklist::{build_ptr_query, parse_ptr_answer, PTR_LOOKUP_TIMEOUT};
+use std::net::{IpAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// 一个 DNS 解析器（普通 UDP 或 DoH）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DnsServer {
+    Udp(IpAddr, u16),
+    Doh(String),
+}
 
 /// PTR 查询器（可在多线程间共享）。
 #[derive(Debug, Clone)]
@@ -21,7 +30,7 @@ pub struct PtrLookup {
     /// `/api/peer/{ip}` 与上游一致，始终尝试解析。
     enabled: bool,
     use_system: bool,
-    servers: Vec<IpAddr>,
+    servers: Vec<DnsServer>,
     timeout: Duration,
 }
 
@@ -30,10 +39,7 @@ impl PtrLookup {
         let mut servers = Vec::new();
         for server in &config.servers {
             match parse_server(server) {
-                Some(ip) => servers.push(ip),
-                None if server.trim().starts_with("http") => {
-                    tracing::warn!("不支持的 DoH 解析器（已跳过）：{server}");
-                }
+                Some(parsed) => servers.push(parsed),
                 None => tracing::warn!("无法解析 resolvers.servers 条目（已跳过）：{server}"),
             }
         }
@@ -61,14 +67,21 @@ impl PtrLookup {
     }
 
     /// 反查 IP 的 PTR 名；无记录 / 超时 / 未配置解析器时返回 `None`。
+    ///
+    /// **阻塞调用**（普通 DNS 最多 3s、DoH 最多 3s、系统解析器最多 3s）：
+    /// tokio 上下文中必须经 `spawn_blocking` 调用。
     pub fn lookup(&self, ip: &str) -> Option<String> {
         let reverse = reverse_dns_name(ip)?;
-        if !self.servers.is_empty() {
-            let resolver = SystemPtrResolver::with_servers(self.servers.clone());
-            if let Some(name) = resolver.resolve(&reverse) {
-                if !name.is_empty() {
-                    return Some(ensure_fqdn(name));
+        let query = build_ptr_query(&reverse)?;
+        for server in &self.servers {
+            let answer = match server {
+                DnsServer::Udp(address, port) => {
+                    udp_query(*address, *port, &query, self.timeout)
                 }
+                DnsServer::Doh(url) => doh_query(url, &query, self.timeout),
+            };
+            if let Some(name) = answer {
+                return Some(ensure_fqdn(name));
             }
         }
         if self.use_system {
@@ -79,20 +92,47 @@ impl PtrLookup {
     }
 }
 
-/// 上游 dnsjava `PTRRecord.getTarget().toString()` 输出带尾点的绝对域名
-/// （如 `dns.google.`）；系统 `getnameinfo` 通常省略尾点，这里统一补齐。
-fn ensure_fqdn(name: String) -> String {
-    if name.ends_with('.') {
-        name
-    } else {
-        format!("{name}.")
-    }
-}
-
 impl Default for PtrLookup {
     fn default() -> Self {
         Self::disabled()
     }
+}
+
+/// 向指定 DNS 服务器发一次 UDP PTR 查询（支持自定义端口）。
+fn udp_query(address: IpAddr, port: u16, query: &[u8], timeout: Duration) -> Option<String> {
+    let bind = if address.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = UdpSocket::bind(bind).ok()?;
+    socket.connect((address, port)).ok()?;
+    socket.set_read_timeout(Some(timeout)).ok()?;
+    socket.set_write_timeout(Some(timeout)).ok()?;
+    socket.send(query).ok()?;
+    let mut buffer = [0u8; 4096];
+    let received = socket.recv(&mut buffer).ok()?;
+    parse_ptr_answer(&buffer[..received])
+}
+
+/// DoH（RFC 8484 POST）：请求与响应均为 DNS 线格式。
+fn doh_query(url: &str, query: &[u8], timeout: Duration) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .ok()?;
+    let response = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/dns-message")
+        .header(reqwest::header::ACCEPT, "application/dns-message")
+        .body(query.to_vec())
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = response.bytes().ok()?;
+    parse_ptr_answer(&bytes)
 }
 
 /// 系统解析器查询（`getnameinfo`）带等待上限：超时后返回 `None`，
@@ -109,32 +149,115 @@ fn system_lookup(address: IpAddr, timeout: Duration) -> Option<String> {
     }
 }
 
-/// 解析 `resolvers.servers` 条目：支持 `1.1.1.1`、`1.1.1.1:53`、`[::1]:53`。
-fn parse_server(value: &str) -> Option<IpAddr> {
+/// 上游 dnsjava `PTRRecord.getTarget().toString()` 输出带尾点的绝对域名
+/// （如 `dns.google.`）；系统 `getnameinfo` 通常省略尾点，这里统一补齐。
+fn ensure_fqdn(name: String) -> String {
+    if name.ends_with('.') {
+        name
+    } else {
+        format!("{name}.")
+    }
+}
+
+/// 解析 `resolvers.servers` 条目：
+/// `https://...` → DoH；`IP` / `IP:port` / `[IPv6]:port` → UDP（缺省 53）。
+fn parse_server(value: &str) -> Option<DnsServer> {
     let value = value.trim();
-    if value.is_empty() || value.starts_with("http") {
+    if value.is_empty() {
         return None;
     }
+    if value.starts_with("https://") || value.starts_with("http://") {
+        return Some(DnsServer::Doh(value.to_string()));
+    }
     if let Ok(ip) = value.parse::<IpAddr>() {
-        return Some(ip);
+        return Some(DnsServer::Udp(ip, 53));
     }
     if let Some(rest) = value.strip_prefix('[') {
-        return rest.split(']').next()?.parse().ok();
+        let (host, tail) = rest.split_once(']')?;
+        let ip = host.parse().ok()?;
+        let port = match tail.strip_prefix(':') {
+            Some(port) => port.parse().ok()?,
+            None => 53,
+        };
+        return Some(DnsServer::Udp(ip, port));
     }
-    value.rsplit_once(':').and_then(|(host, _)| host.parse().ok())
+    let (host, port) = value.rsplit_once(':')?;
+    Some(DnsServer::Udp(host.parse().ok()?, port.parse().ok()?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     #[test]
-    fn parses_plain_and_port_qualified_servers() {
-        assert_eq!(parse_server("1.1.1.1"), Some("1.1.1.1".parse().unwrap()));
-        assert_eq!(parse_server("8.8.8.8:53"), Some("8.8.8.8".parse().unwrap()));
-        assert_eq!(parse_server("[2001:4860:4860::8888]:53"), Some("2001:4860:4860::8888".parse().unwrap()));
-        assert_eq!(parse_server("https://dns.google/dns-query"), None);
+    fn parses_plain_port_ipv6_and_doh_servers() {
+        assert_eq!(
+            parse_server("1.1.1.1"),
+            Some(DnsServer::Udp("1.1.1.1".parse().unwrap(), 53))
+        );
+        assert_eq!(
+            parse_server("8.8.8.8:5353"),
+            Some(DnsServer::Udp("8.8.8.8".parse().unwrap(), 5353))
+        );
+        assert_eq!(
+            parse_server("[2001:4860:4860::8888]:53"),
+            Some(DnsServer::Udp(
+                "2001:4860:4860::8888".parse().unwrap(),
+                53
+            ))
+        );
+        assert_eq!(
+            parse_server("https://dns.google/dns-query"),
+            Some(DnsServer::Doh("https://dns.google/dns-query".into()))
+        );
         assert_eq!(parse_server("not-an-ip"), None);
+    }
+
+    /// 构造一个带 A/PTR 答案的 DNS 响应：question 原样复制，answer 指向 0xC00C。
+    fn ptr_response(query: &[u8], target: &str) -> Vec<u8> {
+        let mut response = query.to_vec();
+        response[2] = 0x81; // QR=1, RD=1
+        response[3] = 0x80; // RA=1, RCODE=0
+        response[6] = 0x00;
+        response[7] = 0x01; // ANCOUNT=1
+        let mut rdata = Vec::new();
+        for label in target.split('.') {
+            rdata.push(label.len() as u8);
+            rdata.extend_from_slice(label.as_bytes());
+        }
+        rdata.push(0);
+        response.extend_from_slice(&[0xC0, 0x0C]); // name pointer → question
+        response.extend_from_slice(&[0x00, 0x0C, 0x00, 0x01]); // PTR / IN
+        response.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
+        response.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        response.extend_from_slice(&rdata);
+        response
+    }
+
+    #[test]
+    fn doh_post_query_parses_ptr_answer() {
+        let query = build_ptr_query("4.3.2.1.in-addr.arpa").unwrap();
+        let response_body = ptr_response(&query, "host.example.com");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&response_body);
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/dns-query");
+        assert_eq!(
+            doh_query(&url, &query, Duration::from_secs(3)),
+            Some("host.example.com".to_string())
+        );
     }
 
     #[test]

@@ -265,13 +265,25 @@ pub async fn peers(
     let mut peers = state.live_snapshot.peers(&id, &torrent_id);
     // 上游按 `uploadSpeed` 倒序（`handlePeersInTorrentOnDownloader`）
     peers.sort_by_key(|peer| std::cmp::Reverse(peer.up_speed));
-    let ptr_enabled = state.ptr.enabled();
+    // PTR 解析阻塞（最长 3s）：并行放到阻塞线程池，避免串行拖慢整表
+    let ptr_records: Vec<Option<String>> = if state.ptr.enabled() {
+        let lookups = peers.iter().map(|peer| {
+            let ptr = state.ptr.clone();
+            let ip = peer.ip.clone();
+            tokio::task::spawn_blocking(move || ptr.lookup(&ip))
+        });
+        futures_util::future::join_all(lookups)
+            .await
+            .into_iter()
+            .map(|result| result.ok().flatten())
+            .collect()
+    } else {
+        vec![None; peers.len()]
+    };
     let results = peers
         .iter()
-        .map(|p| {
-            let ptr = ptr_enabled.then(|| state.ptr.lookup(&p.ip)).flatten();
-            peer_wrapper_json(p, crate::api::query_geo(&state, &p.ip), ptr)
-        })
+        .zip(ptr_records)
+        .map(|(p, ptr)| peer_wrapper_json(p, crate::api::query_geo(&state, &p.ip), ptr))
         .collect::<Vec<_>>();
     (
         StatusCode::OK,

@@ -54,7 +54,7 @@ lookup:
 resolvers:
   # 使用系统 DNS（getnameinfo）参与 PTR 查询
   use-system: true
-  # 额外 DNS 服务器（IP 或 IP:port）；DoH URL 暂不支持
+  # 额外 DNS 服务器（IP / IP:port / https://... DoH）
   servers: []
 
 # 出站 HTTP 代理（对齐上游 config.yml 的 proxy 段；修改后需重启）

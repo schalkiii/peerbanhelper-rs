@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **27 个测试目标、645 个用例**。运行：
+> `cargo test --workspace -- --list`，共 **27 个测试目标、646 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -199,7 +199,7 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | WebUI 端点清单补 `PUT /api/downloaders` 与 `…/torrent/{id}/peers` | `webui_contract_all_endpoints_exist_and_match_shape` |
 | PCB 同 /56 不同 IP 共享 range 计数器 | `pbh-golden/tests/l2_modules.rs::pcb_shares_range_entity_across_ips_in_same_prefix` |
 | ExternalSwitch 环境变量/整型回退 | `pbh-core/src/external_switch.rs::tests` |
-| PTR 服务器解析与禁用态 | `pbh-core/src/ptr.rs::tests` |
+| PTR 服务器解析（含 DoH/自定义端口）与 DoH 报文解码 | `pbh-core/src/ptr.rs::tests` |
 | 代理环境变量应用 | `pbh-core/src/proxy.rs::tests` |
 | 配置保存保留未知键 + `client` 布局转换 | `pbh/src/config.rs::tests::save_preserves_unknown_keys_and_converts_upstream_client_layout` |
 | 下载器探测识别（Transmission/qBittorrent/非下载器） | `pbh-downloader/src/discovery.rs::tests` |

@@ -400,7 +400,7 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 
 - `config.yml`：`server.http`(9898)、`server.address`、`server.token`、`server.allow-cors`(false)、
   `database.type`(sqlite)、`persist.ban-logs-keep-days`(180)、`persist.banlist`(true)、
-  `lookup.dns-reverse-lookup`(false)、`resolvers.use-system`(true)/`servers`(普通 DNS)、
+  `lookup.dns-reverse-lookup`(false)、`resolvers.use-system`(true)/`servers`(普通 DNS / DoH)、
   `proxy.setting`(0)/`host`/`port`/`non-proxy-hosts`、`performance.windows-ecoqos-api`(true) 等。
   保存配置时与现有文件**增量合并**，未建模的键保留。
 - `profile.yml`：`check-interval`(5000)、`ban-duration`(1209600000=14 天)、
@@ -489,10 +489,11 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   （torrents 按 `rtUploadSpeed`、peers 按 `uploadSpeed` 倒序），不额外访问下载器；
   torrent 不在本轮快照时返回空数组。
 - **PTR / 代理 / CORS / EcoQoS**：`lookup.dns-reverse-lookup` 开启时封禁元数据异步回填
-  `reverseLookup`、peers 列表返回 `ptrRecord`（`/api/peer/{ip}` 与上游一致始终尝试，
-  3s 超时）；`proxy.setting=2` 在启动期写入进程代理环境变量（0/1 保留现有环境，
-  0 不强制清除）；`server.allow-cors` 或
-  `pbh.allowCors` 启用任意来源 CORS；`performance.windows-ecoqos-api` 应用 Windows EcoQoS。
+  `reverseLookup`、peers 列表返回 `ptrRecord`；`/api/peer/{ip}` 与上游一致始终尝试 PTR
+  （3s 超时）。`resolvers.servers` 支持普通 DNS（含自定义端口）与 DoH POST；
+  `proxy.setting=2` 在启动期写入进程代理环境变量（0/1 保留现有环境，0 不强制清除）；
+  `server.allow-cors` 或 `pbh.allowCors` 启用任意来源 CORS；
+  `performance.windows-ecoqos-api` 应用 Windows EcoQoS。
 - **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`
   启动参数覆盖；已接线 PCB completed-excessive、idle ignore-if-any-interested、
   qBittorrent 四个开关与逐下载器并发槽位。

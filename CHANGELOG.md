@@ -3,7 +3,7 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
-## 未发布（2026-10-25）
+## 9.5.1-rs.3（2026-10-25）
 
 ### feat(review): XERJ 双索引 + 写码前参考检索工作流
 
@@ -56,10 +56,10 @@
   qBittorrent 的 `bypassVersionCheck` / `enableRangeBanIp` / `ignoreRangeBanIpCondition` /
   `disableSameIpMultiConnection`，以及逐下载器并发槽位
   `pbh.downloader.<Name>.maxConcurrentPeerRequestSlots`（qB/BiglyBT 128、Deluge 32、其它 16）。
-- **PTR 反查**：新增 `lookup.dns-reverse-lookup` 与 `resolvers.{use-system,servers}`；
+- **PTR 反查**：新增 `lookup.dns-reverse-lookup` 与 `resolvers.{use-system,servers}`（普通 DNS 含自定义端口 + DoH POST）；
   封禁元数据异步回填 `reverseLookup`、`/api/peer/{ip}` 的 `ptrLookup`、
   peers 列表的 `ptrRecord`。系统解析器走 `dns-lookup`（getnameinfo，跨平台），
-  显式服务器走内置 UDP PTR 客户端；DoH URL 暂不支持（跳过并记日志）。
+  显式服务器走内置 UDP PTR 客户端（支持自定义端口）或 DoH POST（RFC 8484）。
 - **代理 / CORS / EcoQoS**：`proxy.setting=2` 在启动期写入
   `HTTP(S)_PROXY` / `NO_PROXY`（reqwest 全局生效）；`0/1` 保留环境代理
   （0 不强制清除，避免切断依赖 `HTTP_PROXY` 的部署——2026-10-25 生产实测）；`server.allow-cors`

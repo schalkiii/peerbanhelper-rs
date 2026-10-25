@@ -19,7 +19,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**645 个测试全部通过**（27 个测试目标；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**646 个测试全部通过**（27 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -147,14 +147,12 @@
 > PTR 反查、ExternalSwitch、代理/CORS/EcoQoS、下载器自动发现、live snapshot、
 > 配置保存保留未知键（详见 CHANGELOG）。当前只剩以下**已知实现边界**：
 >
-> 1. **DoH / 自定义 DNS 端口**：`resolvers.servers` 支持普通 DNS，但查询固定走 53 端口
->    （`IP:port` 的端口部分被忽略）；`https://` DoH URL 暂不支持（构造时跳过并记日志）。
-> 2. **代理应用方式**：`proxy.setting=2` 在启动期写入进程代理环境变量；`0/1` 保留环境代理
+> 1. **代理应用方式**：`proxy.setting=2` 在启动期写入进程代理环境变量；`0/1` 保留环境代理
 >    （上游 0 = 强制不用代理，本移植为兼容依赖 `HTTP_PROXY` 的部署改为「不额外配置」）；
 >    `pbh.downloader.bypassproxy` 不生效，修改 `proxy.*` 需重启。
-> 3. **ExternalSwitch 覆盖面**：仅接线行为相关开关（PCB/idle/qBittorrent/并发槽位/
+> 2. **ExternalSwitch 覆盖面**：仅接线行为相关开关（PCB/idle/qBittorrent/并发槽位/
 >    forceDisableIPDB/allowCors 等）；GUI、Sentry、MySQL 等基础设施开关不适用。
-> 4. **下载器发现平台差异**：Windows/Linux 枚举全部 TCP LISTEN；macOS 等平台退化为
+> 3. **下载器发现平台差异**：Windows/Linux 枚举全部 TCP LISTEN；macOS 等平台退化为
 >    默认端口探测（8080/9091/8112/12345/6800）。
 >
 > `persist.vacuum-interval-days` 的上游启动 VACUUM 在 v9.5.1 中调用被注释（仅实验性
@@ -255,4 +253,4 @@
 | 2026-09-21 | 监控 SQLite 持久化与监控 Web API；上传限速下发；GeoIP 自动更新、AutoSTUN 探测/转发、阈值告警推送；BTN 传输层与脚本规则；AviatorScript→rhai 迁移文档 | 417 → 480 |
 | 2026-09-22 | 数据层对齐上游 + 部署布局兼容 + dry-run 对跑；BTN 上报数据源（history + DbBtnSubmitSource + btnQuery）；规则订阅 Web 后端；mockqb 与双跑脚本；L5 双跑修复（IPv4-mapped 变体） | — |
 | 2026-09-23 | AviatorScript 兼容层（社区 `.av` 原样运行）；登录冷却计数口径重写；下发阶段对齐 `updateDownloader`；实机并行对跑与基准回填 | 530+ |
-| 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 645 |
+| 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 646 |
