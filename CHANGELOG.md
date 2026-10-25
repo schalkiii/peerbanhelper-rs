@@ -3,6 +3,22 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.1-rs.4（2026-10-25）
+
+> 测试与文档增量发布：运行时二进制与 9.5.1-rs.3 功能一致，**无生产代码变更**。
+
+### test: 测试分支补测（646 → 666 用例）
+
+- qBittorrent（6）：会话复用、表单回退与版本门槛、API Key、分页+properties、
+  peer 过滤与地址翻译、封禁载荷与能力标志。
+- Transmission（4）：409 会话握手、版本/blocklist 配置、torrents 过滤+completedSize、
+  peers 解码、全量封禁 no-op。
+- Deluge（3）/ BiglyBT（1）：暂停短路、传输失败转 EXCEPTION、torrents RPC 错误按上游返回空。
+- BTN（3）：submit_bans / submit_swarm 失败不推进游标、ip_query 非 2xx 上抛。
+- CIDR remap（2）：独立期望值的 IPv4/IPv6 property/golden，种子 `PBH_PROP_SEED` 可配置并打印。
+- bans API（1）：peer/client/torrent 搜索 + 实时 GeoIP。
+- 28 个测试目标；`cargo clippy --workspace --all-targets -D warnings` 零警告。
+
 ## 9.5.1-rs.3（2026-10-25）
 
 ### feat(review): XERJ 双索引 + 写码前参考检索工作流
