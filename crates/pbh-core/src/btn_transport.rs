@@ -4385,4 +4385,138 @@ mod tests {
             Some(TranslationComponent::new("Check passed"))
         );
     }
+    /// 提交失败：游标不得推进，能力状态置 false，下一轮重试同一批数据。
+    #[test]
+    fn submit_bans_failure_keeps_cursor_and_reports_false() {
+        const SUBMIT_BANS_URL: &str = "https://btn.test/submit-bans-fail";
+        let source = Arc::new(StubSubmitSource {
+            bans: StdMutex::new(vec![BtnBanHistoryRow {
+                id: 7,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        let body = serde_json::json!({
+            "min_protocol_version": 20,
+            "max_protocol_version": 20,
+            "submit": true,
+            "ability": {
+                "submit_bans": {
+                    "endpoint": SUBMIT_BANS_URL,
+                    "interval": 86400000,
+                    "random_initial_delay": 0,
+                    "pow_captcha": false
+                }
+            }
+        })
+        .to_string();
+        let http = Arc::new(
+            MockHttpClient::default()
+                .serve(CONFIG_URL, ok(body))
+                .serve(SUBMIT_BANS_URL, Script::Body(500, "boom".to_string())),
+        );
+        let module = BtnNetworkOnline::new(crate::modules::btn::BTN_BAN_DURATION_MS);
+        let network = make_network(
+            BtnNetworkConfig {
+                submit: true,
+                ..active_config()
+            },
+            http,
+        )
+        .with_submit_source(source);
+        assert!(network.check_if_need_retry_config_at(&module, 1_000));
+        let report = network.sync_due(&module, now_millis());
+        assert_eq!(report.len(), 1);
+        assert!(!report[0].updated);
+        assert!(!report[0].last_status);
+        assert!(
+            network.metadata.get(METADATA_KEY_BANS_CURSOR).is_none(),
+            "提交失败不得推进 bans 游标"
+        );
+    }
+
+    /// 二元游标同理：失败保留原游标（不写入新值）。
+    #[test]
+    fn submit_swarm_failure_keeps_binary_cursor() {
+        const SWARM_URL: &str = "https://btn.test/submit-swarm-fail";
+        let source = Arc::new(StubSubmitSource {
+            swarms: StdMutex::new(vec![BtnSwarmHistoryRow {
+                id: 10,
+                last_time_seen_ms: 7000,
+                torrent_hash: "aaa".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        let body = serde_json::json!({
+            "min_protocol_version": 20,
+            "max_protocol_version": 20,
+            "submit": true,
+            "ability": {
+                "submit_swarm": {
+                    "endpoint": SWARM_URL,
+                    "interval": 86400000,
+                    "random_initial_delay": 0,
+                    "pow_captcha": false
+                }
+            }
+        })
+        .to_string();
+        let http = Arc::new(
+            MockHttpClient::default()
+                .serve(CONFIG_URL, ok(body))
+                .serve(SWARM_URL, Script::Body(500, "boom".to_string())),
+        );
+        let module = BtnNetworkOnline::new(crate::modules::btn::BTN_BAN_DURATION_MS);
+        let network = make_network(
+            BtnNetworkConfig {
+                submit: true,
+                ..active_config()
+            },
+            http,
+        )
+        .with_submit_source(source);
+        assert!(network.check_if_need_retry_config_at(&module, 1_000));
+        let report = network.sync_due(&module, now_millis());
+        assert_eq!(report.len(), 1);
+        assert!(!report[0].last_status);
+        assert!(
+            network.metadata.get(METADATA_KEY_SWARM_CURSOR).is_none(),
+            "提交失败不得写入 swarm 二元游标"
+        );
+    }
+
+    /// `ip_query` 非 2xx 必须返回 Err（Web 层据此返回 500），不得当作空结果。
+    #[test]
+    fn query_ip_http_failure_returns_error() {
+        const QUERY_URL: &str = "https://btn.test/ip-query-fail";
+        let body = serde_json::json!({
+            "min_protocol_version": 20,
+            "max_protocol_version": 20,
+            "ability": {
+                "ip_query": {
+                    "endpoint": QUERY_URL,
+                    "interval": 60000,
+                    "random_initial_delay": 0,
+                    "pow_captcha": false
+                }
+            }
+        })
+        .to_string();
+        let http = Arc::new(
+            MockHttpClient::default()
+                .serve(CONFIG_URL, ok(body))
+                .serve(
+                    &format!("{QUERY_URL}?ip=1.2.3.4"),
+                    Script::Body(500, "boom".to_string()),
+                ),
+        );
+        let module = BtnNetworkOnline::new(crate::modules::btn::BTN_BAN_DURATION_MS);
+        let network = make_network(active_config(), http);
+        assert!(network.check_if_need_retry_config_at(&module, 1_000));
+        let error = network
+            .query_ip("1.2.3.4")
+            .expect_err("HTTP 500 必须上抛");
+        assert!(error.to_string().contains("HTTP 500"), "{error}");
+    }
 }

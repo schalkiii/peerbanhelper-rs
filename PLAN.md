@@ -19,7 +19,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**663 个测试全部通过**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**666 个测试全部通过**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -253,4 +253,4 @@
 | 2026-09-21 | 监控 SQLite 持久化与监控 Web API；上传限速下发；GeoIP 自动更新、AutoSTUN 探测/转发、阈值告警推送；BTN 传输层与脚本规则；AviatorScript→rhai 迁移文档 | 417 → 480 |
 | 2026-09-22 | 数据层对齐上游 + 部署布局兼容 + dry-run 对跑；BTN 上报数据源（history + DbBtnSubmitSource + btnQuery）；规则订阅 Web 后端；mockqb 与双跑脚本；L5 双跑修复（IPv4-mapped 变体） | — |
 | 2026-09-23 | AviatorScript 兼容层（社区 `.av` 原样运行）；登录冷却计数口径重写；下发阶段对齐 `updateDownloader`；实机并行对跑与基准回填 | 530+ |
-| 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 663 |
+| 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 666 |

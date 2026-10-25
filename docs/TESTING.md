@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **28 个测试目标、663 个用例**。运行：
+> `cargo test --workspace -- --list`，共 **28 个测试目标、666 个用例**。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -212,6 +212,7 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | bans 搜索 peer/client/torrent + 实时 GeoIP | `tests::bans_search_matches_metadata_and_returns_geo` |
 | Deluge 暂停短路 / 传输失败 / torrents RPC 错误按上游返回空 | `pbh-downloader/src/deluge/mod.rs::tests::{login_is_short_circuited_when_paused, login_reports_transport_failure_as_exception, torrents_rpc_error_returns_empty_list_like_upstream}` |
 | BiglyBT 暂停短路 | `pbh-downloader/src/biglybt/mod.rs::tests::login_is_short_circuited_when_paused` |
+| BTN 提交失败不推进游标 / ip_query 非 2xx 上抛 | `pbh-core/src/btn_transport.rs::tests::{submit_bans_failure_keeps_cursor_and_reports_false, submit_swarm_failure_keeps_binary_cursor, query_ip_http_failure_returns_error}` |
 
 > 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口，测试耗时
 > 约 8–14s；这是端点行为的一部分（上游同样扫描监听端口）。
