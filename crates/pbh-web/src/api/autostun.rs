@@ -56,6 +56,18 @@ pub async fn tunnels(State(_state): State<AppState>) -> Response {
         .into_response()
 }
 
+/// `GET /api/autostun/tunnel/{id}/info`：单隧道信息。
+///
+/// Web 侧 AutoSTUN 未接线（见模块头注释），按上游「隧道不存在」分支返回
+/// `success=false`，而不是伪造一份全零 TunnelInfoDTO。
+pub async fn tunnel_info(Path(_id): Path<String>) -> Response {
+    (
+        StatusCode::OK,
+        crate::std_resp(false, Some(NOT_SUPPORTED), Value::Null),
+    )
+        .into_response()
+}
+
 /// `GET /api/autostun/tunnel/{id}/connections`：隧道连接（未启用 → 空分页）。
 pub async fn connections(
     State(_state): State<AppState>,

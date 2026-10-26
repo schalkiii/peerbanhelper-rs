@@ -89,7 +89,7 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
   Web API 契约修复、PCB 共享 range、PTR 反查（含 DoH/自定义端口）、ExternalSwitch、代理/CORS/EcoQoS、
   下载器自动发现、live snapshot、配置保存保留未知键；收尾另修复两项生产问题
   （`proxy.setting=0` 不再清空环境代理、BTN 兼容 Java 迁移库的 `peer_progress TEXT` 列）。
-  666 测试全绿、clippy 零警告，生产 health 200 / wave#1 正常。
+  667 测试全绿、clippy 零警告，生产 health 200 / wave#1 正常。
   该批运行时改动已发布 **9.5.1-rs.3**（tag `v9.5.1-rs.3`）；
   **9.5.1-rs.4** 为后续测试/文档增量发布（无生产代码变化，生产无需重新部署）。
 - 生产运行：GUI + pbh（health 200）、看门狗 wave 心跳常驻；WebUI 前端可用

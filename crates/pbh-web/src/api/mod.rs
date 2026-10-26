@@ -129,6 +129,11 @@ pub fn api_routes() -> Router<crate::AppState> {
             get(general::config_get).put(general::config_put),
         )
         .route("/general/reload", post(general::reload))
+        // 上游旧版 NAT 刷新入口（当前前端用 /autostun/refreshNatType）；保持路由存在
+        .route(
+            "/general/refreshNatStatus",
+            post(autostun::refresh_nat_type),
+        )
         .route(
             "/general/checkModuleAvailable",
             get(general::check_module_available),
@@ -193,6 +198,7 @@ pub fn api_routes() -> Router<crate::AppState> {
         )
         .route("/sub/rule/{id}/update", post(sub::refresh_rule))
         .route("/sub/logs", get(sub::logs))
+        .route("/sub/logs/{rule_id}", get(sub::logs_for_rule))
         .route(
             "/sub/interval",
             get(sub::interval_get).patch(sub::interval_patch),
@@ -217,6 +223,10 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/autostun/status", get(autostun::status))
         .route("/autostun/config", put(autostun::config))
         .route("/autostun/tunnels", get(autostun::tunnels))
+        .route(
+            "/autostun/tunnel/{id}/info",
+            get(autostun::tunnel_info),
+        )
         .route(
             "/autostun/tunnel/{id}/connections",
             get(autostun::connections),

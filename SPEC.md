@@ -497,6 +497,12 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 - **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`
   启动参数覆盖；已接线 PCB completed-excessive、idle ignore-if-any-interested、
   qBittorrent 四个开关与逐下载器并发槽位。
+- **`GET /api/sub/logs/{ruleId}`**：单条订阅的刷新日志分页（`rule_sub_log` 按 ruleId 过滤）；
+  `/api/sub/logs` 继续返回全部日志。
+- **`GET /api/autostun/tunnel/{id}/info`**：Web AutoSTUN 未接线时返回
+  `success=false` + `AUTOSTUN_NOT_SUPPORTED`，不伪造 `TunnelInfoDTO`。
+- **`POST /api/general/refreshNatStatus`**：上游旧版入口，复用 `/api/autostun/refreshNatType`
+  （当前返回 501）。
 - 静态资源：`/` 托管 WebUI（`data/static`，缺失时返回占位页）。
 - 统一响应体 `{success, message, data}`。
 

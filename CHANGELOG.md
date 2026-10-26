@@ -3,6 +3,19 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.1-rs.5（2026-10-25）
+
+### feat(api): 补齐 3 个仅后端使用的上游接口
+
+- `GET /api/sub/logs/{ruleId}`：单订阅刷新日志分页（`rule_sub_log` 按 ruleId 过滤）；
+  `/api/sub/logs` 行为不变。
+- `GET /api/autostun/tunnel/{id}/info`：Web AutoSTUN 未接线时诚实返回
+  `AUTOSTUN_NOT_SUPPORTED`，不伪造 `TunnelInfoDTO`。
+- `POST /api/general/refreshNatStatus`：复用 `/api/autostun/refreshNatType`（当前 501）。
+- 新增全量审计报告 `docs/AUDIT-REPORT-2026-10-25.md`：前端 73 端点契约无缺失，
+  剩余差异为未使用/旧版/非目标接口。
+- 测试 666 → 667；clippy 零警告。
+
 ## 9.5.1-rs.4（2026-10-25）
 
 > 测试与文档增量发布：运行时二进制与 9.5.1-rs.3 功能一致，**无生产代码变更**。

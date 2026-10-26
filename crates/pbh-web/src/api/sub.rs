@@ -124,11 +124,25 @@ pub async fn refresh_all(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// `GET /api/sub/logs?page&pageSize`：规则内嵌日志。
+/// `GET /api/sub/logs?page&pageSize`：全部订阅的刷新日志。
 pub async fn logs(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    logs_page(&state, None, &params)
+}
+
+/// `GET /api/sub/logs/{ruleId}?page&pageSize`：单条订阅的刷新日志
+/// （对齐上游 `RuleSubController` 的 `/api/sub/logs/{ruleId}`）。
+pub async fn logs_for_rule(
+    State(state): State<AppState>,
+    Path(rule_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    logs_page(&state, Some(&rule_id), &params)
+}
+
+fn logs_page(state: &AppState, rule_id: Option<&str>, params: &HashMap<String, String>) -> Response {
     let Some(module) = state.sub_module.as_ref() else {
         return not_found();
     };
@@ -142,7 +156,7 @@ pub async fn logs(
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(30)
         .clamp(1, 200);
-    let (total, entries) = module.logs(page, size);
+    let (total, entries) = module.logs(rule_id, page, size);
     (
         StatusCode::OK,
         crate::std_resp(

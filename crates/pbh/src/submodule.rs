@@ -194,14 +194,14 @@ impl SubModule for RuleSubBackend {
         self.run_refresh(id)
     }
 
-    fn logs(&self, page: i64, size: i64) -> (i64, Vec<Value>) {
+    fn logs(&self, rule_id: Option<&str>, page: i64, size: i64) -> (i64, Vec<Value>) {
         let limit = size.clamp(1, 100);
         // 上游 `Pageable` 的 page 是 1-based（缺省 1），`getZeroBasedPage() = page - 1`
         let offset = (page.max(1) - 1) * limit;
-        let total = self.db.count_rule_sub_log(None).unwrap_or(0);
+        let total = self.db.count_rule_sub_log(rule_id).unwrap_or(0);
         let rows = self
             .db
-            .list_rule_sub_log(None, limit, offset)
+            .list_rule_sub_log(rule_id, limit, offset)
             .unwrap_or_default();
         let items = rows
             .into_iter()

@@ -117,8 +117,8 @@ pub trait SubModule: Send + Sync {
     fn remove_rule(&self, id: &str) -> Result<(), String>;
     /// 刷新单条（`id=None` 时刷新全部）并返回刷新结果摘要。
     fn refresh_rule(&self, id: Option<&str>) -> String;
-    /// 刷新日志（`(total, [entries])`）。
-    fn logs(&self, page: i64, size: i64) -> (i64, Vec<Value>);
+    /// 刷新日志（`(total, [entries])`）；`rule_id=Some` 时只返回该订阅的日志。
+    fn logs(&self, rule_id: Option<&str>, page: i64, size: i64) -> (i64, Vec<Value>);
     /// 当前轮询间隔（毫秒）。
     fn interval(&self) -> i64;
     /// 设置轮询间隔。

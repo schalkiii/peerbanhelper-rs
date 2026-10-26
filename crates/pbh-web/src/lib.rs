@@ -1127,7 +1127,7 @@ mod tests {
         fn refresh_rule(&self, _id: Option<&str>) -> String {
             String::new()
         }
-        fn logs(&self, _page: i64, _size: i64) -> (i64, Vec<Value>) {
+        fn logs(&self, _rule_id: Option<&str>, _page: i64, _size: i64) -> (i64, Vec<Value>) {
             (0, vec![])
         }
         fn interval(&self) -> i64 {
@@ -2207,6 +2207,25 @@ mod tests {
     /// 此前 `rules` 返回 `{rules,count}` 对象、字段名为 `id/name/url/entries`，
     /// 与前端 `ruleBrief`（`ruleId/ruleName/subUrl/entCount/lastUpdate`）全不对，
     /// 页面表现为「用 java 版配置打开也是空的」。
+    /// 上游仅后端使用、前端未调用的少量接口：至少保证路由存在且语义诚实。
+    #[tokio::test]
+    async fn parity_alias_routes_exist() {
+        let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+        let (status, _) = send_json(
+            &state,
+            axum::http::Method::POST,
+            "/api/general/refreshNatStatus",
+            Some("{}".into()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "AutoSTUN 未接线");
+
+        let (status, body) = get_json(&state, "/api/autostun/tunnel/dl-1/info").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["success"], false);
+        assert_eq!(body["message"], "AUTOSTUN_NOT_SUPPORTED");
+    }
+
     #[tokio::test]
     async fn sub_endpoints_return_bare_array_and_number() {
         let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
@@ -2235,6 +2254,17 @@ mod tests {
             "sub/interval 的 data 必须是裸数字，实际 {}",
             body["data"]
         );
+
+        // 上游 `/api/sub/logs/{ruleId}`：单条订阅日志分页
+        for path in ["/api/sub/logs", "/api/sub/logs/all-in-one"] {
+            let (status, body) = get_json(&state, path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(body["data"]["page"], 1, "{path}");
+            assert!(
+                body["data"]["results"].as_array().is_some(),
+                "{path} results 必须是数组"
+            );
+        }
     }
 
     /// WebUI 端点契约清单（从上游 `webui/src/service/*.ts` 提取后固化）。
