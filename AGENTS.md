@@ -85,12 +85,13 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 
 ## 当前状态（2026-10-26）
 
-- **已发布 9.5.1-rs.7（2026-10-26；模块拆分，无行为变更，已部署生产；上一版 rs.6）**：
-  `btn_transport` / `monitor` / `push` / `bitcomet` 超大文件拆分（最大 1,367 行）、
-  测试模块独立；仅移动代码与 `pub(crate)` 可见性，判定/序列化/请求语义不变；
-  671 测试通过（另 1 个本机扫描用例 ignore）、clippy 零警告；生产 health 200。
-  上一版 rs.6 完成 `/api/egg`、契约嵌套字段断言、CI（Windows GNU）与
-  `rust-toolchain.toml`、PTR 固定大小线程池、测试提速与环境隔离、ARCHITECTURE/API 文档。
+- **已发布 9.5.1-rs.8（2026-10-26；测试补强，已部署生产；上一版 rs.7）**：
+  mockqb 6 个端点测试、pbh 启动辅助 3 个、GUI 参数解析 3 个；
+  工作区 680 测试通过（另 1 个本机扫描用例 ignore）、GUI workspace 3 测试，
+  clippy 零警告；生产 health 200。
+  上一版 rs.7 完成五个超大模块拆分（btn_transport/monitor/push/bitcomet，最大 1,367 行）；
+  rs.6 完成 `/api/egg`、契约嵌套字段断言、CI（Windows GNU）与 `rust-toolchain.toml`、
+  PTR 固定大小线程池、测试提速与环境隔离、ARCHITECTURE/API 文档。
 - **2026-10-25 全量 review + 能力补齐已推送 main 并部署生产**：
   Web API 契约修复、PCB 共享 range、PTR 反查（含 DoH/自定义端口）、ExternalSwitch、代理/CORS/EcoQoS、
   下载器自动发现、live snapshot、配置保存保留未知键；收尾另修复两项生产问题
