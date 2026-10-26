@@ -184,3 +184,6 @@
 | 文档缺漏 | 已完成 | `docs/ARCHITECTURE.md`、`docs/API.md`、DEPLOY 校验指引、autostun/分页注释 |
 | P2-4 模块拆分 | 部分完成 | `pbh-web/src/lib.rs` 内联测试迁至 `src/tests.rs`（2829 → 923 行）；`btn_transport.rs` / `monitor.rs` / `push.rs` / `bitcomet/mod.rs` 的**生产代码**拆分仍为维护项（纯移动、需独立验证） |
 | `btnQueryIframe` | 维持暂缓 | 上游 `hardwareId = SHA256(oshi.getHardwareUUID())`（SMBIOS UUID，取不到时回退 MAC）；Rust 无等价 SMBIOS 读取，`MachineGuid` 不等价，不伪造参数。前端当前也未调用该端点 |
+| E1 覆盖率 | 已登记限制 | GNU 工具链无 `profiler_builtins`，`cargo llvm-cov` 不可用；已在 docs/TESTING.md 说明，以用例/分支清单量化 |
+| E2 GUI/mockqb/main 覆盖 | 维持 | 低优先级；GUI 仍以发布前人工冒烟为准 |
+| G1 发布校验 | 已完成 | 新增 `scripts/verify-release.ps1`（sha256 + 包内文件齐全） |
