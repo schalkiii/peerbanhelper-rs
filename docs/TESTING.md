@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **28 个测试目标、671 个用例**
+> `cargo test --workspace -- --list`，共 **28 个测试目标、680 个用例**
 >（另有 1 个本机端口扫描用例默认 `ignore`）。
 >
 > **覆盖率工具限制**：Windows GNU 工具链缺少 `profiler_builtins`，`cargo llvm-cov` 无法运行；
@@ -217,6 +217,9 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | Deluge 暂停短路 / 传输失败 / torrents RPC 错误按上游返回空 | `pbh-downloader/src/deluge/mod.rs::tests::{login_is_short_circuited_when_paused, login_reports_transport_failure_as_exception, torrents_rpc_error_returns_empty_list_like_upstream}` |
 | BiglyBT 暂停短路 | `pbh-downloader/src/biglybt/mod.rs::tests::login_is_short_circuited_when_paused` |
 | BTN 提交失败不推进游标 / ip_query 非 2xx 上抛 | `pbh-core/src/btn_transport/tests.rs::{submit_bans_failure_keeps_cursor_and_reports_false, submit_swarm_failure_keeps_binary_cursor, query_ip_http_failure_returns_error}` |
+| mockqb 端点契约（登录/buildInfo/偏好/torrents 波次/torrentPeers/封禁录制/BTN config） | `pbh-mockqb/src/main.rs::tests` |
+| pbh 启动辅助（ExternalSwitch 参数剔除 / DB 路径 / IPv4·IPv6 绑定） | `pbh/src/main.rs::tests::{external_switch_args_are_removed_before_clap, db_path_prefers_upstream_persist_layout, bind_addr_handles_ipv4_and_bare_ipv6}` |
+| GUI 参数解析与部署/仓库布局默认值 | `pbh-gui/src/main.rs::tests`（独立 workspace，`cd crates/pbh-gui && cargo test`） |
 | per-rule 订阅日志 / autostun info / refreshNatStatus 别名 | `tests::{sub_endpoints_return_bare_array_and_number, parity_alias_routes_exist}` |
 
 > 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口（8–14s），

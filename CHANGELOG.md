@@ -3,6 +3,19 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.1-rs.8（2026-10-26）
+
+### test: 补齐 mockqb / GUI / 主程序启动逻辑测试（无行为变更）
+
+- mockqb：抽出 `build_app`，新增 6 个端点测试（登录/版本/buildInfo、偏好限速、
+  torrents 波次轮转、torrentPeers 按 hash 过滤、封禁载荷录制、BTN config 回指自身）。
+- pbh：抽出 ExternalSwitch 参数过滤、数据库路径选择、监听地址解析（裸 IPv6 自动补方括号），
+  新增 3 个测试；行为与拆分前一致。
+- pbh-gui：抽出 `parse_args_from`，新增 3 个测试（显式参数/非法端口回退、部署布局、
+  repo 布局默认值）。
+- 工作区 671 → 680 通过（另 1 个本机扫描用例 ignore）；GUI 独立 workspace 3 测试；
+  `cargo clippy` 两个 workspace 均零警告。
+
 ## 9.5.1-rs.7（2026-10-26）
 
 ### refactor: 超大模块拆分（无行为变更）

@@ -19,7 +19,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**671 个测试通过 + 1 个本机扫描用例 ignore**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**680 个测试通过 + 1 个本机扫描用例 ignore**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -257,3 +257,4 @@
 | 2026-09-23 | AviatorScript 兼容层（社区 `.av` 原样运行）；登录冷却计数口径重写；下发阶段对齐 `updateDownloader`；实机并行对跑与基准回填 | 530+ |
 | 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 667 |
 | 2026-10-26 | 审计 backlog：`/api/egg`、契约嵌套字段断言、CI + 固定 GNU 工具链、PTR 有界线程池、测试提速/环境隔离、ARCHITECTURE/API 文档 | 671 |
+| 2026-10-26 | 模块拆分 + 测试补强：五个超大文件拆分、mockqb/GUI/main 启动逻辑测试 | 680 |

@@ -445,6 +445,27 @@ async fn index() -> Response {
     Html("<h1>PBH mock qBittorrent</h1><p>dual-run / benchmark fixture server</p>").into_response()
 }
 
+/// 组装路由（与 `main` 分离，测试可注入内存 state 直接 oneshot 请求）。
+fn build_app(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/api/v2/auth/login", post(login))
+        .route("/api/v2/app/buildInfo", get(build_info))
+        .route("/api/v2/app/version", get(version))
+        .route("/api/v2/app/preferences", get(preferences))
+        .route("/api/v2/app/setPreferences", post(set_preferences))
+        .route("/api/v2/transfer/banPeers", post(ban_peers))
+        .route("/api/v2/torrents/info", get(torrents_info))
+        .route("/api/v2/torrents/properties", get(torrent_properties))
+        .route("/api/v2/sync/maindata", get(maindata))
+        .route("/api/v2/sync/torrentPeers", get(torrent_peers))
+        // BTN mock：config-url 指向 /btn/config，ability endpoint 回指自身（上报录制）
+        .route("/btn/config", get(btn_config))
+        .route("/btn/{kind}", post(btn_receive))
+        .route("/btn/ip_denylist", get(btn_ip_denylist))
+        .with_state(state)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -477,23 +498,7 @@ async fn main() -> anyhow::Result<()> {
         state.fixture.waves.len()
     );
 
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/api/v2/auth/login", post(login))
-        .route("/api/v2/app/buildInfo", get(build_info))
-        .route("/api/v2/app/version", get(version))
-        .route("/api/v2/app/preferences", get(preferences))
-        .route("/api/v2/app/setPreferences", post(set_preferences))
-        .route("/api/v2/transfer/banPeers", post(ban_peers))
-        .route("/api/v2/torrents/info", get(torrents_info))
-        .route("/api/v2/torrents/properties", get(torrent_properties))
-        .route("/api/v2/sync/maindata", get(maindata))
-        .route("/api/v2/sync/torrentPeers", get(torrent_peers))
-        // BTN mock：config-url 指向 /btn/config，ability endpoint 回指自身（上报录制）
-        .route("/btn/config", get(btn_config))
-        .route("/btn/{kind}", post(btn_receive))
-        .route("/btn/ip_denylist", get(btn_ip_denylist))
-        .with_state(state);
+    let app = build_app(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -547,5 +552,195 @@ mod tests {
         for n in 1..=5u64 {
             assert_eq!(f.peers_at("H", n).unwrap()[0].ip.as_deref(), Some("1.1.1.1"));
         }
+    }
+
+    // ---- HTTP 端点契约（mock 服务自身的可用性） ----
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn app_state(fixture: Fixture, record: Option<Arc<Mutex<std::fs::File>>>) -> AppState {
+        AppState {
+            fixture: Arc::new(fixture),
+            record,
+            port: 0,
+            wave_counter: Arc::new(Mutex::new(HashMap::new())),
+            torrents_counter: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    async fn call(app: &Router, request: Request<Body>) -> (StatusCode, Vec<u8>) {
+        let response = app.clone().oneshot(request).await.expect("路由调用");
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("响应体");
+        (status, bytes.to_vec())
+    }
+
+    fn get(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    /// 最小 form 编码（仅测试用；保留 unreserved，其余 %XX）。
+    fn form_body(pairs: &[(&str, &str)]) -> String {
+        let encode = |value: &str| {
+            value
+                .bytes()
+                .map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        (b as char).to_string()
+                    }
+                    _ => format!("%{b:02X}"),
+                })
+                .collect::<String>()
+        };
+        pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    fn post_form(uri: &str, pairs: &[(&str, &str)]) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(form_body(pairs)))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_version_and_build_info_endpoints() {
+        let fixture: Fixture = serde_json::from_str(
+            r#"{"version":"5.1.2","buildinfo":{"libtorrent":"2.0.10","qt":"6.7"}}"#,
+        )
+        .unwrap();
+        let app = build_app(app_state(fixture, None));
+
+        let (status, body) = call(&app, post_form("/api/v2/auth/login", &[("username", "u"), ("password", "p")])).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"Ok.", "qB 登录成功判据是 body == Ok.");
+
+        let (status, body) = call(&app, get("/api/v2/app/version")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, b"5.1.2");
+
+        let (status, body) = call(&app, get("/api/v2/app/buildInfo")).await;
+        assert_eq!(status, StatusCode::OK);
+        let info: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(info["libtorrent"], "2.0.10");
+        assert_eq!(info["qt"], "6.7");
+    }
+
+    #[tokio::test]
+    async fn preferences_report_configured_limits() {
+        let fixture: Fixture =
+            serde_json::from_str(r#"{"preferences":{"up_limit":1024,"dl_limit":2048}}"#).unwrap();
+        let app = build_app(app_state(fixture, None));
+        let (status, body) = call(&app, get("/api/v2/app/preferences")).await;
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["up_limit"], 1024);
+        assert_eq!(value["dl_limit"], 2048);
+    }
+
+    #[tokio::test]
+    async fn torrents_info_rotates_waves() {
+        let fixture: Fixture = serde_json::from_str(
+            r#"{
+                "torrents": [{"hash":"H","name":"t","progress":0.9}],
+                "waves": [{"torrents":[{"hash":"H","name":"t","progress":0.4}]}]
+            }"#,
+        )
+        .unwrap();
+        let app = build_app(app_state(fixture, None));
+
+        let (_, body) = call(&app, get("/api/v2/torrents/info")).await;
+        let first: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(first[0]["progress"], 0.9);
+
+        let (_, body) = call(&app, get("/api/v2/torrents/info")).await;
+        let second: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(second[0]["progress"], 0.4, "第二次请求应进入 waves[0]");
+    }
+
+    #[tokio::test]
+    async fn torrent_peers_filters_hash_and_rotates() {
+        let fixture: Fixture = serde_json::from_str(
+            r#"{
+                "peers": {"H": [{"ip":"1.1.1.1","port":1,"progress":0.9}]},
+                "waves": [{"peers":{"H":[{"ip":"2.2.2.2","port":2,"progress":0.4}]}}]
+            }"#,
+        )
+        .unwrap();
+        let app = build_app(app_state(fixture, None));
+
+        let (_, body) = call(&app, get("/api/v2/sync/torrentPeers?hash=H")).await;
+        let first: Value = serde_json::from_slice(&body).unwrap();
+        assert!(first["peers"].get("1.1.1.1:1").is_some());
+
+        let (_, body) = call(&app, get("/api/v2/sync/torrentPeers?hash=H")).await;
+        let second: Value = serde_json::from_slice(&body).unwrap();
+        assert!(second["peers"].get("2.2.2.2:2").is_some());
+
+        let (_, body) = call(&app, get("/api/v2/sync/torrentPeers?hash=missing")).await;
+        let missing: Value = serde_json::from_slice(&body).unwrap();
+        assert!(missing["peers"].as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ban_payloads_are_recorded_for_dual_run_diff() {
+        let path = std::env::temp_dir().join(format!(
+            "pbh-mockqb-record-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let app = build_app(app_state(
+            serde_json::from_str("{}").unwrap(),
+            Some(Arc::new(Mutex::new(file))),
+        ));
+
+        let (status, _) = call(
+            &app,
+            post_form(
+                "/api/v2/app/setPreferences",
+                &[("json", r#"{"banned_IPs":"1.1.1.1\n2.2.2.2"}"#)],
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(
+            &app,
+            post_form("/api/v2/transfer/banPeers", &[("peers", "3.3.3.3|4.4.4.4")]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let recorded = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(recorded.lines().collect::<Vec<_>>(), ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"]);
+    }
+
+    #[tokio::test]
+    async fn btn_config_endpoints_point_back_to_self() {
+        let mut state = app_state(serde_json::from_str("{}").unwrap(), None);
+        state.port = 18080;
+        let app = build_app(state);
+        let (status, body) = call(&app, get("/btn/config")).await;
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["min_protocol_version"], 20);
+        assert_eq!(
+            value["ability"]["heartbeat"]["endpoint"],
+            "http://127.0.0.1:18080/btn/heartbeat"
+        );
     }
 }

@@ -27,7 +27,7 @@ use pbh_web::{build_router_with_cors, AppState, DownloaderStatus, Metrics, RingL
 use ring::RingLayer;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -57,6 +57,35 @@ struct Args {
     tag: Option<String>,
 }
 
+/// 剔除 ExternalSwitch 的 `key=value` 启动参数（`--pbh.*` / `pbh.*`），
+/// clap 不认识这些键；剔除后由 `pbh_core::external_switch::parse` 读取。
+fn external_switch_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
+    args.into_iter()
+        .filter(|argument| !(argument.starts_with("--pbh.") || argument.starts_with("pbh.")))
+        .collect()
+}
+
+/// 数据库路径：上游部署布局（`<data>/persist/peerbanhelper-nt.db`）优先；
+/// 无 `persist/` 目录时沿用本移植的单文件布局 `<data>/peerbanhelper.db`。
+fn choose_db_path(data_dir: &Path) -> PathBuf {
+    let upstream = data_dir.join("persist").join("peerbanhelper-nt.db");
+    if upstream.exists() || data_dir.join("persist").is_dir() {
+        upstream
+    } else {
+        data_dir.join("peerbanhelper.db")
+    }
+}
+
+/// 监听地址：`address:port`；裸 IPv6 地址自动补方括号。
+fn parse_bind_addr(address: &str, port: u16) -> anyhow::Result<SocketAddr> {
+    let host = if address.contains(':') && !address.starts_with('[') {
+        format!("[{address}]")
+    } else {
+        address.to_string()
+    };
+    Ok(format!("{host}:{port}").parse()?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ring_log = Arc::new(RingLog::new(4096));
@@ -70,12 +99,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 上游 `ExternalSwitch` 支持 `key=value` 启动参数；这些参数不归 clap 管，
     // 先从 argv 中剔除，再由 `external_switch::parse` 读取。
-    let cli_args: Vec<String> = std::env::args()
-        .filter(|argument| {
-            !(argument.starts_with("--pbh.") || argument.starts_with("pbh."))
-        })
-        .collect();
-    let args = Args::parse_from(cli_args);
+    let args = Args::parse_from(external_switch_args(std::env::args()));
     let data_dir = args.data.clone();
     std::fs::create_dir_all(&data_dir)?;
     // 暴露数据目录给库内按 `<data>/...` 解析的路径（expression-engine 脚本目录等，
@@ -98,14 +122,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 数据库：对齐上游部署布局 `<data>/persist/peerbanhelper-nt.db`；
     // 无 `persist/` 目录时沿用本移植的单文件布局 `<data>/peerbanhelper.db`。
-    let db_path = {
-        let upstream = data_dir.join("persist").join("peerbanhelper-nt.db");
-        if upstream.exists() || data_dir.join("persist").is_dir() {
-            upstream
-        } else {
-            data_dir.join("peerbanhelper.db")
-        }
-    };
+    let db_path = choose_db_path(&data_dir);
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -528,7 +545,7 @@ async fn main() -> anyhow::Result<()> {
     let allow_cors = cfg.server.allow_cors
         || pbh_core::external_switch::parse("pbh.allowCors").is_some();
     let app = build_router_with_cors(state, allow_cors);
-    let bind: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.http).parse()?;
+    let bind = parse_bind_addr(&cfg.server.address, cfg.server.http)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     info!("Web 服务监听: http://{bind}");
     let server = tokio::spawn(async move {
@@ -994,5 +1011,63 @@ mod tests {
         )
         .is_none());
         assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn external_switch_args_are_removed_before_clap() {
+        let args = external_switch_args(
+            [
+                "pbh",
+                "--data",
+                "./d",
+                "--pbh.pcb.disable-completed-excessive=true",
+                "pbh.forceDisableIPDB=1",
+                "--pbh-path",
+                "x.exe",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        );
+        assert_eq!(args, ["pbh", "--data", "./d", "--pbh-path", "x.exe"]);
+    }
+
+    #[test]
+    fn db_path_prefers_upstream_persist_layout() {
+        let dir = std::env::temp_dir().join(format!("pbh-dbpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            choose_db_path(&dir),
+            dir.join("peerbanhelper.db"),
+            "无 persist/ 时用单文件布局"
+        );
+        std::fs::create_dir_all(dir.join("persist")).unwrap();
+        assert_eq!(
+            choose_db_path(&dir),
+            dir.join("persist").join("peerbanhelper-nt.db"),
+            "存在 persist/ 时用上游布局"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bind_addr_handles_ipv4_and_bare_ipv6() {
+        assert_eq!(
+            parse_bind_addr("127.0.0.1", 9898).unwrap().to_string(),
+            "127.0.0.1:9898"
+        );
+        assert_eq!(
+            parse_bind_addr("0.0.0.0", 9898).unwrap().to_string(),
+            "0.0.0.0:9898"
+        );
+        assert_eq!(
+            parse_bind_addr("::", 9898).unwrap().to_string(),
+            "[::]:9898"
+        );
+        assert_eq!(
+            parse_bind_addr("[::1]", 9898).unwrap().to_string(),
+            "[::1]:9898"
+        );
+        assert!(parse_bind_addr("not-an-ip", 9898).is_err());
     }
 }

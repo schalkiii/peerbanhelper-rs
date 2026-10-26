@@ -37,10 +37,18 @@ impl Args {
 }
 
 fn parse_args() -> Args {
+    let exe = std::env::current_exe().ok();
+    parse_args_from(std::env::args().skip(1), exe.as_deref())
+}
+
+/// 参数解析的纯逻辑：`exe` 由调用方注入（测试避免依赖真实进程路径）。
+fn parse_args_from<I>(raw_args: I, exe: Option<&std::path::Path>) -> Args
+where
+    I: IntoIterator<Item = String>,
+{
     // 部署布局（pbh-gui.exe 与 pbh.exe/data 同目录）优先：双击启动（无参数）时
     // 拉起同目录的 pbh.exe；开发环境（repo 内运行）回退 target/release 布局。
-    let exe = std::env::current_exe().ok();
-    let exe_dir = exe.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let exe_dir = exe.and_then(|p| p.parent()).map(|p| p.to_path_buf());
     let default_pbh = exe_dir
         .as_ref()
         .map(|d| d.join("pbh.exe"))
@@ -52,7 +60,7 @@ fn parse_args() -> Args {
         data_dir: String::new(),
         port: 9898,
     };
-    let mut iter = std::env::args().skip(1);
+    let mut iter = raw_args.into_iter();
     while let Some(a) = iter.next() {
         match a.as_str() {
             "--pbh-path" => {
@@ -471,4 +479,88 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running pbh-gui");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_layout(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pbh-gui-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn explicit_arguments_win_and_invalid_port_falls_back() {
+        let args = parse_args_from(
+            [
+                "--pbh-path",
+                "D:/apps/pbh.exe",
+                "--data-dir",
+                "D:/apps/data",
+                "--port",
+                "9999",
+                "--unknown",
+                "ignored",
+            ]
+            .into_iter()
+            .map(str::to_string),
+            Some(std::path::Path::new("C:/install/pbh-gui.exe")),
+        );
+        assert_eq!(args.pbh_path, "D:/apps/pbh.exe");
+        assert_eq!(args.data_dir, "D:/apps/data");
+        assert_eq!(args.port, 9999);
+
+        let bad_port = parse_args_from(
+            ["--port", "not-a-number"].into_iter().map(str::to_string),
+            None,
+        );
+        assert_eq!(bad_port.port, 9898, "非法端口回退默认 9898");
+
+        // 缺少值的尾随参数不得 panic，也不得清空默认值
+        let missing = parse_args_from(["--pbh-path"].into_iter().map(str::to_string), None);
+        assert_eq!(missing.pbh_path, "target/release/pbh.exe");
+    }
+
+    #[test]
+    fn deployment_layout_prefers_sibling_exe_and_data() {
+        let dir = temp_layout("deploy");
+        let install = dir.join("install");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("pbh.exe"), b"").unwrap();
+        std::fs::create_dir_all(install.join("data")).unwrap();
+
+        let args = parse_args_from(
+            std::iter::empty(),
+            Some(install.join("pbh-gui.exe").as_path()),
+        );
+        assert_eq!(PathBuf::from(&args.pbh_path), install.join("pbh.exe"));
+        assert_eq!(PathBuf::from(&args.data_dir), install.join("data"));
+        assert_eq!(args.port, 9898);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn repo_layout_falls_back_to_target_and_relative_data() {
+        let dir = temp_layout("repo");
+        let release = dir.join("crates/pbh-gui/target/release");
+        std::fs::create_dir_all(&release).unwrap();
+        let expected_data = release.join("../../data");
+        std::fs::create_dir_all(&expected_data).unwrap();
+
+        let args = parse_args_from(
+            std::iter::empty(),
+            Some(release.join("pbh-gui.exe").as_path()),
+        );
+        assert_eq!(args.pbh_path, "target/release/pbh.exe");
+        assert_eq!(
+            std::fs::canonicalize(&args.data_dir).unwrap(),
+            std::fs::canonicalize(&expected_data).unwrap(),
+            "无同级 data/ 时回退 exe 的 ../../data"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

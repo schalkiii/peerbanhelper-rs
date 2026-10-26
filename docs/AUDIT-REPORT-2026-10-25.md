@@ -185,5 +185,12 @@
 | P2-4 模块拆分 | 已完成 | 五个超大文件全部拆分（2026-10-26，见 CHANGELOG `9.5.1-rs.7`）：`btn_transport` 按 DTO/PoW/network/util 拆分（最大 1,367 行）、`monitor` 按工具/数据/告警/四个服务拆分（最大 1,118 行）、`push` 按渠道/SMTP/管理器拆分（最大 780 行）、`bitcomet` 测试独立（生产 1,169 行）；`pbh-web/lib.rs` 测试迁至 `src/tests.rs` |
 | `btnQueryIframe` | 维持暂缓 | 上游 `hardwareId = SHA256(oshi.getHardwareUUID())`（SMBIOS UUID，取不到时回退 MAC）；Rust 无等价 SMBIOS 读取，`MachineGuid` 不等价，不伪造参数。前端当前也未调用该端点 |
 | E1 覆盖率 | 已登记限制 | GNU 工具链无 `profiler_builtins`，`cargo llvm-cov` 不可用；已在 docs/TESTING.md 说明，以用例/分支清单量化 |
-| E2 GUI/mockqb/main 覆盖 | 维持 | 低优先级；GUI 仍以发布前人工冒烟为准 |
+| E2 GUI/mockqb/main 覆盖 | 已完成（可测部分） | mockqb 6 个端点测试、pbh main 3 个启动辅助测试、GUI 3 个参数解析测试；GUI 渲染/托盘仍以发布前人工冒烟为准 |
 | G1 发布校验 | 已完成 | 新增 `scripts/verify-release.ps1`（sha256 + 包内文件齐全） |
+
+## 10. 不建议实施项（决策，2026-10-26）
+
+| 项 | 决策 | 理由 |
+|---|---|---|
+| `/api/peer/{ip}/btnQueryIframe` | 不实施 | 前端当前未调用；上游 URL 需要 `hardwareId = SHA256(oshi SMBIOS UUID)`，Rust 侧无等价读取，`MachineGuid` 不等价。指纹错误会导致 BTN 侧参数不可用，**比端点缺失更糟**。若未来前端接入，先用同机 Java 版输出 `hardwareId` 做对照，再实现 SMBIOS 读取。 |
+| 行覆盖率（llvm-cov） | 不实施 | Windows GNU 工具链缺 `profiler_builtins`；切 MSVC 需重装 BuildTools，换 Linux 覆盖率任务无法验证 Windows 专有路径。当前以「680 用例 + 契约清单 + 分支矩阵」量化，已在 docs/TESTING.md 登记限制。 |
