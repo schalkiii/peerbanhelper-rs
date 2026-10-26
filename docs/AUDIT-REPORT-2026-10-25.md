@@ -182,7 +182,7 @@
 | P3-1 PTR 线程池 | 已完成 | 回填池 4 线程 + 系统解析池 4 线程，附上界测试 |
 | E3/F1 测试稳定性 | 已完成 | 扫描用例 skip/ignore；proxy 测试改注入 sink；web 套件 8.3s → 0.5s |
 | 文档缺漏 | 已完成 | `docs/ARCHITECTURE.md`、`docs/API.md`、DEPLOY 校验指引、autostun/分页注释 |
-| P2-4 模块拆分 | 部分完成 | `pbh-web/src/lib.rs` 内联测试迁至 `src/tests.rs`（2829 → 923 行）；`btn_transport.rs` / `monitor.rs` / `push.rs` / `bitcomet/mod.rs` 的**生产代码**拆分仍为维护项（纯移动、需独立验证） |
+| P2-4 模块拆分 | 已完成 | 五个超大文件全部拆分（2026-10-26，见 CHANGELOG `9.5.1-rs.7`）：`btn_transport` 按 DTO/PoW/network/util 拆分（最大 1,367 行）、`monitor` 按工具/数据/告警/四个服务拆分（最大 1,118 行）、`push` 按渠道/SMTP/管理器拆分（最大 780 行）、`bitcomet` 测试独立（生产 1,169 行）；`pbh-web/lib.rs` 测试迁至 `src/tests.rs` |
 | `btnQueryIframe` | 维持暂缓 | 上游 `hardwareId = SHA256(oshi.getHardwareUUID())`（SMBIOS UUID，取不到时回退 MAC）；Rust 无等价 SMBIOS 读取，`MachineGuid` 不等价，不伪造参数。前端当前也未调用该端点 |
 | E1 覆盖率 | 已登记限制 | GNU 工具链无 `profiler_builtins`，`cargo llvm-cov` 不可用；已在 docs/TESTING.md 说明，以用例/分支清单量化 |
 | E2 GUI/mockqb/main 覆盖 | 维持 | 低优先级；GUI 仍以发布前人工冒烟为准 |

@@ -3,6 +3,19 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.1-rs.7（2026-10-26）
+
+### refactor: 超大模块拆分（无行为变更）
+
+- `btn_transport.rs`（4,522 行）→ `btn_transport/{mod,types,pow,network,util,tests}.rs`
+  （最大 1,367 行）；网络/协议 DTO/PoW/工具分离，外部 `pbh_core::btn_transport::*` 路径不变。
+- `modules/monitor.rs`（3,281 行）→ `monitor/{mod,util,rows,sink,active,session,recording,tracking,tests}.rs`
+  （最大 1,118 行，测试独立）。
+- `push.rs`（2,206 行）→ `push/{mod,provider,services,smtp,manager,tests}.rs`（最大 780 行）。
+- `bitcomet/mod.rs`（2,237 行）→ 生产代码 1,169 行 + `tests.rs` 1,067 行。
+- 仅移动代码、调整 crate 内可见性（`pub(crate)`）与导入；判定、序列化、请求语义未改。
+- 671 测试通过（另 1 个本机扫描用例 ignore）；clippy 零警告。
+
 ## 9.5.1-rs.6（2026-10-26）
 
 ### feat(api): 补上游彩蛋 `/api/egg`
