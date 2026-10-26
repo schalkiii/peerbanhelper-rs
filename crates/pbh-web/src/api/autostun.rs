@@ -1,9 +1,11 @@
-//! AutoSTUN 端点（`/api/autostun/*`，对齐 WebUI `service/autostun.ts`）。
+//! AutoSTUN 的 WebUI 管理端点（`/api/autostun/*`，对齐 WebUI `service/autostun.ts`）。
 //!
-//! 本移植**未实现** AutoSTUN（NAT 类型探测 / 端口映射隧道），但**端点必须存在**——
-//! 缺失会让前端 AutoSTUN 页面拿到 `/api` fallback 的 `API_NOT_FOUND` 而整体不可用。
+//! 核心 NAT 翻译 / TCP 隧道 / NAT 类型探测已实现（`pbh_core::auto_stun`，
+//! 由 `ip-remapping.auto-stun.enabled` 门控），但**这组管理端点尚未接线**：
+//! Web 层不持有运行中的 AutoSTUN 实例，启停/刷新也不会写回配置。
 //!
-//! 因此这里返回**结构完整、语义诚实**的响应：
+//! 端点必须存在——缺失会让前端 AutoSTUN 页面拿到 `/api` fallback 的
+//! `API_NOT_FOUND` 而整体不可用。因此这里返回**结构完整、语义诚实**的响应：
 //! - 读操作给出「未启用」状态与空集合（页面正常渲染为未启用，而非报错/空白）；
 //! - 写操作（启用/刷新/重启）明确返回失败并说明原因，而不是假装生效。
 

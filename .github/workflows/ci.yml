@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # 与发布产物同环境：Windows + GNU 工具链。
+  # rust-toolchain.toml 固定了 GNU 三元组；runner 的 rustup host 是 msvc，
+  # 因此这里显式安装 GNU 工具链并用 RUSTUP_TOOLCHAIN 覆盖文件解析。
+  windows-gnu:
+    runs-on: windows-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (GNU) with clippy
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component clippy --no-self-update
+
+      # rustc 的 GNU 后端通过 gcc/ar/dlltool 链接；runner 自带 MSYS2 但不在 PATH
+      - name: Put MinGW tools on PATH
+        run: echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # 前端契约清单与 Rust 常量的一致性由上面的测试覆盖；GUI 是独立 workspace，
+  # 需要 Tauri/WebView2 工具链，不在此 job 中构建（发布脚本单独负责）。

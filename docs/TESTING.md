@@ -1,7 +1,11 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **28 个测试目标、667 个用例**。运行：
+> `cargo test --workspace -- --list`，共 **28 个测试目标、671 个用例**
+>（另有 1 个本机端口扫描用例默认 `ignore`）。
+>
+> **覆盖率工具限制**：Windows GNU 工具链缺少 `profiler_builtins`，`cargo llvm-cov` 无法运行；
+> 当前以「用例/分支清单 + 契约清单」量化覆盖，不提供行覆盖率数字。运行：
 > `cargo test --workspace`；
 > mock 对跑：`pwsh -File java_dualrun.ps1 -Fixture <场景>.json -Tag <tag>` 后接
 > `rust_dualrun.ps1 -Fixture <场景>.json -Tag <tag>`（需先构建 `target\debug\{pbh,mockqb}.exe`）。
@@ -270,7 +274,8 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 |---|---|
 | 端点存在 | 响应不是 `/api` fallback 的 `API_NOT_FOUND`（405 方法不匹配也算存在） |
 | `data` 形状 | `array` / `object` / `number` / `string` / `page`（分页四字段）/ `geo`（四个维度均为数组）/ `lab` |
-| 跳过项 | SSE 长连接（如 `/api/logs/live`）无法在 oneshot 中请求，清单里以 `skip` 标注 |
+| 嵌套字段 | 可选 `fields`（对象字段，支持 `a.b` 点路径）/ `item_fields`（数组元素）/ `results_fields`（分页 results 元素）；空样本直接判失败，因此测试会注入封禁/下载器种子数据 |
+| 跳过项 | SSE 长连接（如 `/api/logs/live`）与本机端口扫描（`/api/oobe/scanDownloader`）无法快速稳定请求，清单里以 `skip` 标注原因 |
 
 **维护方式**：上游前端升级后需重新提取清单（`webui/src/**` 中排除 `api/model/*` 的
 import 后的全部 `api/...` 字面量），否则新端点不在门禁覆盖内。

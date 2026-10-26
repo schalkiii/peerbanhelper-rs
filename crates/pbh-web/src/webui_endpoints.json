@@ -11,50 +11,76 @@
     "geo": "data 含 city/isp/province/region 四个字段，且每个都是数组",
     "lab": "data 含 labEnabled 且 experiments 是数组"
   },
+  "_fields_legend": {
+    "fields": "data 对象必须含有的字段（支持 a.b 点路径）",
+    "item_fields": "data 数组的每个元素必须含有的字段；空数组直接判失败（需注入种子数据）",
+    "results_fields": "page 形状的 results 元素必须含有的字段；空数组直接判失败"
+  },
   "endpoints": [
-    { "method": "GET", "path": "/api/metadata/manifest", "shape": "object" },
+    {
+      "method": "GET", "path": "/api/metadata/manifest", "shape": "object",
+      "fields": ["version.version", "version.os", "modules", "installationId", "analytics"]
+    },
     { "method": "POST", "path": "/api/auth/login", "shape": "any" },
     { "method": "POST", "path": "/api/oobe/init", "shape": "any" },
     { "method": "POST", "path": "/api/oobe/testDownloader", "shape": "any" },
     { "method": "POST", "path": "/api/oobe/testDatabaseConfig", "shape": "any" },
-    { "method": "POST", "path": "/api/oobe/scanDownloader", "shape": "any" },
+    { "method": "POST", "path": "/api/oobe/scanDownloader", "shape": "any", "skip": "真实扫描本机端口，8s+ 且依赖环境；探测逻辑由 pbh-downloader::discovery 测试覆盖" },
 
     { "method": "GET", "path": "/api/alerts", "shape": "array" },
     { "method": "PATCH", "path": "/api/alert/1/dismiss", "shape": "any" },
     { "method": "POST", "path": "/api/alert/dismissAll", "shape": "any" },
 
-    { "method": "GET", "path": "/api/bans", "shape": "any" },
+    {
+      "method": "GET", "path": "/api/bans", "shape": "page",
+      "results_fields": ["address", "banMetadata.downloader", "banMetadata.banAt", "banMetadata.rule", "ipGeoData"]
+    },
     { "method": "GET", "path": "/api/bans/logs", "shape": "page" },
     { "method": "GET", "path": "/api/bans/ranks", "shape": "page" },
 
     { "method": "GET", "path": "/api/logs/history", "shape": "array" },
     { "method": "GET", "path": "/api/logs/live", "shape": "any", "skip": "SSE 长连接：oneshot 请求永不结束，无法在测试中请求" },
 
-    { "method": "GET", "path": "/api/general/status", "shape": "object" },
+    {
+      "method": "GET", "path": "/api/general/status", "shape": "object",
+      "fields": ["jvm", "system", "btn", "peerbanhelper.version", "peerbanhelper.uptime"]
+    },
     { "method": "GET", "path": "/api/general/global", "shape": "object" },
     { "method": "GET", "path": "/api/general/config", "shape": "object" },
     { "method": "GET", "path": "/api/general/profile", "shape": "object" },
     { "method": "GET", "path": "/api/general/checkModuleAvailable", "shape": "any" },
     { "method": "GET", "path": "/api/general/heapdump", "shape": "any" },
 
-    { "method": "GET", "path": "/api/statistic/counter", "shape": "object" },
+    {
+      "method": "GET", "path": "/api/statistic/counter", "shape": "object",
+      "fields": ["checkCounter", "peerBanCounter", "peerUnbanCounter", "banlistCounter", "bannedIpCounter", "wastedTraffic", "trackedSwarmCount", "peersBlockRate", "weeklySessions"]
+    },
     { "method": "GET", "path": "/api/statistic/rules", "shape": "any" },
     { "method": "GET", "path": "/api/statistic/analysis/banTrends", "shape": "any" },
     { "method": "GET", "path": "/api/statistic/analysis/field", "shape": "any" },
 
     { "method": "GET", "path": "/api/chart/geoIpInfo", "shape": "geo" },
-    { "method": "GET", "path": "/api/chart/trend", "shape": "object" },
+    {
+      "method": "GET", "path": "/api/chart/trend", "shape": "object",
+      "fields": ["connectedPeersTrend", "bannedPeersTrend"]
+    },
     { "method": "GET", "path": "/api/chart/traffic", "shape": "array" },
     { "method": "GET", "path": "/api/chart/sessionAnalyse", "shape": "array" },
 
-    { "method": "GET", "path": "/api/downloaders", "shape": "array" },
+    {
+      "method": "GET", "path": "/api/downloaders", "shape": "array",
+      "item_fields": ["id", "name", "type", "online", "version", "endpoint", "paused"]
+    },
     { "method": "PUT", "path": "/api/downloaders", "shape": "any" },
     { "method": "POST", "path": "/api/downloaders/test", "shape": "any" },
     { "method": "PATCH", "path": "/api/downloaders/dl-1", "shape": "any" },
     { "method": "DELETE", "path": "/api/downloaders/dl-1", "shape": "any" },
     { "method": "GET", "path": "/api/downloaders/dl-1/torrent/abcdef/peers", "shape": "array" },
 
-    { "method": "GET", "path": "/api/peer/1.2.3.4", "shape": "object" },
+    {
+      "method": "GET", "path": "/api/peer/1.2.3.4", "shape": "object",
+      "fields": ["found", "address", "banCount", "torrentAccessCount", "firstTimeSeen", "lastTimeSeen", "uploadedToPeer", "downloadedFromPeer", "geo", "ptrLookup", "btnQueryAvailable"]
+    },
     { "method": "GET", "path": "/api/peer/1.2.3.4/banHistory", "shape": "page" },
     { "method": "GET", "path": "/api/peer/1.2.3.4/accessHistory", "shape": "page" },
     { "method": "GET", "path": "/api/torrent/query", "shape": "page" },

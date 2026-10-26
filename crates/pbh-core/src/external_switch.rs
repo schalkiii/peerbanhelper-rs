@@ -43,9 +43,14 @@ pub fn integer(key: &str, def: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 进程环境变量是全局状态：即使用唯一键，也串行执行避免 `set_var` 撕裂。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn boolean_reads_uppercase_underscore_environment_variable() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // 使用唯一键，避免与并行测试的环境变量互相影响
         let key = "pbh.test.external-switch.boolean";
         std::env::set_var("PBH_TEST_EXTERNAL_SWITCH_BOOLEAN", "TRUE");
@@ -58,6 +63,7 @@ mod tests {
 
     #[test]
     fn integer_falls_back_on_invalid_value() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let key = "pbh.test.external-switch.integer";
         std::env::set_var("PBH_TEST_EXTERNAL_SWITCH_INTEGER", "256");
         assert_eq!(integer(key, 128), 256);

@@ -20,6 +20,11 @@ use crate::config::ProxyConfig;
 
 /// 把代理配置写入进程环境变量（启动期调用一次；修改配置后需重启）。
 pub fn apply_env(config: &ProxyConfig) {
+    apply_env_with(config, |key, value| std::env::set_var(key, value));
+}
+
+/// 代理配置 → 环境变量的纯计算部分；`set` 由调用方注入（测试不污染进程环境）。
+fn apply_env_with(config: &ProxyConfig, mut set: impl FnMut(&str, &str)) {
     match config.setting {
         0 | 1 => {
             // 0 = 不额外配置；1 = 跟随环境。两者都保留进程现有代理环境——
@@ -33,11 +38,11 @@ pub fn apply_env(config: &ProxyConfig) {
                 format!("http://{host}:{}", config.port)
             };
             for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
-                std::env::set_var(key, &url);
+                set(key, &url);
             }
             let no_proxy = config.non_proxy_hosts.replace('|', ",");
-            std::env::set_var("NO_PROXY", &no_proxy);
-            std::env::set_var("no_proxy", &no_proxy);
+            set("NO_PROXY", &no_proxy);
+            set("no_proxy", &no_proxy);
         }
         _ => {}
     }
@@ -52,7 +57,8 @@ pub fn apply_env(config: &ProxyConfig) {
 mod tests {
     use super::*;
 
-    /// 仅在当前测试进程内修改环境变量；使用唯一配置避免并行测试互相影响。
+    /// 用注入的 sink 校验「写哪些变量、写成什么」，不触碰进程环境
+    /// （避免与并行测试里构造 reqwest 客户端的用例互相干扰）。
     #[test]
     fn setting_two_sets_proxy_and_zero_preserves_environment() {
         let config = ProxyConfig {
@@ -61,31 +67,37 @@ mod tests {
             port: 9999,
             non_proxy_hosts: "localhost|*.lan".into(),
         };
-        apply_env(&config);
+        let mut written: Vec<(String, String)> = Vec::new();
+        apply_env_with(&config, |key, value| {
+            written.push((key.to_string(), value.to_string()))
+        });
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+            assert_eq!(
+                written
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.as_str()),
+                Some("http://10.0.0.99:9999"),
+                "{key} 未按预期写入"
+            );
+        }
         assert_eq!(
-            std::env::var("HTTP_PROXY").unwrap(),
-            "http://10.0.0.99:9999"
+            written
+                .iter()
+                .find(|(k, _)| k == "NO_PROXY")
+                .map(|(_, v)| v.as_str()),
+            Some("localhost,*.lan")
         );
-        assert_eq!(std::env::var("NO_PROXY").unwrap(), "localhost,*.lan");
-        // 0 = 不额外配置：不能清空部署环境已有的代理
+
+        // 0 = 不额外配置：不能清空部署环境已有的代理（不产生任何写入）
         let reset = ProxyConfig {
             setting: 0,
             ..ProxyConfig::default()
         };
-        apply_env(&reset);
-        assert_eq!(
-            std::env::var("HTTP_PROXY").unwrap(),
-            "http://10.0.0.99:9999"
-        );
-        for key in [
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "NO_PROXY",
-            "no_proxy",
-        ] {
-            std::env::remove_var(key);
-        }
+        let mut after_reset: Vec<(String, String)> = Vec::new();
+        apply_env_with(&reset, |key, value| {
+            after_reset.push((key.to_string(), value.to_string()))
+        });
+        assert!(after_reset.is_empty(), "setting=0 不应改写环境变量");
     }
 }

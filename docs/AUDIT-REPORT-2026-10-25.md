@@ -151,8 +151,9 @@
 - `/api/modules/ipblacklist/*`：Rust 的泛型 `/api/modules/ipblacklist/{ruleType}` 覆盖
   `ip/port/asn/region/city/netType`，与上游等价。
 - `/api/chart/sessionDayBucket`：当前前端使用 `/api/chart/sessionAnalyse`，不属于缺口。
-- `/api/config/*`、`/api/task/*`、`/api/utilities/*`、`/api/plugins*`、`/api/egg`、`/api/v2*`：
-  WebUI 未调用；属上游后端/旧版/插件/彩蛋能力，按 PLAN 的 non-goals 处理，不纳入本轮补齐。
+- `/api/config/*`、`/api/task/*`、`/api/utilities/*`、`/api/plugins*`、`/api/v2*`：
+  WebUI 未调用；属上游后端/旧版/插件能力，按 PLAN 的 non-goals 处理，不纳入本轮补齐。
+  `/api/egg`（彩蛋）已在 2026-10-26 补齐，见 §9。
 - `/api/peer/{ip}/btnQueryIframe` 之外的上游 peer 路由（`btnQuery`）已实现。
 - 生产 health、发布资产 digest、XERJ 索引均已核对。
 
@@ -170,3 +171,16 @@
   等价指纹，避免伪造参数；`/api/config/*`、`/api/task/*`、插件/彩蛋/v2 等未使用或非目标
   接口继续保持不实现。
 - 未实施建议：P2-2 契约字段校验、P2-3 CI、P2-4 模块拆分、P3-1 PTR 线程池，列入后续 backlog。
+
+## 9. 执行记录（2026-10-26）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `/api/egg` | 已完成 | 22 条链接照抄上游，无鉴权随机 302；见 CHANGELOG `9.5.1-rs.6` |
+| P2-2 契约字段校验 | 已完成 | `fields`/`item_fields`/`results_fields` + 种子数据；空样本判失败 |
+| P2-3 CI | 已完成 | `.github/workflows/ci.yml` + `rust-toolchain.toml`（GNU 三元组） |
+| P3-1 PTR 线程池 | 已完成 | 回填池 4 线程 + 系统解析池 4 线程，附上界测试 |
+| E3/F1 测试稳定性 | 已完成 | 扫描用例 skip/ignore；proxy 测试改注入 sink；web 套件 8.3s → 0.5s |
+| 文档缺漏 | 已完成 | `docs/ARCHITECTURE.md`、`docs/API.md`、DEPLOY 校验指引、autostun/分页注释 |
+| P2-4 模块拆分 | 部分完成 | `pbh-web/src/lib.rs` 内联测试迁至 `src/tests.rs`（2829 → 923 行）；`btn_transport.rs` / `monitor.rs` / `push.rs` / `bitcomet/mod.rs` 的**生产代码**拆分仍为维护项（纯移动、需独立验证） |
+| `btnQueryIframe` | 维持暂缓 | 上游 `hardwareId = SHA256(oshi.getHardwareUUID())`（SMBIOS UUID，取不到时回退 MAC）；Rust 无等价 SMBIOS 读取，`MachineGuid` 不等价，不伪造参数。前端当前也未调用该端点 |

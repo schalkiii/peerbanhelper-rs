@@ -3,6 +3,51 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.1-rs.6（2026-10-26）
+
+### feat(api): 补上游彩蛋 `/api/egg`
+
+- 无鉴权：随机 302 跳转到上游 `PBHEasterEggController` 的 22 条精选链接（顺序照抄）；
+  上游本就没有前端入口，浏览器直接访问 `/api/egg` 触发。
+- 新增「无 Token → 302 + https Location」测试。
+
+### test(web): 契约清单增加嵌套字段断言
+
+- `webui_endpoints.json` 支持 `fields` / `item_fields` / `results_fields`（支持 `a.b` 点路径）；
+  空数组样本**直接判失败**，避免字段改名被空列表静默掩盖。
+- 已覆盖 bans（`address` / `banMetadata.*` / `ipGeoData`）、downloaders
+  （`id/name/type/endpoint/...`）、statistic/counter、general/status、peer 详情、
+  chart/trend、metadata/manifest；测试注入封禁与下载器种子数据。
+- 自测覆盖「字段改名 / 嵌套改名 / 空样本」三种失败路径。
+- `/api/oobe/scanDownloader` 与真实扫描测试标记 `skip`/`ignore`（探测逻辑由
+  `pbh-downloader::discovery` 测试覆盖）；pbh-web 测试耗时 8.3s → 0.5s。
+
+### perf(ptr): 反查改为固定大小 worker 池
+
+- wave 回填：4 线程；系统解析器（`getnameinfo` 无超时）独立 4 线程池；
+  取代「每条封禁 1~2 条 OS 线程」的无界增长；队列无界不丢任务。
+- 新增线程数上界与任务不丢失测试。
+
+### ci: GitHub Actions + 固定 GNU 工具链
+
+- `.github/workflows/ci.yml`：windows-latest + `stable-x86_64-pc-windows-gnu`，
+  执行 build / test / `clippy --all-targets -D warnings`。
+- `rust-toolchain.toml` 固定完整三元组：本机 rustup host 是 msvc（BuildTools 已卸载），
+  裸 `stable` 会被解析回 msvc 导致链接失败。
+
+### test: 环境变量测试隔离
+
+- proxy 测试改为注入 sink，不再改写进程 `HTTP_PROXY`（避免干扰并行构造的 HTTP 客户端）；
+  external_switch 的两个环境变量测试串行执行。
+
+### docs: 架构 / API / 部署
+
+- 新增 `docs/ARCHITECTURE.md`（crate 边界、ban wave 数据流、线程模型、改动落点）与
+  `docs/API.md`（人类可读端点索引）。
+- DEPLOY 标注生产路径 `C:\CommonTools\PeerBanHelper-rs`、补发布产物 sha256 /
+  WebView2Loader.dll 校验；修正 autostun 头注释与分页默认值注释。
+- 测试 667 → 671（另 1 个本机扫描用例 ignore）；clippy 零警告。
+
 ## 9.5.1-rs.5（2026-10-25）
 
 ### feat(api): 补齐 3 个仅后端使用的上游接口

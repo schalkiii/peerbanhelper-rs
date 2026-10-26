@@ -12,6 +12,7 @@ pub mod bans;
 pub mod btn;
 pub mod charts;
 pub mod downloaders;
+pub mod egg;
 pub mod general;
 pub mod ipblacklist;
 pub mod labs;
@@ -89,6 +90,8 @@ pub fn public_routes() -> Router<crate::AppState> {
         .route("/oobe/testDatabaseConfig", post(manifest::oobe_test_database_config))
         .route("/oobe/scanDownloader", post(manifest::oobe_scan_downloader))
         .route("/oobe/init", post(manifest::oobe_init))
+        // 彩蛋：上游 `/api/egg` 无 Role 限制，随机 302 到精选链接（无前端入口）
+        .route("/egg", get(egg::egg))
 }
 
 /// 需要鉴权的路由（对齐上游 Role.USER_READ / USER_WRITE 的全部端点）。
@@ -218,8 +221,8 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/laboratory/experiments", get(labs::experiments))
         .route("/laboratory/experiment/{id}", put(labs::set_experiment))
         .route("/laboratory/config", post(labs::set_config))
-        // —— AutoSTUN（`/api/autostun/*`；本移植未实现该功能，端点仍需存在以免
-        // 前端拿到 API_NOT_FOUND，响应为「未启用」的诚实状态）——
+        // —— AutoSTUN（`/api/autostun/*`；核心隧道已实现，但这组 WebUI 管理端点
+        // 尚未接线。端点仍需存在以免前端拿到 API_NOT_FOUND，响应为「未启用」的诚实状态）——
         .route("/autostun/status", get(autostun::status))
         .route("/autostun/config", put(autostun::config))
         .route("/autostun/tunnels", get(autostun::tunnels))
@@ -278,8 +281,8 @@ pub fn api_routes() -> Router<crate::AppState> {
 
 /// 分页参数（对齐上游 `Pageable` / `Paginable`：`page` + `pageSize`，兼容 `size`）。
 ///
-/// 缺省 `page=1`、`pageSize=50`；`pageSize` 夹到 1..=500（上游 v9 不分页时无上限，
-/// 这里沿用既有实现的上限约定，避免一次拉全表）。
+/// 缺省 `page=1`、`pageSize=10`（对齐上游 `Pageable`）；`pageSize` 夹到 1..=500
+/// （上游无上限，这里保留既有上限约定，避免一次拉全表）。
 pub fn pagination(params: &HashMap<String, String>) -> (i64, i64) {
     let page = params
         .get("page")

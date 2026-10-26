@@ -1,0 +1,7 @@
+[toolchain]
+# 本项目只在 Windows GNU 工具链上验证与发版（见 AGENTS.md）：
+# 本机 rustup 的 host 是 msvc，但 MSVC BuildTools 已卸载，
+# 用裸 `stable` 会被解析回 msvc 导致链接失败，因此固定完整三元组。
+channel = "stable-x86_64-pc-windows-gnu"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

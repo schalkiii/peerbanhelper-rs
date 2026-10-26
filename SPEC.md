@@ -490,7 +490,7 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   torrent 不在本轮快照时返回空数组。
 - **PTR / 代理 / CORS / EcoQoS**：`lookup.dns-reverse-lookup` 开启时封禁元数据异步回填
   `reverseLookup`、peers 列表返回 `ptrRecord`；`/api/peer/{ip}` 与上游一致始终尝试 PTR
-  （3s 超时）。`resolvers.servers` 支持普通 DNS（含自定义端口）与 DoH POST；
+  （3s 超时）。异步回填与系统解析器各用固定大小 worker 池（4 线程），线程数不随封禁数增长。`resolvers.servers` 支持普通 DNS（含自定义端口）与 DoH POST；
   `proxy.setting=2` 在启动期写入进程代理环境变量（0/1 保留现有环境，0 不强制清除）；
   `server.allow-cors` 或 `pbh.allowCors` 启用任意来源 CORS；
   `performance.windows-ecoqos-api` 应用 Windows EcoQoS。
@@ -503,6 +503,10 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   `success=false` + `AUTOSTUN_NOT_SUPPORTED`，不伪造 `TunnelInfoDTO`。
 - **`POST /api/general/refreshNatStatus`**：上游旧版入口，复用 `/api/autostun/refreshNatType`
   （当前返回 501）。
+- **`GET /api/egg`**：上游彩蛋，无鉴权，随机 302 到 22 条精选链接之一（无前端入口）。
+- 公开端点（免 Token）：`/api/auth/{login,logout}`、`/api/metadata/manifest`、
+  `/api/{init/token,oobe/status}`、`/api/oobe/{testDownloader,testDatabaseConfig,scanDownloader,init}`、
+  `/api/egg`；其余 `/api/**` 需要 Bearer / `PBH_SESSION` cookie / `?token=`。
 - 静态资源：`/` 托管 WebUI（`data/static`，缺失时返回占位页）。
 - 统一响应体 `{success, message, data}`。
 

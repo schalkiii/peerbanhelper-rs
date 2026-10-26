@@ -26,9 +26,20 @@ Copy-Item -Recurse 'C:\CommonTools\PeerBanHelper\data' 'C:\CommonTools\PeerBanHe
 
 ### 步骤 1：放置二进制与前端
 
+> 生产目录约定为 **`C:\CommonTools\PeerBanHelper-rs`**（`scripts/deploy.ps1` 的目标）；
+> 下文 `C:\PBH-RS` 只是示例路径，照抄时请替换。
+> 日常发版优先用 `pwsh -File scripts/deploy.ps1`（构建 → 停服 → 复制 → health 验证），
+> 仅在手工部署时走本节步骤。
+
 ```powershell
-# 假设目标目录 C:\PBH-RS
+# 1) 从 GitHub Release 下载 zip 后先校验摘要（与 Release 资产页面显示的值比对）
+Get-FileHash .\pbh-rs-<版本>-windows-x64.zip -Algorithm SHA256
+
+# 2) 解压到目标目录（生产用 C:\CommonTools\PeerBanHelper-rs；C:\PBH-RS 仅为示例）
 New-Item -ItemType Directory -Force -Path 'C:\PBH-RS'
+Expand-Archive .\pbh-rs-<版本>-windows-x64.zip -DestinationPath 'C:\PBH-RS' -Force
+
+# 3) 本地构建场景：直接用 target 产物
 # pbh.exe（target\release\pbh.exe）与 pbh-gui.exe（crates\pbh-gui\target\release\pbh-gui.exe）
 Copy-Item 'd:\workspace\peerbanhelper-rs\target\release\pbh.exe'      'C:\PBH-RS\'
 Copy-Item 'd:\workspace\peerbanhelper-rs\crates\pbh-gui\target\release\pbh-gui.exe' 'C:\PBH-RS\'
@@ -82,6 +93,10 @@ C:\PBH-RS\pbh.exe --data $DATA --port 9898
 ### 步骤 5：验证
 
 ```powershell
+# 产物完整性：解压后的 exe 应与发布包内一致；GUI 依赖的 WebView2Loader.dll 必须同级存在
+Get-FileHash .\pbh.exe -Algorithm SHA256
+Test-Path .\WebView2Loader.dll
+
 # 健康检查
 (Invoke-WebRequest 'http://127.0.0.1:9898/health' -UseBasicParsing).StatusCode   # 200
 

@@ -646,10 +646,12 @@ impl WaveEngine {
             // 完成后回填 `banMetadata.reverseLookup`；不阻塞 wave。
             if self.ptr.enabled() {
                 let ip = b.entry.ip.clone();
-                let ptr = self.ptr.clone();
+                let dispatcher = self.ptr.clone();
+                let lookup = self.ptr.clone();
                 let ban_list = self.ban_list().clone();
-                std::thread::spawn(move || {
-                    if let Some(host) = ptr.lookup(&ip) {
+                // 固定大小池调度：避免每条封禁各起一条 OS 线程
+                dispatcher.submit(move || {
+                    if let Some(host) = lookup.lookup(&ip) {
                         if host != ip {
                             if let Ok(mut list) = ban_list.lock() {
                                 list.set_reverse_lookup(&ip, host);

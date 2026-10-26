@@ -144,7 +144,7 @@ PTR 反查（封禁记录 / peer 详情 / peers 列表）、本机下载器自�
 
 - 封禁流程每一步都有日志打点：万一程序停止响应，**日志最后一行就是卡住的位置**
 - 异常退出会记录退出原因（崩溃类型），不用再靠猜
-- 667 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
+- 671 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
 
 ### 界面即开即用（前端沿用上游，问题都在服务端修复）
 
@@ -243,7 +243,7 @@ peerbanhelper-rs/
 ├── SPEC.md                  # 行为契约（忠实重写的行为规格）
 ├── PLAN.md                  # 进度、待办、已知差异与开发历史
 ├── CHANGELOG.md             # 变更日志
-├── docs/                    # 专题文档（如 AviatorScript → rhai 迁移指南）
+├── docs/                    # 架构（ARCHITECTURE.md）、API 索引、测试矩阵、部署与迁移指南
 ├── Cargo.toml               # workspace
 └── crates/
     ├── pbh-core/            # 领域模型、规则引擎、规则模块、GeoIP、AutoSTUN、BTN、ban 决策
@@ -272,7 +272,8 @@ peerbanhelper-rs/
 
 ## 验证
 
-- `cargo test --workspace`：**667 个测试全部通过**（单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
+- `cargo test --workspace`：**671 个测试通过**（另有 1 个本机端口扫描用例默认 ignore，
+  单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
   L3 适配器 / L4 端到端 / 实机社区脚本判定）；`cargo clippy --workspace --all-targets -D warnings` 零警告
 - 行为等价性：mock 双跑（同一夹具分别喂给 Java/Rust，封禁集合逐 IP diff）与实机 dry-run 并行对跑
   （同配置/同下载器/同 GeoIP 库）均已验证，脚本见仓库根目录 `*_dualrun.ps1`

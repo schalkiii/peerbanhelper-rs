@@ -38,7 +38,16 @@ pub async fn scan(added_ports: &[u16]) -> Vec<DiscoveredDownloader> {
     for port in FALLBACK_PORTS {
         candidates.push((IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port, 0));
     }
+    scan_endpoints(candidates, added_ports).await
+}
+
+/// 对给定端点执行探测（与 [`scan`] 分离：测试可注入空候选，避免真实扫端口）。
+pub async fn scan_endpoints(
+    candidates: Vec<(IpAddr, u16, u32)>,
+    added_ports: &[u16],
+) -> Vec<DiscoveredDownloader> {
     // 同一端点只探测一次
+    let mut candidates = candidates;
     candidates.sort_by_key(|(addr, port, _)| (addr.to_string(), *port));
     candidates.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
@@ -321,5 +330,11 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
         );
         assert!(probe("127.0.0.1", other, 0, &[]).await.is_none());
+    }
+
+    /// 空候选必须立即返回空数组（Web 契约测试用它代替真实扫端口）。
+    #[tokio::test]
+    async fn scan_endpoints_with_no_candidates_is_empty() {
+        assert!(scan_endpoints(Vec::new(), &[]).await.is_empty());
     }
 }
