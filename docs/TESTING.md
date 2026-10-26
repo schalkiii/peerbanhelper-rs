@@ -127,7 +127,7 @@ release）窗口 11.3h 对账——**module-mismatch 为 0**（修复前 26 条�
 
 **冻结静态审计（2026-10-06，排除清单）**：
 - HTTP 超时齐备：下载器 `connect_timeout + timeout`（http.rs:118-119）、
-  BTN `callTimeout 60s`（btn_transport.rs:282）——排除「无超时 HTTP 永久阻塞」
+  BTN `callTimeout 60s`（btn_transport/mod.rs:282）——排除「无超时 HTTP 永久阻塞」
 - 清理分支锁序干净：pcb 清理（main.rs:654-667）`store.lock` 与 `db.cleanup_pcb`
   不嵌套；无 conn → store 反向嵌套
 - record_bans 锁序干净：`insert_history`（conn）与 `ban_list().lock` 不嵌套
@@ -216,11 +216,12 @@ Actions Secrets，COS 上传缺 `TENCENT_CLOUD_COS_PBH_STATIC_*` 密钥必失败
 | bans 搜索 peer/client/torrent + 实时 GeoIP | `tests::bans_search_matches_metadata_and_returns_geo` |
 | Deluge 暂停短路 / 传输失败 / torrents RPC 错误按上游返回空 | `pbh-downloader/src/deluge/mod.rs::tests::{login_is_short_circuited_when_paused, login_reports_transport_failure_as_exception, torrents_rpc_error_returns_empty_list_like_upstream}` |
 | BiglyBT 暂停短路 | `pbh-downloader/src/biglybt/mod.rs::tests::login_is_short_circuited_when_paused` |
-| BTN 提交失败不推进游标 / ip_query 非 2xx 上抛 | `pbh-core/src/btn_transport.rs::tests::{submit_bans_failure_keeps_cursor_and_reports_false, submit_swarm_failure_keeps_binary_cursor, query_ip_http_failure_returns_error}` |
+| BTN 提交失败不推进游标 / ip_query 非 2xx 上抛 | `pbh-core/src/btn_transport/tests.rs::{submit_bans_failure_keeps_cursor_and_reports_false, submit_swarm_failure_keeps_binary_cursor, query_ip_http_failure_returns_error}` |
 | per-rule 订阅日志 / autostun info / refreshNatStatus 别名 | `tests::{sub_endpoints_return_bare_array_and_number, parity_alias_routes_exist}` |
 
-> 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口，测试耗时
-> 约 8–14s；这是端点行为的一部分（上游同样扫描监听端口）。
+> 注：`downloaders_scan_returns_empty_list` 会真实探测本机 LISTEN 端口（8–14s），
+> 默认标记 `ignore`；端点存在性由契约清单（带 `skip` 原因）覆盖，探测逻辑由
+> `pbh-downloader::discovery` 的纯函数/本地 mock 测试覆盖。
 
 ## 5. 生产部署替代 Java 版评估（2026-09-25）
 
