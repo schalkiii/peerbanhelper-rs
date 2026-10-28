@@ -11,6 +11,9 @@
 //!   **不检查**返回值本身。
 //! - 种子：`POST /api_v2/task_list/get`（`state_group=ACTIVE`）取任务列表，再对每个 `type == "BT"`
 //!   的任务 `POST /api/task/summary/get` 取详情；概要请求失败只记日志并跳过该任务。
+//!   上游 v9.5.2（BitComet 2.23）起 requirements 额外带 `keyword` / `query_mode=stateless` /
+//!   `validate_task_ids=[]`，任务列表改为**分页**（`pbh.bitcomet.fetchTorrentsLimit`，默认 50）：
+//!   非 2xx 记日志跳过该页继续下一页，某页过滤后取回 0 条即结束。
 //! - peers：`POST /api/task/peers/get`（`groups=["peers_connected","ltseeds_connected"]`、
 //!   `max_count=0` 取全量）。BitComet 只上报 `ip[:port]` 文本，故先按 `HostAndPort` 规则拆解
 //!   （无端口时回退 `remote_port`），再走 `addressTranslate`（Teredo / NAT64 / IPv4-mapped）；
@@ -34,6 +37,9 @@
 //!   失败时对齐上游：`warn` 后抛出（本实现返回 `Err`）。
 //!
 //! 不在本阶段接口内、因此未复刻的上游能力：
+//! - 分页的**防御上界** [`MAX_TASK_LIST_PAGES`]：上游是 `while (true)`，下载器对每一页都返回
+//!   错误时不会终止；本移植在 200 页处停止，避免 ban wave 被无限分页挂死（SPEC §7 已记录）。
+//!   上游 `fetchTorrents` 里残留的 `System.out.println` 调试输出同样不复刻。
 //! - `getTrackers` / `setTrackers`、`getSpeedLimiter` / `setSpeedLimiter`、
 //!   `getBTProtocolPort` / `setBTProtocolPort`、`getAllTorrents`、`saveDownloader`：Rust
 //!   `Downloader` 特性集里没有对应方法。
