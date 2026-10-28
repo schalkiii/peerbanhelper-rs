@@ -45,6 +45,40 @@ pub struct ExpressionEngine {
     scripts: Vec<LoadedScript>,
 }
 
+/// 仅校验脚本语法，不注册编译缓存、也不执行
+/// （对齐上游 9.5.2 的 `ScriptEngineManager.validateScriptSyntax` →
+/// `ScriptEngine.validateScriptSyntax`）。
+///
+/// 与上游一致的两点：
+/// - 按**文件名**选择引擎，非 `.av` 没有对应引擎 ⇒ 直接 false；
+/// - 校验失败只记日志，不抛出。
+///
+/// 与上游的一处差异：上游只做 Aviator 语法 validate；本移植的脚本还要经
+/// AviatorScript → rhai 翻译再编译，因此「翻译器不支持的构造」也判为不可用——
+/// 这类脚本保存后只会在加载时被跳过，等于一条永不生效的空规则。
+pub fn validate_script_syntax(name: &str, source: &str) -> bool {
+    let engine_extension = name.rsplit('.').next().unwrap_or_default();
+    if !engine_extension.eq_ignore_ascii_case("av") {
+        tracing::warn!("脚本 {name} 没有匹配的脚本引擎（仅支持 .av）");
+        return false;
+    }
+    let (engine, _start) = build_engine();
+    let translated = match transpile(source) {
+        Ok(translated) => translated,
+        Err(e) => {
+            tracing::warn!("脚本 {name} 语法校验失败（暂不支持的 AviatorScript 构造）: {e}");
+            return false;
+        }
+    };
+    match engine.compile(&translated) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("脚本 {name} 语法校验失败: {e}");
+            false
+        }
+    }
+}
+
 /// 解析脚本目录：显式配置优先；其次 `PBH_DATA_DIR/scripts`；最后回退 `data/scripts`。
 ///
 /// 公开给脚本管理端点复用——**管理（增删改）与引擎加载必须解析到同一目录**，
@@ -349,6 +383,23 @@ mod tests {
 
     fn result_of(m: &ExpressionEngine) -> CheckResult {
         m.check("qb", &torrent(), &peer(), &ctx())
+    }
+
+    /// 上游 9.5.2 `ScriptEngine.validateScriptSyntax`：只校验语法，不落盘、不注册缓存。
+    #[test]
+    fn validate_script_syntax_accepts_valid_and_rejects_broken() {
+        assert!(validate_script_syntax("ok.av", "let x = 1; x == 1"));
+        assert!(validate_script_syntax("ban.av", "return 1;"));
+        // 语法错误：未闭合的块
+        assert!(
+            !validate_script_syntax("bad.av", "fn( { this is not rhai ##"),
+            "语法错误必须校验失败"
+        );
+        // 上游按文件名选择引擎：非 .av 无对应引擎 ⇒ false
+        assert!(
+            !validate_script_syntax("bad.txt", "whatever"),
+            "无匹配引擎的扩展名必须失败"
+        );
     }
 
     #[test]

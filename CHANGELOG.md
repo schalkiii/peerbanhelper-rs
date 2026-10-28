@@ -3,6 +3,50 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.1（2026-10-28）
+
+> 上游基线由 **v9.5.1** 升级为 **v9.5.3**（合并上游 v9.5.2 与 v9.5.3 的后端改动）；
+> Cargo 版本同步为 9.5.3，移植发布序列从 `-rs.1` 重新计数。
+
+### feat(downloader): BitComet v2.23 兼容（上游 9.5.2）
+
+- `getTorrents()` 的 requirements 增加 `keyword: ""`、`query_mode: "stateless"`、
+  `validate_task_ids: []`。
+- 任务列表改为分页：每页 `pbh.bitcomet.fetchTorrentsLimit`（ExternalSwitch，默认 50）；
+  **非 2xx 记日志后跳过该页继续下一页**，某页过滤后取回 0 条即结束；
+  单任务 summary 失败仅跳过该任务。
+- 与上游差异（已在 SPEC 记录）：上游为 `while(true)`，下载器持续报错时不会终止，
+  本移植保留 200 页防御上界，避免 ban wave 被无限分页挂死。
+
+### feat(rule): 脚本语法校验（上游 9.5.2）
+
+- 新增 `expression_engine::validate_script_syntax`（对齐 `ScriptEngine.validateScriptSyntax`）：
+  按文件名选引擎（仅 `.av`），只校验语法，不注册编译缓存、不执行。
+- `PUT /api/expression-engine/{id}` 写盘前校验，不合法返回 **400 + `RULE_ENGINE_BAD_EXPRESSION`**
+  本地化文案且不落盘（此前会先写文件，坏脚本静默加载失败）。
+- 与上游差异：上游只 validate Aviator 语法；本移植脚本还需翻译为 rhai，
+  「翻译器不支持的构造」同样判为不可用（这类脚本保存后也不会在引擎中生效）。
+
+### fix(auto-stun): STUN 服务器仅用 IPv4、解析失败按 Unknown（上游 9.5.2）
+
+- `query_udp_stun_server`：DNS 解析失败或结果中没有 IPv4 ⇒ `Some((NatType::Unknown, None))`，
+  不再等同查询异常，避免「发不出去被误判为 UDP 被封」。
+- socket 绑定失败等真正的异常路径仍返回 `None`（与上游 `catch (Exception)` 一致）。
+
+### feat(rule): 新增 `Gopeed bt-` 默认客户端规则（上游 9.5.3）
+
+- `DEFAULT_BANNED_CLIENT_NAME` 与 `default-config.yml` 追加
+  `{"method":"STARTS_WITH","content":"Gopeed bt-"}`（上游 `ProfileUpdateScript` v42）。
+- 本项目没有 Java 的 `ProfileUpdateScript` 迁移机制：**仅新装/未配置该列表的用户自动获得**；
+  已有 profile 的用户需自行添加（与 rs.8 之前的其它默认值差异同性质）。
+
+### test / docs
+
+- 新增覆盖：BitComet 分页与 2.23 字段、`validate_script_syntax`、脚本保存 400、
+  STUN 解析失败 → Unknown、出站 UA 纯 ASCII（上游 9.5.2 的 UA 非 ASCII 修复在本移植无从发生）。
+- 工作区测试 680 → **686 通过**（另 1 个本机扫描用例 ignore）；clippy 零警告。
+- README/SPEC/PLAN/AGENTS/API 的上游基线表述统一改为 v9.5.3，并补记本批合并。
+
 ## 9.5.1-rs.8（2026-10-26）
 
 ### test: 补齐 mockqb / GUI / 主程序启动逻辑测试（无行为变更）

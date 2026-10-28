@@ -1,7 +1,7 @@
 # 测试覆盖矩阵与用例清单
 
 > 生成于 2026-09-25（commit ca3ef8a 之后），2026-10-25 增量核对。统计口径：
-> `cargo test --workspace -- --list`，共 **28 个测试目标、680 个用例**
+> `cargo test --workspace -- --list`，共 **28 个测试目标、686 个用例**
 >（另有 1 个本机端口扫描用例默认 `ignore`）。
 >
 > **覆盖率工具限制**：Windows GNU 工具链缺少 `profiler_builtins`，`cargo llvm-cov` 无法运行；

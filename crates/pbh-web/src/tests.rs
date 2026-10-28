@@ -1200,6 +1200,48 @@ async fn expression_engine_script_endpoints_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 上游 9.5.2：WebUI 保存脚本前先做语法校验，不合法返回 400 且**不落盘**。
+#[tokio::test]
+async fn expression_engine_save_rejects_bad_syntax() {
+    let dir = std::env::temp_dir().join(format!("pbh-scripts-syntax-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+    state.scripts_dir = Some(dir.clone());
+
+    let (status, body) = send_json(
+        &state,
+        axum::http::Method::PUT,
+        "/api/expression-engine/broken.av",
+        Some("fn( { 这不是合法脚本 ##".to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "语法错误必须 400：{body}");
+    assert_eq!(body["success"], false);
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.is_empty() && message != "API_NOT_FOUND",
+        "应返回 RULE_ENGINE_BAD_EXPRESSION 的本地化文案，实际 {message}"
+    );
+    assert!(
+        !dir.join("broken.av").exists(),
+        "校验失败不得写盘（否则留下一条永不生效的空规则）"
+    );
+
+    // 合法脚本仍应保存成功
+    let (status, _) = send_json(
+        &state,
+        axum::http::Method::PUT,
+        "/api/expression-engine/good.av",
+        Some("## @NAME 合法脚本\nreturn 1;".to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "合法脚本应保存成功");
+    assert!(dir.join("good.av").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 实验性功能端点（`laboratory`）：清单结构 + 总开关/单项开关持久化。
 ///
 /// 缺端点时「启用实验性功能」会返回 API_NOT_FOUND。

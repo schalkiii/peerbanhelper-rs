@@ -1,4 +1,4 @@
-# PeerBanHelper-RS 配置（字段对齐上游 config.yml / profile.yml，默认值对齐 v9.5.1）
+# PeerBanHelper-RS 配置（字段对齐上游 config.yml / profile.yml，默认值对齐 v9.5.3）
 server:
   # Web 监听端口
   http: 9898
@@ -134,6 +134,7 @@ profile:
         - '{"method":"STARTS_WITH","content":"ޭ__"}'
         - '{"method":"STARTS_WITH","content":"Unknown ["}'
         - '{"method":"STARTS_WITH","content":"Gopeed bt-exp"}'
+        - '{"method":"STARTS_WITH","content":"Gopeed bt-"}'
     # 规则引擎：支持用 rhai 脚本（.av 文件，等价上游 AviatorScript）自定义封禁逻辑
     # 脚本放在 <data>/scripts/ 目录，默认该目录为空 → 不产生任何封禁
     expression-engine:

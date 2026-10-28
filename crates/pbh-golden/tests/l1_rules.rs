@@ -189,12 +189,27 @@ fn default_rule_sets_match_upstream_profile_yml() {
         "{\"method\":\"STARTS_WITH\",\"content\":\"\u{07AD}__\"}",
         r#"{"method":"STARTS_WITH","content":"Unknown ["}"#,
         r#"{"method":"STARTS_WITH","content":"Gopeed bt-exp"}"#,
+        r#"{"method":"STARTS_WITH","content":"Gopeed bt-"}"#,
     ];
     assert_eq!(
         DEFAULT_BANNED_CLIENT_NAME,
         expected_client_name.as_slice(),
         "banned-client-name 必须与上游 profile.yml 逐字逐序一致"
     );
+}
+
+/// 上游 v9.5.3 新增 `Gopeed bt-`（STARTS_WITH）：应命中该前缀的任意版本，
+/// 但不得命中前缀不同的客户端（例如把 Gopeed 写在中间的名称）。
+#[test]
+fn gopeed_bt_prefix_rule_matches_only_as_prefix() {
+    let rs = client_rules();
+    assert!(rs.r#match(Some("Gopeed bt-1.9.9")).hit);
+    assert!(rs.r#match(Some("Gopeed bt-exp")).hit, "bt-exp 同时被 bt- 覆盖");
+    assert!(
+        !rs.r#match(Some("My Gopeed bt-1.0")).hit,
+        "STARTS_WITH 语义：非前缀不得命中"
+    );
+    assert!(!rs.r#match(Some("qBittorrent")).hit);
 }
 
 /// client-name 中 `qbittorrent/3.3.15` 与 `github.com/...` 在上游是 **STARTS_WITH**，

@@ -866,6 +866,19 @@ fn reload_config_resets_state() {
 }
 
 /// 文案键与常量（对齐上游 `Lang` 与协议版本）
+/// 上游 9.5.2 修复「部分 Linux 发行版系统代号含非 ASCII ⇒ HTTP 请求行为异常」。
+/// 本移植的出站 UA 是固定 ASCII 常量，且没有任何请求头携带 OS 派生文本，
+/// 因此该缺陷无从发生——此用例钉住前提（将来若把系统信息写进 UA，必须先净化）。
+#[test]
+fn outbound_user_agent_is_header_safe_ascii() {
+    assert!(
+        BTN_USER_AGENT
+            .bytes()
+            .all(|byte| (0x20..=0x7e).contains(&byte)),
+        "BTN UA 必须是可见 ASCII，不得含控制字符或非 ASCII：{BTN_USER_AGENT:?}"
+    );
+}
+
 #[test]
 fn constants_match_upstream() {
     assert_eq!(BTN_PROTOCOL_IMPL_VERSION, 20);

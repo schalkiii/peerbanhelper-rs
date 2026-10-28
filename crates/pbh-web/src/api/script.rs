@@ -164,7 +164,12 @@ pub async fn content(State(state): State<AppState>, Path(id): Path<String>) -> R
 }
 
 /// `PUT /api/expression-engine/{id}`：写入脚本源码（body 为纯文本）。
-pub async fn upsert(State(state): State<AppState>, Path(id): Path<String>, body: Bytes) -> Response {
+pub async fn upsert(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
     let Some(dir) = state.scripts_dir.as_ref() else {
         return disabled();
     };
@@ -174,6 +179,27 @@ pub async fn upsert(State(state): State<AppState>, Path(id): Path<String>, body:
     if !dir.exists() && std::fs::create_dir_all(dir).is_err() {
         return bad_request("SCRIPTS_DIR_UNAVAILABLE");
     }
+    // 上游 9.5.2：写盘前先做语法校验，不合法直接 400（`RULE_ENGINE_BAD_EXPRESSION`），
+    // 避免把一份永不生效的空规则保存下来
+    let source = String::from_utf8_lossy(&body).into_owned();
+    if !pbh_core::modules::expression_engine::validate_script_syntax(&id, &source) {
+        let locale = pbh_core::i18n::normalize_locale(
+            params
+                .get("locale")
+                .map(String::as_str)
+                .unwrap_or(&state.locale),
+        );
+        let message = state.translator.render(
+            &pbh_core::i18n::TranslationComponent::new("RULE_ENGINE_BAD_EXPRESSION"),
+            &locale,
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            crate::std_resp(false, Some(&message), Value::Null),
+        )
+            .into_response();
+    }
+    // `std::fs::write` 等价于上游的 CREATE|TRUNCATE_EXISTING|WRITE
     match std::fs::write(&path, &body) {
         Ok(()) => (
             StatusCode::OK,

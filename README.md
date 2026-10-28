@@ -3,10 +3,10 @@
 > PeerBanHelper 的 Rust 忠实重写（faithful rewrite）。
 > 自动封禁不受欢迎、吸血和异常的 BT 客户端（反吸血），支持 qBittorrent 等下载器与自定义规则。
 
-本项目是对 [PBH-BTN/PeerBanHelper](https://github.com/PBH-BTN/PeerBanHelper)（Java 实现，v9.5.1 基线）的 Rust 重写，
+本项目是对 [PBH-BTN/PeerBanHelper](https://github.com/PBH-BTN/PeerBanHelper)（Java 实现，v9.5.3 基线）的 Rust 重写，
 在**保持外部行为、配置、规则语义与封禁决策一致**的前提下，显著降低常驻内存、CPU 占用、启动时间与发布体积。
 
-- 上游基线版本：PeerBanHelper **v9.5.1**
+- 上游基线版本：PeerBanHelper **v9.5.3**（2026-10-28 合并上游 v9.5.2 / v9.5.3 改动）
 - 许可证：**GPL-3.0**（衍生作品义务，与上游一致）
 - 前端：**原样复用**上游 Vue3 + ArcoDesign WebUI（静态托管，不重写）
 - 行为契约见 [SPEC.md](./SPEC.md)；进度、待办与已知差异见 [PLAN.md](./PLAN.md)
@@ -144,7 +144,7 @@ PTR 反查（封禁记录 / peer 详情 / peers 列表）、本机下载器自�
 
 - 封禁流程每一步都有日志打点：万一程序停止响应，**日志最后一行就是卡住的位置**
 - 异常退出会记录退出原因（崩溃类型），不用再靠猜
-- 680 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
+- 686 个自动化测试锁定「每个 peer 的封禁决策与 Java 版一致」，改动有回归保护
 
 ### 界面即开即用（前端沿用上游，问题都在服务端修复）
 
@@ -272,7 +272,7 @@ peerbanhelper-rs/
 
 ## 验证
 
-- `cargo test --workspace`：**680 个测试通过**（另有 1 个本机端口扫描用例默认 ignore，
+- `cargo test --workspace`：**686 个测试通过**（另有 1 个本机端口扫描用例默认 ignore，
   单元 + 黄金测试 L1 匹配器 / L2 模块与配置 /
   L3 适配器 / L4 端到端 / 实机社区脚本判定）；`cargo clippy --workspace --all-targets -D warnings` 零警告
 - 行为等价性：mock 双跑（同一夹具分别喂给 Java/Rust，封禁集合逐 IP diff）与实机 dry-run 并行对跑

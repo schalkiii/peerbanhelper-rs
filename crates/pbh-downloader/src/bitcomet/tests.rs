@@ -303,7 +303,30 @@ impl HttpFetcher for BitCometMock {
             }
             if url.ends_with(dto::GET_TASK_LIST) {
                 let (status, body) = self.task_list.lock().unwrap().clone();
-                return respond(status, body);
+                if status != 200 {
+                    return respond(status, body);
+                }
+                // 模拟 BitComet 2.23 的分页语义：按请求里的 start/limit 切片
+                let request: Value = req
+                    .body
+                    .as_deref()
+                    .and_then(|b| serde_json::from_str(b).ok())
+                    .unwrap_or(Value::Null);
+                let (Some(start), Some(limit)) = (
+                    request["start"].as_i64(),
+                    request["limit"].as_i64().filter(|limit| *limit > 0),
+                ) else {
+                    return respond(status, body);
+                };
+                let mut parsed: Value = match serde_json::from_str(&body) {
+                    Ok(parsed) => parsed,
+                    Err(_) => return respond(status, body),
+                };
+                let tasks = parsed["tasks"].as_array().cloned().unwrap_or_default();
+                let start = (start.max(0) as usize).min(tasks.len());
+                let window = &tasks[start..tasks.len().min(start + limit as usize)];
+                parsed["tasks"] = json!(window);
+                return respond(status, parsed.to_string());
             }
             if url.ends_with(dto::GET_TASK_SUMMARY) {
                 let body: Value = req
@@ -636,7 +659,7 @@ async fn torrents_are_mapped_and_private_filtered() {
     assert_eq!(second.progress, 1.0);
     assert_eq!(second.upspeed, 5);
 
-    // 请求载荷（`getTorrents()` 的 requirements）
+    // 请求载荷（`getTorrents()` 的 requirements；9.5.2 起按 50 条分页并带 2.23 字段）
     let list_request = mock.request(dto::GET_TASK_LIST);
     assert_eq!(
         list_request.json(),
@@ -646,10 +669,17 @@ async fn torrents_are_mapped_and_private_filtered() {
             "sort_order": "unsorted",
             "tag_filter": "ALL",
             "task_type": "ALL",
+            "keyword": "",
+            "query_mode": "stateless",
+            "validate_task_ids": [],
             "start": 0,
-            "limit": 2147483646
+            "limit": 50
         })
     );
+    // 第 2 页（start=50）为空 → 上游语义：取回 0 条即结束分页
+    let list_requests = mock.requests_to(dto::GET_TASK_LIST);
+    assert_eq!(list_requests.len(), 2, "空页后应停止分页");
+    assert_eq!(list_requests[1].json()["start"], 50);
     let summaries = mock.requests_to(dto::GET_TASK_SUMMARY);
     assert_eq!(summaries.len(), 2, "只应为 BT 任务请求概要");
     assert_eq!(summaries[0].json(), json!({ "task_id": "11" }));
@@ -694,15 +724,79 @@ async fn torrent_summary_failures_are_skipped() {
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     );
 
-    // 任务列表整体失败 → Err（DOWNLOADER_BC_FAILED_REQUEST_TORRENT_LIST）
+    // 任务列表整体失败：上游 9.5.2 改为「记日志 + 跳过该页继续下一页」，
+    // 因此不再返回 Err，而是返回已取到的（这里是空）列表；分页有防御上界。
     let mock = mock_with_version("2.21.5", IPFILTER_OK);
     *mock.task_list.lock().unwrap() = (500, "boom".to_string());
     let dl = downloader(mock.clone(), false);
     logged_in(&dl).await;
-    let err = dl.fetch_torrents().await.unwrap_err();
-    let text = err.to_string();
-    assert!(text.contains("Torrents"), "{text}");
-    assert!(text.contains("500"), "{text}");
+    let torrents = dl.fetch_torrents().await.expect("非 2xx 不得让 fetch 失败");
+    assert!(torrents.is_empty());
+    assert_eq!(
+        mock.requests_to(dto::GET_TASK_LIST).len(),
+        crate::bitcomet::MAX_TASK_LIST_PAGES,
+        "持续失败时必须在防御上界处停止，而不是无限分页"
+    );
+}
+
+#[tokio::test]
+async fn task_list_paginates_and_accumulates_across_pages() {
+    // 60 个 BT 任务 > 默认分页 50：应连续翻页并累计，第三页空 → 结束
+    let tasks: Vec<Value> = (1..=60_i64).map(|id| json!({ "task_id": id, "type": "BT" })).collect();
+    let mock = mock_with_version("2.23.0", IPFILTER_OK);
+    *mock.task_list.lock().unwrap() = (200, json!({ "tasks": tasks }).to_string());
+    {
+        let mut summaries = mock.summaries.lock().unwrap();
+        for id in 1..=60_i64 {
+            let hash = format!("{id:040x}");
+            summaries.insert(
+                id.to_string(),
+                (
+                    200,
+                    json!({
+                        "error_code": "ok",
+                        "task_detail": {
+                            "type": "BT",
+                            "torrent_private": false,
+                            "infohash": hash,
+                            "task_name": format!("t{id}"),
+                            "total_size": 1000
+                        },
+                        "task_status": { "status": "working", "total_size": 1000, "download_permillage": 500 },
+                        "task": {
+                            "task_id": id,
+                            "type": "BT",
+                            "task_name": format!("t{id}"),
+                            "status": "working",
+                            "total_size": 1000,
+                            "selected_downloaded_size": 500,
+                            "download_rate": 1,
+                            "upload_rate": 2,
+                            "permillage": 500
+                        }
+                    })
+                    .to_string(),
+                ),
+            );
+        }
+    }
+    let dl = downloader(mock.clone(), false);
+    logged_in(&dl).await;
+    let torrents = dl.fetch_torrents().await.unwrap();
+    assert_eq!(torrents.len(), 60, "两页任务都应返回");
+
+    let list_requests = mock.requests_to(dto::GET_TASK_LIST);
+    let starts: Vec<i64> = list_requests
+        .iter()
+        .map(|request| request.json()["start"].as_i64().unwrap_or_default())
+        .collect();
+    assert_eq!(starts, vec![0, 50, 100], "应按 limit=50 递增 start 直到空页");
+    assert!(
+        list_requests
+            .iter()
+            .all(|request| request.json()["limit"] == json!(50)),
+        "每页都必须带分页大小"
+    );
 }
 
 #[tokio::test]

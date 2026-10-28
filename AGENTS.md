@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBanHelper`）的 Rust 忠实重写。
+PeerBanHelper（Java v9.5.3 基线，上游源码 `D:\workspace\upstream-PeerBanHelper`）的 Rust 忠实重写。
 **行为对齐上游是硬约束**：封禁决策、配置字段、下载器 API 调用语义必须逐 peer 一致；
 任何行为差异都是缺陷，由黄金测试捕获。生产部署目录：`C:\CommonTools\PeerBanHelper-rs`。
 
@@ -26,7 +26,7 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
 
 - XERJ 节点（本机常驻；未启动时 `xerj --insecure --port 9300 --data-dir ~/xerj-data`）：
   `xerj search --url http://127.0.0.1:9300 --prefix pbh-java "progress cheat excessive" -k 5`
-- 已建两个索引：`pbh-rs`（本项目）与 `pbh-java`（上游 v9.5.1）；
+- 已建两个索引：`pbh-rs`（本项目）与 `pbh-java`（上游 v9.5.3）；
   `xerj def --url http://127.0.0.1:9300 --prefix pbh-java <Symbol>` 可直接定位符号。
 - 索引刷新：上游/本项目源码变动后重跑
   `xerj autoindex D:/workspace/upstream-PeerBanHelper --prefix pbh-java --url http://127.0.0.1:9300`
@@ -41,7 +41,7 @@ PeerBanHelper（Java v9.5.1 基线，上游源码 `D:\workspace\upstream-PeerBan
 已接线：PCB completed-excessive、idle ignore-if-any-interested、qBittorrent
 bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMultiConnection、
 `pbh.downloader.<Name>.maxConcurrentPeerRequestSlots`、`pbh.forceDisableIPDB`、
-`pbh.allowCors`。完整清单见 SPEC §7。
+`pbh.allowCors`、`pbh.bitcomet.fetchTorrentsLimit`（上游 v9.5.2）。完整清单见 SPEC §7。
 
 ## 目录与约定
 
@@ -80,12 +80,18 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 3. `gh release create v<版本> <产物 zip> --title ... --notes-file ...`
    （产物：`pbh.exe` + `pbh-gui.exe` + `WebView2Loader.dll`，打包
    `pbh-rs-<版本>-windows-x64.zip`）
-4. 版本号约定：Cargo 版本对齐上游基线（9.5.1），移植自身的发布序列以 `-rs.N`
+4. 版本号约定：Cargo 版本对齐上游基线（当前 9.5.3），移植自身的发布序列以 `-rs.N`
    后缀体现在 tag / Release 标题上
 
-## 当前状态（2026-10-26）
+## 当前状态（2026-10-28）
 
-- **已发布 9.5.1-rs.8（2026-10-26；测试补强，已部署生产；上一版 rs.7）**：
+- **上游基线已升级为 v9.5.3，已发布 9.5.3-rs.1（2026-10-28；合并上游 v9.5.2 / v9.5.3，已部署生产）**：
+  BitComet 2.23 任务列表分页（`pbh.bitcomet.fetchTorrentsLimit`，默认 50）、
+  脚本保存前语法校验（不合法 400 `RULE_ENGINE_BAD_EXPRESSION`）、
+  STUN 服务器仅用 IPv4 且解析失败按 `Unknown`、新增 `Gopeed bt-` 默认客户端规则；
+  工作区 686 测试通过（另 1 个本机扫描用例 ignore）、clippy 零警告；生产 health 200。
+  上一移植序列 `9.5.1-rs.1 ~ rs.8` 停在 v9.5.1 基线。
+- **9.5.1-rs.8（2026-10-26；测试补强，已部署生产）**：
   mockqb 6 个端点测试、pbh 启动辅助 3 个、GUI 参数解析 3 个；
   工作区 680 测试通过（另 1 个本机扫描用例 ignore）、GUI workspace 3 测试，
   clippy 零警告；生产 health 200。

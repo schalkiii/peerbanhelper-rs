@@ -406,12 +406,28 @@ fn response_from_different_address(response: &UdpStunResponse, original: SocketA
 }
 
 /// 对单台 `host:port` 服务器执行一次完整查询，对齐 `StunManager.refreshNatType` 内联逻辑：
-/// 解析失败视同查询失败（`None`）；成功返回 `(NAT 类型, Test I 映射地址)`。
+/// 成功返回 `(NAT 类型, Test I 映射地址)`。
+///
+/// 上游 9.5.2 的修复：STUN 服务器**只能用 IPv4**（`NettyStunClient` 按 `Inet4Address`
+/// 挑选目标，避免把绑定请求发到 AAAA 地址后误判为 UDP 被封）；DNS 解析失败或解析结果
+/// 中没有 IPv4 时补全为 `StunResult(NatType.Unknown)`，因此这里返回
+/// `Some((Unknown, None))` 而不是 `None`。返回 `None` 仅对应上游真正抛异常的路径
+/// （端口格式非法、socket 绑定失败）。
 pub fn query_udp_stun_server(server: &str) -> Option<(NatType, Option<SocketAddr>)> {
     let (host, port) = split_udp_stun_server(server)?;
-    // 上游 netty 发送时解析主机名；解析失败即异常 ⇒ 尝试下一台
-    let targets: Vec<SocketAddr> = (host.as_str(), port).to_socket_addrs().ok()?.collect();
-    let target = targets.into_iter().find(|a| a.is_ipv4())?;
+    // 上游 InetAddress.getAllByName：UnknownHostException ⇒ complete(StunResult(Unknown))
+    let targets = match (host.as_str(), port).to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(_) => {
+            tracing::debug!("No valid DNS addresses found for StunServer: {host}");
+            return Some((NatType::Unknown, None));
+        }
+    };
+    // 上游只接受 Inet4Address；没有 IPv4 同样补全 Unknown
+    let Some(target) = targets.into_iter().find(|address| address.is_ipv4()) else {
+        tracing::debug!("No IPv4 addresses found for StunServer: {host}");
+        return Some((NatType::Unknown, None));
+    };
     let client = UdpStunClient::bind().ok()?;
     let deadline = Instant::now() + UDP_TOTAL_TIMEOUT;
     // 上游固定传入 "0.0.0.0"
@@ -917,6 +933,19 @@ mod tests {
         );
         assert!(split_udp_stun_server("a:b:c").is_none());
         assert!(split_udp_stun_server("host:not-a-port").is_none());
+    }
+
+    /// 上游 9.5.2：服务器域名解析不出 IPv4 时应给出 `Unknown`（而不是把「发不出去」
+    /// 误判成 UDP 被封），也不得返回 None（None 代表真正的异常路径）。
+    #[test]
+    fn unresolvable_stun_server_yields_unknown_instead_of_udp_blocked() {
+        let result = query_udp_stun_server("pbh-nonexistent-host.invalid:3478");
+        assert!(
+            matches!(result, Some((NatType::Unknown, None))),
+            "解析失败必须按 Unknown 处理，实际 {result:?}"
+        );
+        // 端口格式非法仍是「异常」路径 ⇒ None
+        assert!(query_udp_stun_server("stun.example.com").is_none());
     }
 
     #[test]

@@ -80,6 +80,11 @@ const IPFILTER_MODE_BLACKLIST: &str = "blacklist";
 const UNBAN_RANGE_ALL_TASKS: &str = "unban_peers_in_all_tasks";
 /// `getDeviceToken` 请求里的设备名（上游字面量）。
 const DEVICE_NAME: &str = "PeerBanHelper - BitComet Adapter";
+/// 上游 9.5.2：`ExternalSwitch.parseInt("pbh.bitcomet.fetchTorrentsLimit", 50)`。
+const FETCH_TORRENTS_LIMIT: i64 = 50;
+/// 任务列表分页的防御上界。上游是 `while (true) { start += limit }`，
+/// 下载器持续返回错误时不会终止；这里加上界，避免 ban wave 被无限分页挂死。
+const MAX_TASK_LIST_PAGES: usize = 200;
 
 const MSG_PAUSED: &str = "DOWNLOADER_PAUSED";
 const MSG_STATUS_OK: &str = "STATUS_TEXT_OK";
@@ -335,6 +340,32 @@ impl BitCometDownloader {
     /// 对齐 `isLoggedIn()`：探测 IP 过滤器接口，只关心是否抛异常（不关心返回值）。
     async fn is_logged_in(&self) -> bool {
         self.query_need_reconfigure_ip_filter().await.is_ok()
+    }
+
+    /// 单个任务的 summary 拉取；失败返回 `None` 并记日志
+    /// （上游用 `semaphore(3)` 并发发起，可观察语义等价）。
+    async fn fetch_task_summary(&self, task_id: &str) -> Option<TorrentData> {
+        // `taskIds.put("task_id", String.valueOf(torrent.getTaskId()))`
+        let body = serde_json::json!({ "task_id": task_id }).to_string();
+        let resp = match self.post_authed(GET_TASK_SUMMARY, body).await {
+            Ok(resp) => resp,
+            // 上游只记日志并跳过该任务（`DOWNLOADER_BITCOMET_UNABLE_FETCH_TASK_SUMMARY`）
+            Err(e) => {
+                warn!("{}: {e}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+                return None;
+            }
+        };
+        if !is_success(resp.status) {
+            warn!("{}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+            return None;
+        }
+        match serde_json::from_str::<BCTaskTorrentResponse>(&resp.body) {
+            Ok(summary) => Some(self.torrent_from(&summary)),
+            Err(e) => {
+                warn!("{}: {e}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+                None
+            }
+        }
     }
 
     /// `fetch_peers` 需要的数字 `task_id`（对齐 `torrent.getId()`）。
@@ -693,73 +724,84 @@ impl Downloader for BitCometDownloader {
     }
 
     /// 对齐 `getTorrents()` + `fetchTorrents(requirements, includePrivate)`。
+    ///
+    /// 上游 9.5.2（BitComet 2.23 兼容）改为分页拉取：每页 `pbh.bitcomet.fetchTorrentsLimit`
+    /// （默认 50）条，非 2xx **记录日志后跳过该页继续下一页**，直到某页取回 0 条为止。
     fn fetch_torrents<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Vec<TorrentData>>> {
         Box::pin(async move {
-            // 对齐 `getTorrents()` 的 requirements；`limit = Integer.MAX_VALUE - 1`
+            let limit = fetch_torrents_limit();
+            // 对齐 `getTorrents()` 的 requirements（2.23 起额外带 keyword/query_mode/validate_task_ids）
             let requirements = serde_json::json!({
                 "state_group": "ACTIVE",
                 "sort_key": "",
                 "sort_order": "unsorted",
                 "tag_filter": "ALL",
                 "task_type": "ALL",
-                "start": 0,
-                "limit": i32::MAX - 1,
+                "keyword": "",
+                "query_mode": "stateless",
+                "validate_task_ids": [],
             });
-            let resp = self
-                .post_authed(GET_TASK_LIST, requirements.to_string())
-                .await?;
-            if !is_success(resp.status) {
-                anyhow::bail!(
-                    "{}",
-                    tl(
-                        MSG_FAILED_TORRENT_LIST,
-                        vec![
-                            Param::Text(resp.status.to_string()),
-                            Param::Text(resp.body.clone()),
-                        ]
-                    )
-                );
-            }
-            // `tasks` 缺失在 Java 里是 NPE（无 catch），这里按空列表处理
-            let task_list: BCTaskListResponse =
-                serde_json::from_str(&resp.body).unwrap_or_default();
             // `includePrivate = !config.isIgnorePrivate()`
             let include_private = !self.config.ignore_private;
             let mut task_ids = HashMap::new();
-            let mut out = Vec::new();
-            for task in task_list
-                .tasks
-                .iter()
-                .filter(|t| t.kind.as_deref() == Some("BT"))
-            {
-                let task_id = task.task_id.to_string();
-                // `taskIds.put("task_id", String.valueOf(torrent.getTaskId()))`
-                let body = serde_json::json!({ "task_id": task_id }).to_string();
-                let resp = match self.post_authed(GET_TASK_SUMMARY, body).await {
+            let mut out: Vec<TorrentData> = Vec::new();
+            // 上游是 `while (true) { start += limit }`；这里加同样的防御上界，
+            // 避免下载器持续返回错误时把 ban wave 挂死在无限分页上。
+            for page in 0..MAX_TASK_LIST_PAGES {
+                let mut page_request = requirements.clone();
+                page_request["start"] = serde_json::json!((page as i64) * limit);
+                page_request["limit"] = serde_json::json!(limit);
+                let resp = match self
+                    .post_authed(GET_TASK_LIST, page_request.to_string())
+                    .await
+                {
                     Ok(resp) => resp,
+                    // 上游 `catch (IOException e) { log.debug; continue; }`
                     Err(e) => {
-                        // 上游只记日志并跳过该任务（`DOWNLOADER_BITCOMET_UNABLE_FETCH_TASK_SUMMARY`）
-                        warn!("{}: {e}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+                        warn!("BitComet 任务列表请求异常（已跳过该页）: {e:#}");
                         continue;
                     }
                 };
                 if !is_success(resp.status) {
-                    warn!("{}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+                    warn!(
+                        "{}",
+                        tl(
+                            MSG_FAILED_TORRENT_LIST,
+                            vec![
+                                Param::Text(resp.status.to_string()),
+                                Param::Text(resp.body.clone()),
+                            ]
+                        )
+                    );
                     continue;
                 }
-                let summary: BCTaskTorrentResponse = match serde_json::from_str(&resp.body) {
-                    Ok(summary) => summary,
-                    Err(e) => {
-                        warn!("{}: {e}", tl(MSG_UNABLE_FETCH_TASK_SUMMARY, Vec::new()));
+                // `tasks` 缺失在 Java 里是 NPE（无 catch），这里按空列表处理
+                let task_list: BCTaskListResponse =
+                    serde_json::from_str(&resp.body).unwrap_or_default();
+                let mut retrieved: Vec<(TorrentData, String)> = Vec::new();
+                for task in task_list
+                    .tasks
+                    .iter()
+                    .filter(|t| t.kind.as_deref() == Some("BT"))
+                {
+                    let task_id = task.task_id.to_string();
+                    let torrent = match self.fetch_task_summary(&task_id).await {
+                        Some(torrent) => torrent,
+                        None => continue,
+                    };
+                    if !include_private && torrent.is_private() {
                         continue;
                     }
-                };
-                let torrent = self.torrent_from(&summary);
-                if !include_private && torrent.is_private() {
-                    continue;
+                    retrieved.push((torrent, task_id));
                 }
-                task_ids.insert(torrent.hash.clone(), task_id);
-                out.push(torrent);
+                // 上游：本页取回 0 条即结束分页
+                if retrieved.is_empty() {
+                    break;
+                }
+                for (torrent, task_id) in retrieved {
+                    task_ids.insert(torrent.hash.clone(), task_id);
+                    out.push(torrent);
+                }
             }
             if let Ok(mut cache) = self.task_ids.lock() {
                 *cache = task_ids;
@@ -1133,6 +1175,13 @@ fn parse_numeric_component(raw: &str) -> Option<u64> {
     } else {
         digits.parse().ok()
     }
+}
+
+/// 上游 9.5.2 的分页大小：`ExternalSwitch.parseInt("pbh.bitcomet.fetchTorrentsLimit", 50)`，
+/// 下限 1（0 会让上游的 `while(true)` 永远前进不了）。
+fn fetch_torrents_limit() -> i64 {
+    pbh_core::external_switch::integer("pbh.bitcomet.fetchTorrentsLimit", FETCH_TORRENTS_LIMIT)
+        .max(1)
 }
 
 /// OkHttp `Response.isSuccessful()`：200..=299

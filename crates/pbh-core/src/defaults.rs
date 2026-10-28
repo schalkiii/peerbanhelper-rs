@@ -1,4 +1,4 @@
-//! 上游 `profile.yml` / `config.yml` 的内置默认值，逐字对齐 v9.5.1。
+//! 上游 `profile.yml` / `config.yml` 的内置默认值，逐字对齐 v9.5.3。
 
 /// peer-id-blacklist 默认规则（profile.yml `banned-peer-id`，JSON 文本原样保留，顺序不可调整：
 /// `matchRule` 上报的是**最后一条**命中 TRUE 的规则）。
@@ -47,6 +47,9 @@ pub const DEFAULT_BANNED_CLIENT_NAME: &[&str] = &[
     "{\"method\":\"STARTS_WITH\",\"content\":\"\u{07AD}__\"}",
     r#"{"method":"STARTS_WITH","content":"Unknown ["}"#,
     r#"{"method":"STARTS_WITH","content":"Gopeed bt-exp"}"#,
+    // 上游 `ProfileUpdateScript#addGopeedBtRules`（config-version 42，v9.5.3）追加：
+    // 覆盖 Gopeed bt- 前缀的全部客户端名
+    r#"{"method":"STARTS_WITH","content":"Gopeed bt-"}"#,
 ];
 
 /// 跳过检查的地址（bypass），profile.yml `ignore-peers-from-addresses`

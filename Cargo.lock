@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "pbh"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "pbh-core"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "pbh-db"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "pbh-downloader"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "aes",
  "anyhow",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "pbh-golden"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "anyhow",
  "pbh-core",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "pbh-web"
-version = "9.5.1"
+version = "9.5.3"
 dependencies = [
  "anyhow",
  "axum",

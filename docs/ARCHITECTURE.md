@@ -5,7 +5,7 @@
 
 ## 1. 设计约束
 
-- **行为对齐上游**：Java PeerBanHelper v9.5.1 是唯一行为标准；判定、配置字段、
+- **行为对齐上游**：Java PeerBanHelper v9.5.3 是唯一行为标准；判定、配置字段、
   下载器 API 语义都要逐 peer 一致，差异由 `pbh-golden` 的黄金测试捕获。
 - **前端原样复用**：WebUI 使用上游 `webui/dist`，Rust 只负责提供同形 API 与静态资源；
   前端问题在服务端修，不 fork 前端。

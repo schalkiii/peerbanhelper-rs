@@ -5,7 +5,8 @@
 
 ## 1. 方法论（黄金测试驱动）
 
-- **基线锁定**：以 Java v9.5.1 为行为基线，先冻结功能再追求对等；上游持续迭代不追新。
+- **基线锁定**：以 Java v9.5.3 为行为基线（由 v9.5.1 于 2026-10-28 升级并合并上游改动）；
+  上游新版本不自动追，按差异清单评估后合并。
 - **黄金测试先行**：每移植一个模块/适配器，先录制 Java 侧输入输出夹具
   （qB 响应 JSON、上游默认规则、逐 peer 期望决策 `expected.json`），实现必须逐决策复现。
 - **垂直切片**：先打通「登录 → 拉 torrent → 拉 peers → 判定 → 封禁 → 落库 → API」端到端链路，
@@ -19,7 +20,7 @@
 
 ## 2. 当前状态基线
 
-- `cargo test --workspace`：**680 个测试通过 + 1 个本机扫描用例 ignore**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
+- `cargo test --workspace`：**686 个测试通过 + 1 个本机扫描用例 ignore**（28 个测试目标；覆盖 pbh-core / pbh / pbh-db /
   pbh-web / pbh-downloader / 黄金测试与实机社区脚本）。
 - `cargo clippy --workspace --all-targets -D warnings`：零警告。
 - 实机 dry-run 并行对跑（同配置/同下载器/同 GeoIP）：封禁集合一致；内存 36–104 MB vs Java 780–851 MB；
@@ -210,7 +211,7 @@
       磁盘水位告警（剩余空间 / 单库体积阈值，JSONL 打 flag）；`pbh --tag` 身份标记
       （写入 `metadata.dualrun_tag` + `dualrun_started_at` + 启动日志）。
 
-### 4.5 扩展项（超出 v9.5.1 对等范围）
+### 4.5 扩展项（超出上游对等范围）
 
 - [ ] MySQL / PostgreSQL 支持（sqlx）——上游默认 sqlite/h2，属部署扩展
 - [ ] 插件系统评估（WASM / wasmtime）
@@ -222,7 +223,7 @@
 - **不移植上游死代码**：如 `peer-name-blocker-rules`（上游整个文件被注释且未注册）、
   WebSocket 实时推送（上游 v9.5.1 已弃用，实际走 SSE，已对齐）。
 - **不复刻上游缺陷**：见 §4.2（GeoIP 更新截断、每轮重复登录等——Rust 侧按正确语义实现）。
-- **不追上游新版本**：固定 v9.5.1 基线；上游后续行为变更按差异清单评估后再定。
+- **上游版本跟进**：基线 v9.5.3（2026-10-28 合并 v9.5.2 / v9.5.3）；不自动追新，按差异清单逐条评估后合并，合并记录见 CHANGELOG。
 - **不引入额外默认依赖**：默认部署只依赖 SQLite 与单二进制；MySQL/PG 等仅作为显式扩展项。
 
 ## 6. 风险与对策
@@ -258,3 +259,4 @@
 | 2026-10-25 | 全量 review + 能力补齐（Web API 契约、PCB 共享 range、PTR、ExternalSwitch、代理/CORS/EcoQoS、下载器发现、live snapshot、配置合并）；XERJ 双索引参考检索工作流 | 667 |
 | 2026-10-26 | 审计 backlog：`/api/egg`、契约嵌套字段断言、CI + 固定 GNU 工具链、PTR 有界线程池、测试提速/环境隔离、ARCHITECTURE/API 文档 | 671 |
 | 2026-10-26 | 模块拆分 + 测试补强：五个超大文件拆分、mockqb/GUI/main 启动逻辑测试 | 680 |
+| 2026-10-28 | 合并上游 v9.5.2 / v9.5.3（基线升至 9.5.3）：BitComet 2.23 分页、脚本语法校验、STUN IPv4/Unknown、Gopeed bt- 规则 | 686 |

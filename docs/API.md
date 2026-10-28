@@ -110,7 +110,7 @@
 | GET/PATCH | `/api/sub/interval` | 刷新间隔（`data` 为裸数字，毫秒） |
 | GET | `/api/expression-engine/scripts` | 脚本列表 |
 | GET | `/api/expression-engine/editable` | 内置可编辑脚本 |
-| GET/PUT/DELETE | `/api/expression-engine/{id}` | 读取 / 保存（body 为源码文本） / 删除 |
+| GET/PUT/DELETE | `/api/expression-engine/{id}` | 读取 / 保存（body 为源码文本；**语法不合法返回 400 `RULE_ENGINE_BAD_EXPRESSION` 且不落盘**） / 删除 |
 | GET | `/api/laboratory/experiments` | 实验列表 |
 | PUT | `/api/laboratory/experiment/{id}` | 开关实验 |
 | POST | `/api/laboratory/config` | 实验配置 |

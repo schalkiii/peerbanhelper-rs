@@ -1,6 +1,7 @@
 # SPEC — PeerBanHelper-RS 功能契约（忠实重写）
 
-本文件定义 Rust 重写必须满足的行为契约，基线为上游 Java 版 v9.5.1。标注 **[GOLDEN]** 的行为必须有黄金测试覆盖。
+本文件定义 Rust 重写必须满足的行为契约，基线为上游 Java 版 v9.5.3
+（v9.5.1 → v9.5.3 的上游改动于 2026-10-28 合并；标注 **[GOLDEN]** 的行为必须有黄金测试覆盖）。
 所有判定阈值、默认值、过滤条件、API 载荷均以本文件为准，实现时不得擅自更改。
 
 ---
@@ -496,13 +497,29 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   `performance.windows-ecoqos-api` 应用 Windows EcoQoS。
 - **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`
   启动参数覆盖；已接线 PCB completed-excessive、idle ignore-if-any-interested、
-  qBittorrent 四个开关与逐下载器并发槽位。
+  qBittorrent 四个开关、逐下载器并发槽位，以及上游 v9.5.2 新增的
+  `pbh.bitcomet.fetchTorrentsLimit`（BitComet 任务列表分页大小，默认 50）。
 - **`GET /api/sub/logs/{ruleId}`**：单条订阅的刷新日志分页（`rule_sub_log` 按 ruleId 过滤）；
   `/api/sub/logs` 继续返回全部日志。
 - **`GET /api/autostun/tunnel/{id}/info`**：Web AutoSTUN 未接线时返回
   `success=false` + `AUTOSTUN_NOT_SUPPORTED`，不伪造 `TunnelInfoDTO`。
 - **`POST /api/general/refreshNatStatus`**：上游旧版入口，复用 `/api/autostun/refreshNatType`
   （当前返回 501）。
+- **BitComet 任务列表分页（上游 v9.5.2 / BitComet 2.23）**：`getTorrents()` 的
+  requirements 固定带 `keyword=""`、`query_mode="stateless"`、`validate_task_ids=[]`，
+  并按 `start`/`limit` 分页循环——**非 2xx 记日志后跳过该页继续下一页**，某页取回
+  0 条（过滤后）即结束；单任务概要失败只跳过该任务。
+  与上游的差异：上游是 `while(true)`，下载器持续报错时不会终止，本移植加了
+  200 页的防御上界，避免 ban wave 被无限分页挂死。
+- **AutoSTUN NAT 类型探测（上游 v9.5.2）**：STUN 服务器**只使用 IPv4 地址**
+  （发到 AAAA 地址会误判为 UDP 被封）；DNS 解析失败或结果中没有 IPv4 时，
+  该服务器的结果按 `NatType::Unknown` 处理而不是查询异常。
+- **脚本语法校验（上游 v9.5.2）**：`PUT /api/expression-engine/{id}` 写盘前先校验脚本语法，
+  不合法返回 **400** + `RULE_ENGINE_BAD_EXPRESSION` 文案且**不落盘**；
+  校验按文件名选择引擎（仅 `.av`），不注册编译缓存、不执行脚本。
+- **默认规则集（上游 v9.5.3）**：`client-name-blacklist` 追加
+  `{"method":"STARTS_WITH","content":"Gopeed bt-"}`（上游 `ProfileUpdateScript` v42），
+  位于 `Gopeed bt-exp` 之后；`DEFAULT_BANNED_CLIENT_NAME` 与上游 `profile.yml` 逐字逐序一致。
 - **`GET /api/egg`**：上游彩蛋，无鉴权，随机 302 到 22 条精选链接之一（无前端入口）。
 - 公开端点（免 Token）：`/api/auth/{login,logout}`、`/api/metadata/manifest`、
   `/api/{init/token,oobe/status}`、`/api/oobe/{testDownloader,testDatabaseConfig,scanDownloader,init}`、
