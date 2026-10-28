@@ -48,7 +48,12 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 - crates：`pbh`（bin + 组装）、`pbh-core`（规则引擎/模块）、`pbh-downloader`、`pbh-db`、
   `pbh-web`（axum）、`pbh-golden`（黄金测试）、`pbh-mockqb`；`pbh-gui` 独立不在 workspace
 - 文档分工：README（现状）、SPEC.md（行为契约）、PLAN.md（进度/差异跟踪）、
-  docs/TESTING.md（覆盖矩阵）、docs/DEPLOY.md（生产切换）、CHANGELOG.md（变更）
+  docs/TESTING.md（覆盖矩阵）、docs/DEPLOY.md（生产切换）、docs/ARCHITECTURE.md（分层与数据流）、
+  docs/API.md（接口索引）、CHANGELOG.md（变更）
+- **README 面向用户**：用中文说法（巡检 / 演练模式 / 并行对比 / 守护脚本），内部简称
+  （`ban wave`、`live snapshot`、`PCB`、`dry-run`、`对跑`、`黄金测试`）只出现在 README 的
+  「词汇对照」表里；性能数字必须写清**测量日期、版本、负载条件与复核方法**，
+  无法在同环境复测的对照项（如 Java 侧耗时）不留对比数字。
 - 上游语义对照：改 Web API 前先读上游对应 Controller（`src/main/java/.../webapi/`）；
   前端是上游 dist 原样复用（`data/static/`），**前端问题在 Rust 服务端修**
 - **Web API 字段对齐门禁（同类缺陷已 5 次复发，改 `/api/**` 响应必做）**：
