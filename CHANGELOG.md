@@ -3,6 +3,49 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.2（2026-10-31）
+
+> 修复「编辑下载器」弹窗打开后只剩「类型 / 暂停检查」两项、其它字段全部消失的问题（生产反馈）。
+
+### fix(web): 下载器配置改用 Web 专用 DTO 形状
+
+- 根因：`GET /api/downloaders/{id}/status` 的 `config` 直接把内部 `DownloaderConfig`
+  用 serde 原样序列化输出 ⇒ 键名是配置文件的 **kebab-case**（`api-key`、`verify-tls`、
+  `ignore-private`、`rpc-url`），且未配置的 `basic-auth` 整个对象缺失。
+  上游前端 qBittorrent 表单绑定的是 `config.basicAuth.user` / `config.basicAuth.pass`，
+  取到 undefined 后子表单渲染抛错，弹窗只剩不依赖子表单的两项。
+- 新增 `DownloaderConfig::web_json()`：对齐上游 `saveDownloaderJson()`（Gson 序列化 Java
+  `Config` 对象 ⇒ **camelCase**），并按下载器类型裁剪键集，与前端
+  `webui/src/api/model/downloader.ts` 各类型表单逐项一致；`basicAuth` 始终以对象形式回显
+  （未配置时为 `{user:"",pass:""}`）。`qbittorrentee` 额外回显 `useShadowBan`（本移植未实现，恒 false）。
+- 新增 `http-version` / `httpVersion` 字段（上游 Java 无此字段，仅前端下拉框回显用）：
+  缺失时编辑弹窗的「HTTP 版本」下拉为空。默认 `HTTP_1_1`，**只回显不参与实际请求**。
+
+### fix(config): 界面保存不再静默重置 TLS 校验与私有网络开关
+
+- `DownloaderConfig` 的 `api-key` / `ignore-private` / `increment-ban` / `verify-tls` /
+  `rpc-url` 全部补 camelCase serde alias。此前从界面点保存时，前端提交的 camelCase 载荷
+  匹配不上 kebab-case 字段 ⇒ 这些配置被悄悄写回默认值（`verify-ssl=false`、`ignore-private=true`）。
+- 规范化 YAML 键名：证书校验改用上游同名键 **`verify-ssl`**（`verify-tls` 作为 alias 继续可读，
+  老配置不受影响），序列化时写 `verify-ssl`。
+
+### fix(downloader): qBittorrent Basic 认证真正生效
+
+- `build_downloader` 构造 qBittorrent 适配器时 `basic_auth` 此前硬编码 `None`，
+  即使配置了 `basic-auth` 也不会用。现改为 `basic_auth_pair()`（`user` 非空才启用，
+  与上游 `QBittorrentBasicAuth` 判定一致）。
+
+### test: 前端契约回归
+
+- 新增 4 个用例（`crates/pbh/src/config.rs`）：逐类型断言 `web_json` 键集与前端表单一致、
+  `basicAuth` 必为对象、camelCase 载荷能往返（保存后再读不变）、kebab-case 为 YAML 规范键
+  且 `verify-tls` 旧别名仍可读。
+
+### docs: 协作约定新增门禁
+
+- AGENTS.md 的「Web API 字段对齐门禁」改为**优先读上游 `webui/src/**` 源码**（本机 v9.5.3 已 checkout），
+  压缩后的 dist 只作次要确认；并新增一条「Web 层 DTO 不得直接复用配置文件的序列化结果」。
+
 ## 9.5.3-rs.1（2026-10-28）
 
 > 上游基线由 **v9.5.1** 升级为 **v9.5.3**（合并上游 v9.5.2 与 v9.5.3 的后端改动）；

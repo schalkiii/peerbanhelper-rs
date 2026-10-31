@@ -185,9 +185,10 @@ impl WebBackend for PbhBackend {
             .downloaders
             .iter()
             .find(|d| d.resolved_id() == id || d.name == id)?;
-        // 对齐上游 `saveDownloaderJson()`：serde 序列化 DownloaderConfig
-        //（字段名与 PATCH 回写解析一致，编辑表单可无损往返）
-        let config = serde_json::to_value(d).unwrap_or(serde_json::Value::Null);
+        // 对齐上游 `saveDownloaderJson()`：Web API 用 camelCase 的 DTO 形状
+        //（`web_json`），编辑表单按 `config.basicAuth` 等键填充；不能用 serde 直出
+        // 内部结构（kebab-case 且缺 basicAuth，会让弹窗子表单渲染失败）
+        let config = d.web_json();
         Some(DownloaderMeta {
             endpoint: d.endpoint.clone(),
             paused: false,
@@ -474,8 +475,6 @@ impl WebBackend for PbhBackend {
         if parsed.name.is_empty() {
             parsed.name = id.to_string();
         }
-        let (downloader, increment) = build_downloader(&parsed, &self.remap, &self.blocklist_url)
-            .map_err(|e| format!("重建下载器失败: {e}"))?;
         let mut cfg = self.snapshot();
         // 路径参数对齐上游为下载器 id（UUID）；存量配置可能只有 name（id 未显式
         // 配置时 resolved_id() 回退 name），两者都接受
@@ -484,6 +483,11 @@ impl WebBackend for PbhBackend {
             .iter_mut()
             .find(|d| d.name == id || d.id.as_deref() == Some(id))
             .ok_or_else(|| "DL_NOT_FOUND".to_string())?;
+        // 前端表单不携带 `id`（上游用 YAML 映射键充当 id），必须沿用配置里的原值：
+        // history.downloader / pcb_address.downloader 等表都按它关联，丢了历史就断链
+        parsed = keep_existing_id(parsed, slot);
+        let (downloader, increment) = build_downloader(&parsed, &self.remap, &self.blocklist_url)
+            .map_err(|e| format!("重建下载器失败: {e}"))?;
         *slot = parsed;
         self.save_config(&cfg)?;
         if let Ok(mut entries) = self.entries.lock() {
@@ -650,6 +654,21 @@ impl WebBackend for PbhBackend {
     }
 }
 
+/// 沿用配置文件里已有的下载器 `id`（仅当新值没带时）。
+///
+/// 上游把 id 当作 YAML `client:` 段的映射键，前端表单里根本没有这个字段；
+/// 本移植用单文件列表 + 显式 `id` 键，若保存时丢掉 id，`resolved_id()` 会回退成 `name`，
+/// `history.downloader` / `pcb_address.downloader` 等表的历史引用就断链。
+fn keep_existing_id(
+    mut incoming: DownloaderConfig,
+    existing: &DownloaderConfig,
+) -> DownloaderConfig {
+    if incoming.id.is_none() {
+        incoming.id = existing.id.clone();
+    }
+    incoming
+}
+
 /// 构造一个下载器（对齐 main.rs 启动时的构建矩阵；两者共用同一实现）。
 pub fn build_downloader(
     d: &DownloaderConfig,
@@ -665,7 +684,7 @@ pub fn build_downloader(
                 username: d.username.clone(),
                 password: d.password.clone(),
                 api_key: d.api_key.clone(),
-                basic_auth: None,
+                basic_auth: d.basic_auth_pair(),
                 verify_tls: d.verify_tls,
                 ignore_private: d.ignore_private,
                 increment_ban: d.increment_ban,
@@ -1023,5 +1042,38 @@ module:
         assert_eq!(base["module"]["ptr-blacklist"]["enabled"], true);
         assert_eq!(base["module"]["peer-id-blacklist"]["enabled"], false);
         assert!(base["module"]["peer-id-blacklist"]["banned-peer-id"].is_sequence());
+    }
+
+    /// 编辑下载器弹窗提交的 `config` 来自 `web_json()`，里面没有 `id` 字段
+    ///（上游用 YAML 映射键充当 id）。保存必须沿用原 id，否则历史表按 name 关联，
+    /// 迁移库里的封禁/访问记录会失去归属。
+    #[test]
+    fn web_form_update_keeps_the_configured_downloader_id() {
+        let existing: DownloaderConfig = serde_json::from_value(json!({
+            "id": "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+            "type": "qbittorrent",
+            "name": "qB"
+        }))
+        .unwrap();
+        let from_form: DownloaderConfig =
+            serde_json::from_value(existing.web_json()).expect("web_json 必须可回读");
+        assert!(
+            from_form.id.is_none(),
+            "前端契约里不该出现 id 字段（web_json 也不该输出它）"
+        );
+        assert_eq!(
+            keep_existing_id(from_form, &existing)
+                .resolved_id()
+                .as_str(),
+            "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+            "保存后仍应按配置里的 UUID 关联历史"
+        );
+        // 显式带 id 的请求不被旧值覆盖
+        let explicit: DownloaderConfig =
+            serde_json::from_value(json!({"id": "new-id", "type": "qbittorrent"})).unwrap();
+        assert_eq!(
+            keep_existing_id(explicit, &existing).id.as_deref(),
+            Some("new-id")
+        );
     }
 }

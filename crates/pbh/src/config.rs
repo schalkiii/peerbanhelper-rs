@@ -452,31 +452,50 @@ pub struct DownloaderConfig {
     #[serde(default)]
     pub password: String,
     #[serde(default)]
-    #[serde(rename = "api-key")]
+    #[serde(rename = "api-key", alias = "apiKey")]
     pub api_key: Option<String>,
     /// 访问令牌：BiglyBT 适配器插件用（`Authorization: Bearer <token>`），
     /// Aria2Next 用（`Authorization: token:<secret>` 且作为 JSON-RPC params 首元素，
     /// 对齐上游 aria2 的 `--rpc-secret`）
     #[serde(default)]
     pub token: String,
+    /// HTTP Basic 认证（反向代理在 qBittorrent 前面时用）；上游 `basic-auth: {user, pass}`。
+    /// 序列化成 YAML 时是嵌套映射，前端读的是 `basicAuth` 对象。
+    #[serde(default)]
+    #[serde(rename = "basic-auth", alias = "basicAuth")]
+    pub basic_auth: Option<DownloaderBasicAuth>,
     #[serde(default = "p_true")]
-    #[serde(rename = "ignore-private")]
+    #[serde(rename = "ignore-private", alias = "ignorePrivate")]
     pub ignore_private: bool,
     #[serde(default = "p_true")]
-    #[serde(rename = "increment-ban")]
+    #[serde(rename = "increment-ban", alias = "incrementBan")]
     pub increment_ban: bool,
-    /// 是否校验 TLS 证书（兼容上游键名 `verify-ssl`）
+    /// 是否校验 TLS 证书（上游键名 `verify-ssl`；本移植早期用 `verify-tls`，两者都读）
     #[serde(default)]
-    #[serde(rename = "verify-tls", alias = "verify-ssl")]
+    #[serde(rename = "verify-ssl", alias = "verify-tls", alias = "verifySsl")]
     pub verify_tls: bool,
     /// RPC 路径；留空时由各适配器按类型回退默认值
     /// （Transmission 为 `/transmission/rpc`、Deluge 为 `/json`）
     #[serde(default)]
-    #[serde(rename = "rpc-url")]
+    #[serde(rename = "rpc-url", alias = "rpcUrl")]
     pub rpc_url: String,
+    /// 前端表单的 HTTP 版本下拉框字段（上游 Java 无此字段、Gson 反序列化时忽略；
+    /// 本项目同样只回显不生效，但**必须存在**，否则编辑弹窗的下拉框为空）
+    #[serde(default = "p_http_version")]
+    #[serde(rename = "http-version", alias = "httpVersion")]
+    pub http_version: String,
     /// 启动时暂停该下载器（对齐上游配置的 `paused`，Deluge 使用）
     #[serde(default)]
     pub paused: bool,
+}
+
+/// 上游 `QBittorrentBasicAuth(user, pass)`。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DownloaderBasicAuth {
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub pass: Option<String>,
 }
 
 impl DownloaderConfig {
@@ -500,6 +519,165 @@ impl DownloaderConfig {
             value.to_string()
         }
     }
+
+    /// 上游 `basic-auth` 的生效判定：`user` 非空才启用（qB 适配器在收到 401 时重试）。
+    pub fn basic_auth_pair(&self) -> Option<(String, String)> {
+        let auth = self.basic_auth.as_ref()?;
+        let user = auth.user.clone().unwrap_or_default();
+        if user.trim().is_empty() {
+            return None;
+        }
+        Some((user, auth.pass.clone().unwrap_or_default()))
+    }
+
+    /// **Web API 专用**的配置形状：对齐上游 `saveDownloaderJson()`（Gson 序列化 Java
+    /// `Config` 对象 ⇒ camelCase），键集与前端 `webui/src/api/model/downloader.ts`
+    /// 各类型的表单一致。
+    ///
+    /// 不能直接序列化本结构：YAML 侧是 kebab-case 且 `basic-auth` 可缺省，
+    /// 而 qBittorrent 表单绑定 `config.basicAuth.user` —— 该对象缺失会让子表单
+    /// 渲染时抛错，编辑弹窗只剩「类型 / 暂停检查」两项（2026-10-29 生产反馈）。
+    pub fn web_json(&self) -> serde_json::Value {
+        let mut full = serde_json::Map::new();
+        full.insert("type".into(), serde_json::json!(self.kind));
+        full.insert("name".into(), serde_json::json!(self.name));
+        full.insert("endpoint".into(), serde_json::json!(self.endpoint));
+        full.insert("username".into(), serde_json::json!(self.username));
+        full.insert("password".into(), serde_json::json!(self.password));
+        full.insert(
+            "apiKey".into(),
+            serde_json::json!(self.api_key.clone().unwrap_or_default()),
+        );
+        full.insert("token".into(), serde_json::json!(self.token.clone()));
+        full.insert(
+            "basicAuth".into(),
+            serde_json::json!({
+                "user": self
+                    .basic_auth
+                    .as_ref()
+                    .and_then(|a| a.user.clone())
+                    .unwrap_or_default(),
+                "pass": self
+                    .basic_auth
+                    .as_ref()
+                    .and_then(|a| a.pass.clone())
+                    .unwrap_or_default(),
+            }),
+        );
+        full.insert("httpVersion".into(), serde_json::json!(self.http_version));
+        full.insert("incrementBan".into(), serde_json::json!(self.increment_ban));
+        full.insert("verifySsl".into(), serde_json::json!(self.verify_tls));
+        full.insert(
+            "ignorePrivate".into(),
+            serde_json::json!(self.ignore_private),
+        );
+        full.insert("paused".into(), serde_json::json!(self.paused));
+        full.insert("rpcUrl".into(), serde_json::json!(self.rpc_url));
+
+        // 上游各 Config 的字段集不同（前端表单也只绑这些），按类型裁剪
+        let kept: &[&str] = match self.kind.as_str() {
+            "qbittorrent" => &[
+                "type",
+                "name",
+                "endpoint",
+                "username",
+                "password",
+                "apiKey",
+                "basicAuth",
+                "httpVersion",
+                "incrementBan",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+            ],
+            "qbittorrentee" => &[
+                "type",
+                "name",
+                "endpoint",
+                "username",
+                "password",
+                "apiKey",
+                "basicAuth",
+                "httpVersion",
+                "incrementBan",
+                "useShadowBan",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+            ],
+            "transmission" => &[
+                "type",
+                "name",
+                "endpoint",
+                "username",
+                "password",
+                "httpVersion",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+                "rpcUrl",
+            ],
+            "deluge" => &[
+                "type",
+                "name",
+                "endpoint",
+                "password",
+                "httpVersion",
+                "incrementBan",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+                "rpcUrl",
+            ],
+            "biglybt" => &[
+                "type",
+                "name",
+                "endpoint",
+                "token",
+                "httpVersion",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+            ],
+            "bitcomet" => &[
+                "type",
+                "name",
+                "endpoint",
+                "username",
+                "password",
+                "httpVersion",
+                "incrementBan",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+            ],
+            // aria2next 表单没有 httpVersion（对齐上游前端模型）
+            "aria2next" | "aria2" => &[
+                "type",
+                "name",
+                "endpoint",
+                "token",
+                "verifySsl",
+                "ignorePrivate",
+                "paused",
+            ],
+            _ => &[],
+        };
+        if kept.is_empty() {
+            return serde_json::Value::Object(full);
+        }
+        let mut out = serde_json::Map::new();
+        for key in kept {
+            if let Some(value) = full.get(*key) {
+                out.insert((*key).to_string(), value.clone());
+            }
+        }
+        // qBittorrentEE 的 useShadowBan 本移植未实现，按 false 回显（表单开关不缺失）
+        if self.kind == "qbittorrentee" && !out.contains_key("useShadowBan") {
+            out.insert("useShadowBan".into(), serde_json::json!(false));
+        }
+        serde_json::Value::Object(out)
+    }
 }
 
 fn p9898() -> u16 {
@@ -514,6 +692,11 @@ fn p_sqlite() -> String {
 fn p_keep_days() -> i64 {
     180
 }
+/// 前端 HTTP 版本下拉框的回显默认值（上游 Java 无该字段，仅界面用）。
+fn p_http_version() -> String {
+    "HTTP_1_1".to_string()
+}
+
 fn p_true() -> bool {
     true
 }
@@ -960,5 +1143,162 @@ client:
             "profile 未建模键应保留"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 从 JSON 构造下载器配置（测试用，走与运行期相同的 serde 规则）。
+    fn dl_config(json: serde_json::Value) -> DownloaderConfig {
+        serde_json::from_value(json).expect("下载器配置必须可解析")
+    }
+
+    /// JSON 对象的键名升序列表（比对前端契约字段集用）。
+    fn sorted_keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("config 必须是对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// Web API 的 `config` 形状必须等于上游 `saveDownloaderJson()`（Gson camelCase）
+    /// 与前端 `api/model/downloader.ts` 的字段集——qBittorrent 表单绑定
+    /// `config.basicAuth.user`，缺该对象会让编辑弹窗整个子表单渲染失败。
+    #[test]
+    fn web_json_matches_upstream_frontend_contract() {
+        let qb = dl_config(serde_json::json!({
+            "type": "qbittorrent", "name": "qB", "endpoint": "http://127.0.0.1:9091",
+            "username": "admin", "password": "pw", "api-key": "ak",
+            "basic-auth": { "user": "proxy-user", "pass": "proxy-pass" },
+            "ignore-private": true, "increment-ban": false, "verify-ssl": true, "paused": false,
+        }));
+        let value = qb.web_json();
+        let keys = sorted_keys(&value);
+        assert_eq!(
+            keys,
+            [
+                "apiKey",
+                "basicAuth",
+                "endpoint",
+                "httpVersion",
+                "ignorePrivate",
+                "incrementBan",
+                "name",
+                "password",
+                "paused",
+                "type",
+                "username",
+                "verifySsl"
+            ],
+            "qbittorrent 的 config 键集必须与前端模型一致"
+        );
+        assert_eq!(value["basicAuth"]["user"], "proxy-user");
+        assert_eq!(value["basicAuth"]["pass"], "proxy-pass");
+        assert_eq!(value["apiKey"], "ak");
+        assert_eq!(value["verifySsl"], true);
+        assert_eq!(value["ignorePrivate"], true);
+        assert_eq!(value["httpVersion"], "HTTP_1_1");
+
+        // 其它类型按各自表单绑定的键集裁剪：transmission 无 apiKey/basicAuth，
+        // aria2next 连 httpVersion 都没有（对齐上游前端模型）
+        let tr = dl_config(serde_json::json!({ "type": "transmission", "name": "tr" }));
+        let tr_value = tr.web_json();
+        let tr_keys = sorted_keys(&tr_value);
+        assert_eq!(
+            tr_keys,
+            [
+                "endpoint",
+                "httpVersion",
+                "ignorePrivate",
+                "name",
+                "password",
+                "paused",
+                "rpcUrl",
+                "type",
+                "username",
+                "verifySsl"
+            ]
+        );
+        let aria = dl_config(serde_json::json!({ "type": "aria2next", "name": "a2" }));
+        let aria = aria.web_json();
+        assert!(aria.get("httpVersion").is_none(), "aria2next 表单没有 httpVersion");
+        assert_eq!(aria["token"], "");
+        assert!(aria.get("apiKey").is_none());
+    }
+
+    /// `basicAuth` 必须**始终**是对象（哪怕没配）：前端 `config.basicAuth.user`
+    /// 直接取嵌套属性，缺对象就抛错。
+    #[test]
+    fn web_json_always_emits_basic_auth_object() {
+        let qb = dl_config(serde_json::json!({ "type": "qbittorrent", "name": "qB" }));
+        let value = qb.web_json();
+        assert!(value["basicAuth"].is_object(), "basicAuth 必须是对象");
+        assert_eq!(value["basicAuth"]["user"], "");
+        assert_eq!(value["basicAuth"]["pass"], "");
+        // 未配置 ⇒ 不启用 HTTP Basic（上游用空 user 时也不会带认证头）
+        assert!(qb.basic_auth_pair().is_none());
+    }
+
+    /// 前端保存时提交的是 camelCase（`apiKey` / `verifySsl` / `basicAuth` / `rpcUrl`），
+    /// 写入路径必须解析得动，否则编辑一次就把配置清空成默认值。
+    #[test]
+    fn frontend_camel_case_payload_round_trips() {
+        let payload = serde_json::json!({
+            "type": "qbittorrent",
+            "name": "qB",
+            "endpoint": "http://127.0.0.1:9091/",
+            "username": "admin",
+            "password": "pw",
+            "apiKey": "ak-1",
+            "basicAuth": { "user": "bu", "pass": "bp" },
+            "httpVersion": "HTTP_2",
+            "incrementBan": true,
+            "verifySsl": false,
+            "ignorePrivate": true,
+            "paused": false
+        });
+        let parsed = dl_config(payload.clone());
+        assert_eq!(parsed.api_key.as_deref(), Some("ak-1"));
+        assert!(!parsed.verify_tls);
+        assert!(parsed.ignore_private);
+        assert_eq!(parsed.http_version, "HTTP_2");
+        assert_eq!(
+            parsed.basic_auth_pair(),
+            Some(("bu".to_string(), "bp".to_string()))
+        );
+
+        // 往返：web_json 再解析回来，值不丢
+        let again = dl_config(parsed.web_json());
+        assert_eq!(again.api_key, parsed.api_key);
+        assert_eq!(again.verify_tls, parsed.verify_tls);
+        assert_eq!(again.ignore_private, parsed.ignore_private);
+        assert_eq!(again.increment_ban, parsed.increment_ban);
+        assert_eq!(again.basic_auth_pair(), parsed.basic_auth_pair());
+        assert_eq!(again.rpc_url, parsed.rpc_url);
+
+        // 前端 PUT 的完整 body 是 `{id, config}`，端点取 config 后走同一条解析路径
+        let from_envelope = dl_config(payload);
+        assert_eq!(from_envelope.name, "qB");
+    }
+
+    /// YAML 侧仍是上游的 kebab-case 键名（`verify-ssl` / `basic-auth`），
+    /// 且必须继续读得懂本移植早期写下的 `verify-tls`。
+    #[test]
+    fn yaml_kebab_keys_are_canonical_and_legacy_alias_kept() {
+        let legacy = dl_config(serde_json::json!({
+            "type": "qbittorrent", "name": "qB", "verify-tls": true,
+            "basic-auth": { "user": "u", "pass": "p" }
+        }));
+        assert!(legacy.verify_tls, "verify-tls 别名必须仍可解析");
+
+        let as_yaml: serde_yaml::Value =
+            serde_yaml::from_str(&serde_yaml::to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(as_yaml["verify-ssl"], true, "写出的键名对齐上游 verify-ssl");
+        assert!(as_yaml.get("verify-tls").is_none());
+        assert_eq!(as_yaml["basic-auth"]["user"], "u");
+        assert!(
+            matches!(as_yaml["api-key"], serde_yaml::Value::Null | serde_yaml::Value::String(_)),
+            "api-key 写出为字符串或 null（未配置时）");
     }
 }

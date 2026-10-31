@@ -287,3 +287,28 @@ import 后的全部 `api/...` 字面量），否则新端点不在门禁覆盖�
 **已通过该机制发现并修复**（详见 CHANGELOG）：
 9 个端点缺失（`/api/oobe/init`、`/api/pbhplus/{claimRenewFreeLicenseCaptcha,renewFreeLicense}`、
 `/api/autostun/*` 全套 6 个）与 1 处形状不符（`/api/push`）。
+
+## 7. 下载器配置 Web DTO 契约（2026-10-31 新增）
+
+**背景**：§6 的清单只校验 `data` 顶层形状与指定字段，`config` 作为一个对象整体通过断言，
+**其内部键名不在门禁内**。`GET /api/downloaders/{id}/status` 的 `config` 曾直接
+`serde_json::to_value(DownloaderConfig)` 输出，得到的是配置文件那套 kebab-case
+（`api-key` / `verify-tls` / `ignore-private` / `rpc-url`）且缺 `basicAuth` 对象。
+前端 qBittorrent 表单绑定 `config.basicAuth.user`，取到 undefined 后子表单渲染抛错，
+「编辑下载器」弹窗只剩「类型 / 暂停检查」两项（2026-10-29 生产反馈）。
+注意这类缺陷**不会**表现为接口报错——HTTP 200、`success:true`、`config` 是合法对象。
+
+**真源**：上游 `webui/src/api/model/downloader.ts` 的各类型表单字段 +
+`webui/src/components/forms/<type>.vue` 的 `v-model` 绑定路径；
+后端对应 `saveDownloaderJson()`（Gson 序列化 Java `Config` ⇒ camelCase）。
+
+**现在的约定**：Web 层用 `DownloaderConfig::web_json()` 构造 DTO（按类型裁剪键集、
+`basicAuth` 恒为对象），配置文件序列化**不得**直接对外。
+
+| 回归 | 位置 |
+|---|---|
+| 逐类型 `web_json` 键集与前端表单一致（含 `basicAuth` / `httpVersion` / `useShadowBan`） | `pbh/src/config.rs::tests::web_json_matches_upstream_frontend_contract` |
+| `basicAuth` 始终回显为对象（未配置时为 `{user:"",pass:""}`） | `…::web_json_always_emits_basic_auth_object` |
+| 前端 camelCase 保存体往返（不再静默重置 `verify-ssl` / `ignore-private`） | `…::frontend_camel_case_payload_round_trips` |
+| YAML 规范键为 kebab-case（`verify-ssl` 为上游名，`verify-tls` 旧别名仍可读） | `…::yaml_kebab_keys_are_canonical_and_legacy_alias_kept` |
+

@@ -60,9 +60,18 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
   字段名/结构对不上时前端**不报错**，而是静默显示 `0` / 空白 / `NaN undefined/s`——
   已三次出现（`peerBlockRate` 恒 0%、9a260e4 批量字段名、`rtUploadSpeed` 缺失致速度 NaN）。
   改动响应后必须逐字段核对两处真源：① 上游 Controller/DTO 实际输出名；
-  ② dist 前端读取点（`data/static/assets/*.js`，压缩单行，用脚本抠 token 上下文，
-  勿用 grep 上下文）。**字段名以「前端读什么」为准，不是以「上游构造参数叫什么」为准**
+  ② 前端读取点——**优先读上游 `webui/src/**` 源码**（`api/model/*.ts` 的接口定义与
+  `components/forms/*.vue` 的 `v-model` 绑定；本机已检出 v9.5.3），只有需要确认线上实际
+  版本时才抠 `data/static/assets/*.js`（压缩单行，用脚本取 token 上下文，勿用 grep 上下文）。
+  **字段名以「前端读什么」为准，不是以「上游构造参数叫什么」为准**
   （如 `UserIPTestResult` 字段是 `from/to/generatedCidr`，非构造参数 `lower/upper/compressed`）。
+- **Web 层 DTO 不得直接复用配置文件的序列化结果**：`config.yml` 是 kebab-case、
+  Web API 是上游 Gson 的 camelCase。第 6 次同类事故（2026-10-29）就是
+  `/api/downloaders/{id}/status` 直出内部结构，缺 `basicAuth` 对象 ⇒
+  qBittorrent 编辑弹窗绑定 `config.basicAuth.user` 时抛错，整个子表单只剩「类型/暂停检查」；
+  同时前端回传的 camelCase 保存体被 serde 静默忽略，`verify-ssl`、`ignore-private`
+  被重置成默认值。规则：**读**用专门的 `web_json()` DTO，**写**用 serde alias 兜住 camelCase，
+  两边都要有用例钉住键集。
 - **WebUI 端点契约门禁（改 `/api/**` 路由表或新增/删除端点必做）**：前端实际调用的全部端点与
   `data` 形状固化在 `crates/pbh-web/src/webui_endpoints.json`，测试
   `webui_contract_all_endpoints_exist_and_match_shape` 逐条校验「端点存在 + 形状匹配」。
@@ -88,8 +97,16 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 4. 版本号约定：Cargo 版本对齐上游基线（当前 9.5.3），移植自身的发布序列以 `-rs.N`
    后缀体现在 tag / Release 标题上
 
-## 当前状态（2026-10-28）
+## 当前状态（2026-10-31）
 
+- **9.5.3-rs.2（2026-10-31；管理界面修复，已部署生产）**：
+  「编辑下载器」弹窗此前只剩「类型 / 暂停检查」——`/api/downloaders/{id}/status` 的 `config`
+  直出配置文件的 kebab-case 序列化且缺 `basicAuth` 对象。改为 Web 专用 DTO
+  `DownloaderConfig::web_json()`（camelCase、逐类型键集、`basicAuth` 恒为对象），
+  写路径补 camelCase serde alias（界面保存不再重置 `verify-ssl` / `ignore-private`），
+  界面保存沿用配置里的下载器 `id`（UUID，历史表按它关联），qB 的 `basic-auth` 真正生效。
+  YAML 规范键改用上游名 `verify-ssl`（`verify-tls` 保留为可读别名）。
+  工作区 691 测试通过（另 1 个本机扫描用例 ignore）、clippy 零警告；生产 health 200。
 - **上游基线已升级为 v9.5.3，已发布 9.5.3-rs.1（2026-10-28；合并上游 v9.5.2 / v9.5.3，已部署生产）**：
   BitComet 2.23 任务列表分页（`pbh.bitcomet.fetchTorrentsLimit`，默认 50）、
   脚本保存前语法校验（不合法 400 `RULE_ENGINE_BAD_EXPRESSION`）、

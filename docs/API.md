@@ -81,7 +81,7 @@
 | PATCH/PUT/DELETE | `/api/downloaders/{id}` | 修改 / 删除 |
 | POST | `/api/downloaders/test` | 连通性测试 |
 | POST | `/api/downloaders/scan` | 本机自动发现（裸数组） |
-| GET | `/api/downloaders/{id}/status` | 实时状态（限速、暂停等） |
+| GET | `/api/downloaders/{id}/status` | 实时状态（限速、暂停等）；`config` 为 **camelCase Web DTO**（见 docs/TESTING.md §7） |
 | GET | `/api/downloaders/{id}/torrents` | 种子列表 |
 | GET | `/api/downloaders/{id}/torrent/{torrentId}/peers` | peer 列表（含 PTR/GeoIP） |
 | GET | `/api/peer/{ip}` | peer 详情（在线 GeoIP、PTR、BTN 可用性） |

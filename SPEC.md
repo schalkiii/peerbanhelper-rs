@@ -486,6 +486,13 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   端点并探测 qBittorrent / Transmission / BiglyBT / BitComet，返回
   `[{host, port, type, pid, added}]` 裸数组；已在配置中的端口 `added=ADDED`，
   未发现时为空数组。
+- **`GET /api/downloaders/{id}/status` 的 `config`**：camelCase Web DTO（对齐上游 Gson 序列化
+  Java `Config` 对象），键集按下载器类型与前端 `webui/src/api/model/downloader.ts` 的表单一致，
+  且 `basicAuth` 恒为对象。不得直接输出配置文件那套 kebab-case 的序列化结果——qBittorrent
+  表单绑定 `config.basicAuth.user`，该对象缺失会让「编辑下载器」弹窗的整片子表单渲染失败
+  （2026-10-29 生产反馈，接口仍返回 200 + `success:true`，不报错）。
+  写路径（PUT/PATCH）接受同一套 camelCase 键；YAML 侧仍以 kebab-case 为规范键，
+  证书校验用上游同名键 `verify-ssl`（早期 `verify-tls` 作别名保留读取）。
 - **`GET /api/downloaders/{id}/torrents|peers`**：读取本轮 wave 的 live snapshot
   （torrents 按 `rtUploadSpeed`、peers 按 `uploadSpeed` 倒序），不额外访问下载器；
   torrent 不在本轮快照时返回空数组。
