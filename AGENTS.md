@@ -99,6 +99,12 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 
 ## 当前状态（2026-10-31）
 
+- **9.5.3-rs.3（2026-10-31；日志轮转 + 降噪，已部署生产）**：
+  `data/pbh-gui.log` 曾 23 天涨到 236 MB。GUI 每 2s 检查大小，超 16 MB 复制为 `.1` 并清空
+  （保留 `.1~.3`，上限约 64 MB）；非终端输出关掉 ANSI（占体积 11% 且破坏 grep 行首匹配）；
+  Aria2Next RPC 完整响应体（54%）与 BTN ability 5s 心跳（27%）降为 TRACE/变更时才记。
+  日志量降到约 1/12（≈0.7 MB/天）。默认级别仍 `info,pbh=debug`（看门狗心跳依赖），
+  `RUST_LOG=info` / `pbh=trace` 可调。工作区 691 测试通过（另 1 个 ignore）、GUI 4 通过、clippy 零警告。
 - **9.5.3-rs.2（2026-10-31；管理界面修复，已部署生产）**：
   「编辑下载器」弹窗此前只剩「类型 / 暂停检查」——`/api/downloaders/{id}/status` 的 `config`
   直出配置文件的 kebab-case 序列化且缺 `basicAuth` 对象。改为 Web 专用 DTO

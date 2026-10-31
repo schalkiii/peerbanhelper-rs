@@ -151,3 +151,9 @@ cargo run -p pbh-db --bin compare_dualrun -- <java.db> <rust.db> --since 2026-10
 **注意**：阈值必须 ≥ wave 间隔（config.yml 默认 120s）+ 启动初始化裕量；不要用进程
 CPU 增量做心跳——wave 间隔内 main 线程空闲是常态，会周期性误杀（2026-10-07 教训）。
 常驻方式见脚本头注释（任务计划程序 / NSSM）。
+
+**日志轮转**：GUI 每 2s 检查一次 `data/pbh-gui.log`，超过 **16 MB** 就复制为
+`pbh-gui.log.1` 并清空原文件（`.1 ~ .3` 依次后移，最旧的丢弃），总占用上限约 64 MB。
+轮转后 `pbh-gui.log` 继续写入，看门狗读的还是这个文件，无需调整。
+日志级别默认 `info,pbh=debug,reqwest=warn`；要更安静用 `RUST_LOG=info`，
+要协议级细节用 `RUST_LOG=pbh=trace`（GUI 拉起的子进程继承环境变量）。

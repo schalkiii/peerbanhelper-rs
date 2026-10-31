@@ -26,11 +26,12 @@ use pbh_downloader::http::ReqwestFetcher;
 use pbh_web::{build_router_with_cors, AppState, DownloaderStatus, Metrics, RingLog};
 use ring::RingLayer;
 use std::collections::HashMap;
+use std::io::IsTerminal as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use wave::{DownloaderEntry, WaveEngine};
@@ -89,11 +90,19 @@ fn parse_bind_addr(address: &str, port: u16) -> anyhow::Result<SocketAddr> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ring_log = Arc::new(RingLog::new(4096));
+    // 默认 `pbh=debug`：封禁链路的排障依赖这些 DEBUG 打点（看门狗也靠「主循环返回」心跳）。
+    // 想更安静用 `RUST_LOG=info`，想看协议级细节用 `RUST_LOG=pbh=trace`。
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info,pbh=debug,reqwest=warn".into());
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().with_thread_names(true))
+        // GUI 把 stdout 重定向到 pbh-gui.log：非终端时关掉 ANSI 颜色，
+        // 否则每行都带一串转义码（约 +10% 体积，且让日志无法用 grep 直接匹配）
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_thread_names(true)
+                .with_ansi(std::io::stdout().is_terminal()),
+        )
         .with(RingLayer::new(ring_log.clone()))
         .init();
 
@@ -860,7 +869,13 @@ where
                 })) {
                     Ok(report) => {
                         for sync in report {
-                            debug!("BTN ability 已同步: {} updated={}", sync.key, sync.updated);
+                            // 5 秒一次的「无变化」同步是纯噪声（占日志行数一半以上）：
+                            // 有更新才记 DEBUG，其余降到 TRACE
+                            if sync.updated {
+                                debug!("BTN ability 已同步: {} updated=true", sync.key);
+                            } else {
+                                trace!("BTN ability 已同步: {} updated=false", sync.key);
+                            }
                         }
                     }
                     Err(_) => warn!("BTN 同步出现异常，已忽略并继续下一轮"),

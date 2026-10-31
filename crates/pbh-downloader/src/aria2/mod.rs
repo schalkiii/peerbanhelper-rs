@@ -70,7 +70,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 const M_GET_VERSION: &str = "aria2.getVersion";
 const M_TELL_ACTIVE: &str = "aria2.tellActive";
@@ -251,7 +251,8 @@ impl Aria2Downloader {
                 self.rpc_failed_message(resp.status, "N/A", &resp.body)
             );
         }
-        debug!("Aria2Next RPC Response: {}", resp.body);
+        // 每次 RPC 的完整响应体（每波多次、单条可达数 KB）只在排查协议细节时有用
+        trace!("Aria2Next RPC Response: {}", resp.body);
         let parsed: JsonRpcResponse<T> = serde_json::from_str(&resp.body)?;
         // 「正确的 JsonRPC 判断标准：优先看 error 字段是否非空」
         if let Some(err) = &parsed.error {

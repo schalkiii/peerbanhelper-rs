@@ -108,6 +108,68 @@ fn port_open(port: u16) -> bool {
     }
 }
 
+/// 日志单文件上限（降噪后实测约 0.7 MB/天，一份约可覆盖 3 周）。
+///
+/// 与 [`LOG_KEEP`] 一起把日志总占用封顶在 4 × 16 MB = 64 MB；不轮转时
+/// 长期运行会无限增长（实测 23 天累积到 236 MB）。
+const LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// 保留的历史份数：`pbh-gui.log.1` ~ `.3`，数字越大越旧
+const LOG_KEEP: usize = 3;
+
+/// 日志超过上限时滚成 `.1`（旧的依次后移、最旧的丢弃）并清空原文件。
+///
+/// 子进程与 GUI 都以追加方式持有该文件句柄，运行中无法靠改名让写入方换文件——
+/// 因此用「复制 + 截断」：追加句柄在截断后继续写入新末尾，不会出现空洞。
+/// 复制期间新写入的少量行会随截断丢失（轮转每几天一次），可接受。
+fn rotate_log_if_needed(path: &std::path::Path, max_bytes: u64, keep: usize) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= max_bytes || keep == 0 {
+        return;
+    }
+    let numbered = |i: usize| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(format!(".{i}"));
+        std::path::PathBuf::from(name)
+    };
+    let _ = std::fs::remove_file(numbered(keep));
+    for i in (1..keep).rev() {
+        let from = numbered(i);
+        if !from.exists() {
+            continue;
+        }
+        let to = numbered(i + 1);
+        let _ = std::fs::remove_file(&to);
+        if let Err(e) = std::fs::rename(&from, &to) {
+            eprintln!("[pbh-gui] 日志轮转失败（改名）: {e}");
+            return;
+        }
+    }
+    let first = numbered(1);
+    let _ = std::fs::remove_file(&first);
+    if let Err(e) = std::fs::copy(path, &first) {
+        eprintln!("[pbh-gui] 日志轮转失败（备份）: {e}");
+        return;
+    }
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(mut file) => {
+            let _ = file.set_len(0);
+            use std::io::Write as _;
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(
+                file,
+                "[pbh-gui] {ts} 日志超过 {max_bytes} 字节，已轮转为 {}",
+                first.display()
+            );
+        }
+        Err(e) => eprintln!("[pbh-gui] 日志轮转失败（截断）: {e}"),
+    }
+}
+
 fn spawn_child(args: &Args) -> std::io::Result<Child> {
     let mut cmd = Command::new(&args.pbh_path);
     cmd.arg("--data").arg(&args.data_dir);
@@ -115,6 +177,7 @@ fn spawn_child(args: &Args) -> std::io::Result<Child> {
     // 的 stdout/stderr（tracing 全部输出）直接丢失。追加写入 data 目录的
     // pbh-gui.log，同时作为外部看门狗的日志心跳源（冻结诊断依赖）。
     let log_path = std::path::Path::new(&args.data_dir).join("pbh-gui.log");
+    rotate_log_if_needed(&log_path, LOG_MAX_BYTES, LOG_KEEP);
     if let Ok(log) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -183,6 +246,12 @@ fn main() {
                 let spawn_args = args.clone_for_spawn();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(Duration::from_secs(2));
+                    // 服务长时间不重启时也要轮转：每 2s 仅做一次文件大小检查
+                    rotate_log_if_needed(
+                        &std::path::Path::new(&spawn_args.data_dir).join("pbh-gui.log"),
+                        LOG_MAX_BYTES,
+                        LOG_KEEP,
+                    );
                     // 先取退出状态再判断：exit code 可区分正常退出（0）/ access
                     // violation（0xC0000005）/ 栈溢出（0xC00000FD）/ abort（0x80000003），
                     // 是「静默退出」排查的唯一线索（panic=abort 时 panic 消息可能丢失）
@@ -561,6 +630,46 @@ mod tests {
             std::fs::canonicalize(&expected_data).unwrap(),
             "无同级 data/ 时回退 exe 的 ../../data"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_sized(path: &std::path::Path, len: usize) {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&vec![b'x'; len]).unwrap();
+    }
+
+    fn len_of(path: &std::path::Path) -> u64 {
+        std::fs::metadata(path).unwrap().len()
+    }
+
+    /// 轮转：超限的日志滚成 `.1`、原文件清空并留一行标记；只保留 `keep` 份。
+    #[test]
+    fn oversized_log_rotates_and_keeps_limited_history() {
+        let dir = temp_layout("rotate");
+        let log = dir.join("pbh-gui.log");
+        let numbered = |i: usize| dir.join(format!("pbh-gui.log.{i}"));
+
+        write_sized(&log, 100);
+        rotate_log_if_needed(&log, 64, 2);
+        assert_eq!(len_of(&numbered(1)), 100, "超限内容应完整备份到 .1");
+        let marker = std::fs::read_to_string(&log).unwrap();
+        assert!(marker.contains("已轮转"), "新文件应留下轮转标记: {marker}");
+
+        write_sized(&log, 90);
+        rotate_log_if_needed(&log, 64, 2);
+        assert_eq!(len_of(&numbered(1)), 90);
+        assert_eq!(len_of(&numbered(2)), 100, "旧 .1 后移为 .2");
+
+        write_sized(&log, 70);
+        rotate_log_if_needed(&log, 64, 2);
+        assert_eq!(len_of(&numbered(1)), 70);
+        assert_eq!(len_of(&numbered(2)), 90, "keep=2：最旧一份被丢弃");
+        assert!(!numbered(3).exists());
+
+        write_sized(&log, 10);
+        rotate_log_if_needed(&log, 64, 2);
+        assert_eq!(len_of(&log), 10, "未超限不轮转");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
