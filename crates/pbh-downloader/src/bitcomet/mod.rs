@@ -861,6 +861,13 @@ impl Downloader for BitCometDownloader {
     }
 
     /// 整份替换：对齐 `setBanListFull`（`import_type = "replace"`）。
+    fn unban_peers<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 委托给与上游 `unbanPeers` 同形的实际实现（同名固有方法优先解析）
+            BitCometDownloader::unban_peers(self, ips).await
+        })
+    }
+
     fn replace_banned_ips<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
         Box::pin(async move {
             // 上游 `setBanListFull` 不做去重：按入参顺序 `flatMap` 后以 `\n` 连接

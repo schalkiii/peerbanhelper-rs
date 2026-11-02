@@ -168,14 +168,23 @@ impl DelugeDownloader {
             .unwrap_or(false))
     }
 
-    /// 已登录的 RPC 调用：先 `auth.login`，再调用目标方法，返回其 `result` 字段。
+    /// 已登录的 RPC 调用：会话由 [`Self::login`] 建立，这里**只发目标方法**。
+    ///
+    /// 对齐上游 `Deluge.login0`：每轮登录一次（`auth.login` + `listMethods`），
+    /// 其余方法复用 cookie 会话；此前每个 RPC 前都重发 `auth.login`，请求量翻倍。
+    /// 会话中途失效（Deluge 返回 "Not authenticated"）时重新登录并重试一次。
     async fn call(&self, method: &str, params: Vec<Value>) -> anyhow::Result<Value> {
-        if !self.login_session().await? {
-            // 上游此处会因会话未建立而收到 RPC 错误；语义同样是「调用未生效」
-            anyhow::bail!("auth.login 返回 false");
+        match self.make_request(method, params.clone()).await {
+            Ok(resp) => Ok(resp.get("result").cloned().unwrap_or(Value::Null)),
+            Err(e) if is_not_authenticated(&e) => {
+                if !self.login_session().await? {
+                    anyhow::bail!("auth.login 返回 false");
+                }
+                let resp = self.make_request(method, params).await?;
+                Ok(resp.get("result").cloned().unwrap_or(Value::Null))
+            }
+            Err(e) => Err(e),
         }
-        let resp = self.make_request(method, params).await?;
-        Ok(resp.get("result").cloned().unwrap_or(Value::Null))
     }
 
     /// `system.listMethods`（对齐 `DelugeListMethodsResponse`）。
@@ -586,6 +595,12 @@ fn tl(key: &str, params: Vec<Param>) -> String {
         .render(&TranslationComponent::with_params(key, params), UI_LOCALE)
 }
 
+/// Deluge 的「会话已失效」错误（JSON-RPC `error.message` 形如 `Not authenticated`）。
+fn is_not_authenticated(err: &anyhow::Error) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("not authenticated") || text.contains("not logged in")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +678,8 @@ mod tests {
         pub core_config: Mutex<Value>,
         /// 为 true 时模拟传输层失败（连接被拒/超时）
         pub transport_error: Mutex<bool>,
+        /// 为 true 时下一个非 `auth.login` 调用返回 "Not authenticated"（模拟会话过期）
+        pub auth_expire_once: Mutex<bool>,
     }
 
     impl DelugeMock {
@@ -672,6 +689,7 @@ mod tests {
                 list_methods: Mutex::new(MUST_HAVE_METHODS.iter().map(|m| m.to_string()).collect()),
                 login_ok: Mutex::new(true),
                 rpc_error: Mutex::new(false),
+                auth_expire_once: Mutex::new(false),
                 active_torrents: Mutex::new(ACTIVE_TORRENTS.to_string()),
                 core_config: Mutex::new(json!({
                     "max_download_speed": 2048,
@@ -724,6 +742,14 @@ mod tests {
                 let id = body["id"].clone();
                 self.requests.lock().unwrap().push((method.clone(), body));
                 let failed = *self.rpc_error.lock().unwrap();
+                // 模拟会话过期：下一个业务调用返回 Not authenticated（登录不受影响）
+                if method != M_AUTH_LOGIN {
+                    let mut expire = self.auth_expire_once.lock().unwrap();
+                    if *expire {
+                        *expire = false;
+                        return Ok(HttpResponse::ok(rpc_err(&id, "Not authenticated")));
+                    }
+                }
                 let json = match method.as_str() {
                     M_AUTH_LOGIN => rpc_ok(&id, json!(*self.login_ok.lock().unwrap())),
                     M_LIST_METHODS => rpc_ok(&id, json!(self.list_methods.lock().unwrap().clone())),
@@ -846,17 +872,17 @@ mod tests {
         assert!(!second.is_private());
         assert_eq!(second.completed_override, Some(0));
 
-        // 每个调用路径都先登录；get_active_torrents_info 只发一次（peers 随响应返回）
+        // get_active_torrents_info 只发一次（peers 随响应返回；会话由 login() 建立）
         assert_eq!(
             mock.methods(),
-            vec![M_AUTH_LOGIN, M_ACTIVE_TORRENTS],
+            vec![M_ACTIVE_TORRENTS],
             "不应额外发 per-torrent peer RPC"
         );
 
         // fetch_peers 直接读缓存，不产生新请求
         let peers = deluge.fetch_peers(first).await.unwrap();
         assert_eq!(peers.len(), 2, "空 ip 的 peer 被丢弃");
-        assert_eq!(mock.methods().len(), 2);
+        assert_eq!(mock.methods().len(), 1, "RPC 没有额外请求");
     }
 
     #[tokio::test]
@@ -920,7 +946,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_BAN_IPS]);
+        assert_eq!(mock.methods(), vec![M_BAN_IPS], "RPC 不应自动 auth.login");
         // remapBanListAddress(addr, supportRangeBan=true)：去重 + IPv6 /52 网段
         assert_eq!(
             mock.params_of(M_BAN_IPS),
@@ -937,7 +963,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_REPLACE_BLOCKLIST]);
+        assert_eq!(mock.methods(), vec![M_REPLACE_BLOCKLIST], "RPC 不应自动 auth.login");
         assert_eq!(
             mock.params_of(M_REPLACE_BLOCKLIST),
             json!([["1.2.3.4", "::ffff:102:304", "2001:db8::1", "2001:db8::/52"]])
@@ -963,6 +989,39 @@ mod tests {
             .unwrap();
     }
 
+    /// 会话复用（对齐上游 `Deluge.login0`）：`auth.login` 只在登录时发一次，
+    /// 其余 RPC 直接复用 cookie 会话（此前每个 RPC 前都重发，请求量翻倍）。
+    #[tokio::test]
+    async fn rpc_calls_do_not_relogin() {
+        let mock = DelugeMock::new();
+        let deluge = mock_downloader(mock.clone());
+        assert!(deluge.login().await.unwrap().success);
+        let _ = deluge.fetch_torrents().await.unwrap();
+        let _ = deluge.get_speed_limiter().await.unwrap();
+        let methods = mock.methods();
+        assert_eq!(
+            methods.iter().filter(|m| *m == M_AUTH_LOGIN).count(),
+            1,
+            "auth.login 只应出现在 login() 里：{methods:?}"
+        );
+    }
+
+    /// 会话中途失效：Deluge 返回 `Not authenticated` 时重新登录并重试一次。
+    #[tokio::test]
+    async fn expired_session_relogins_once() {
+        let mock = DelugeMock::new();
+        *mock.auth_expire_once.lock().unwrap() = true;
+        let deluge = mock_downloader(mock.clone());
+        let stats = deluge.statistics().await.unwrap();
+        assert_eq!(stats.all_time_upload, 111_222, "重试后应拿到真实数据");
+        let methods = mock.methods();
+        assert_eq!(
+            methods,
+            vec![M_SESSION_TOTALS, M_AUTH_LOGIN, M_SESSION_TOTALS],
+            "失败一次后重新登录再重试：{methods:?}"
+        );
+    }
+
     #[tokio::test]
     async fn statistics_and_zero_on_failure() {
         let mock = DelugeMock::new();
@@ -970,7 +1029,7 @@ mod tests {
         let stats = deluge.statistics().await.unwrap();
         assert_eq!(stats.all_time_upload, 111_222);
         assert_eq!(stats.all_time_download, 333_444);
-        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_SESSION_TOTALS]);
+        assert_eq!(mock.methods(), vec![M_SESSION_TOTALS], "RPC 不应自动 auth.login");
 
         // RPC 失败：对齐上游，只记日志并返回 0（不返回 Err）
         let mock = DelugeMock::new();
@@ -993,7 +1052,7 @@ mod tests {
         let (upload, download) = deluge.get_speed_limiter().await.unwrap();
         assert_eq!(upload, 1_048_576, "1024 KiB/s -> 1 MiB/s");
         assert_eq!(download, 2_097_152, "2048 KiB/s -> 2 MiB/s");
-        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_GET_CONFIG]);
+        assert_eq!(mock.methods(), vec![M_GET_CONFIG], "RPC 不应自动 auth.login");
         assert_eq!(mock.params_of(M_GET_CONFIG), json!([]));
     }
 
@@ -1006,7 +1065,7 @@ mod tests {
             .set_speed_limiter(1_048_576, 2_097_152)
             .await
             .unwrap();
-        assert_eq!(mock.methods(), vec![M_AUTH_LOGIN, M_SET_CONFIG]);
+        assert_eq!(mock.methods(), vec![M_SET_CONFIG], "RPC 不应自动 auth.login");
         assert_eq!(
             mock.params_of(M_SET_CONFIG),
             json!([{ "max_download_speed": 2048, "max_upload_speed": 1024 }])

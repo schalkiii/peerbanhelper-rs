@@ -357,7 +357,7 @@ impl WaveEngine {
             .unwrap_or(false);
         debug!("wave phase:4 下发（新增 {} 项，force_full={force_full}）", global_added.len());
         for entry in &entries {
-            self.apply_bans(entry, &global_added, removed.len(), force_full, now_ms)
+            self.apply_bans(entry, &global_added, &removed, force_full, now_ms)
                 .await;
         }
         if force_full {
@@ -422,7 +422,7 @@ impl WaveEngine {
             return false;
         }
         for entry in entries {
-            self.apply_bans(entry, &[], 0, true, now_ms).await;
+            self.apply_bans(entry, &[], &[], true, now_ms).await;
         }
         if let Ok(mut b) = self.ban_list().lock() {
             b.clear_need_reapply();
@@ -724,10 +724,11 @@ impl WaveEngine {
         &self,
         entry: &DownloaderEntry,
         added: &[BanEntry],
-        removed_count: usize,
+        removed: &[BannedRecord],
         force_full: bool,
         now_ms: i64,
     ) {
+        let removed_count = removed.len();
         if added.is_empty() && removed_count == 0 && !force_full {
             return;
         }
@@ -764,6 +765,14 @@ impl WaveEngine {
                 );
             }
             return;
+        }
+        // 上游 `BitComet.setBanList`：`removed` 非空时先按 peer 解封，再整份替换
+        //（其它适配器该调用是默认空操作，仍靠 `replace_banned_ips` 的整份替换生效）
+        if !removed.is_empty() {
+            let ips: Vec<String> = removed.iter().map(|r| r.ip.clone()).collect();
+            if let Err(e) = dl.unban_peers(&ips).await {
+                warn!("unban_peers for {} failed: {e}", dl.id());
+            }
         }
         if full {
             let ips = self
@@ -1194,6 +1203,8 @@ mod tests {
         id: String,
         torrents: Vec<pbh_core::model::TorrentData>,
         peers: HashMap<String, Vec<pbh_core::model::PeerData>>,
+        /// `unban_peers` 收到的地址（验证「解封先于整份替换下发」）
+        unbanned: std::sync::Mutex<Vec<String>>,
     }
 
     impl Downloader for CounterMock {
@@ -1247,6 +1258,12 @@ mod tests {
         ) -> BoxFuture<'a, anyhow::Result<()>> {
             Box::pin(async { Ok(()) })
         }
+        fn unban_peers<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
+            let mut slot = self.unbanned.lock().unwrap();
+            slot.extend(ips.iter().cloned());
+            Box::pin(async { Ok(()) })
+        }
+
     }
 
     #[test]
@@ -1318,6 +1335,7 @@ mod tests {
                 id: "counter-1".to_string(),
                 torrents: vec![torrent("hash-a"), torrent("hash-b")],
                 peers,
+                unbanned: std::sync::Mutex::new(Vec::new()),
             }),
             increment_ban: true,
         });
@@ -1327,6 +1345,7 @@ mod tests {
                 id: "counter-2".to_string(),
                 torrents: Vec::new(),
                 peers: HashMap::new(),
+                unbanned: std::sync::Mutex::new(Vec::new()),
             }),
             increment_ban: true,
         });
@@ -1458,6 +1477,40 @@ mod tests {
         *mock.result.lock().unwrap() = LoginResult::success("OK", "5.0.0");
         gate.login(&dl, now).await.unwrap();
         assert_eq!(gate.attempts(), 0, "登录成功应清零失败计数");
+    }
+
+    /// 上游 `BitComet.setBanList`：`removed` 非空时**先按 peer 解封**，再整份替换。
+    /// 此前本移植从不调用解封端点（`unban_peers` 是死代码）。
+    #[tokio::test]
+    async fn apply_bans_unbans_removed_peers_before_replacing() {
+        let engine = engine(Arc::new(Database::open_in_memory().unwrap()));
+        let mock = Arc::new(CounterMock {
+            id: "bitcomet".into(),
+            torrents: Vec::new(),
+            peers: HashMap::new(),
+            unbanned: std::sync::Mutex::new(Vec::new()),
+        });
+        let entry = DownloaderEntry {
+            downloader: mock.clone(),
+            increment_ban: true,
+        };
+        let removed = vec![
+            pbh_core::banlist::BannedRecord::minimal("1.2.3.4", 0, "m", false),
+            pbh_core::banlist::BannedRecord::minimal("5.6.7.8", 0, "m", false),
+        ];
+        engine.apply_bans(&entry, &[], &removed, false, 0).await;
+        assert_eq!(
+            mock.unbanned.lock().unwrap().clone(),
+            vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()],
+            "应按 removed 的地址调用 unban_peers"
+        );
+
+        mock.unbanned.lock().unwrap().clear();
+        engine.apply_bans(&entry, &[], &[], true, 0).await;
+        assert!(
+            mock.unbanned.lock().unwrap().is_empty(),
+            "removed 为空时不该调用 unban_peers"
+        );
     }
 
     fn engine(db: Arc<Database>) -> WaveEngine {

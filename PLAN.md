@@ -198,13 +198,14 @@
    `expireAfterAccess=180s`（`ProgressCheatBlocker.java:56-73`），活跃 swarm 每 2 分钟被
    访问一次实际不会淘汰；本移植常驻。注意**不能**改成「解封时连内存一起删」——
    10.9 天对跑已证明那会造成 46 行误封（docs/TESTING.md pending-5、`progress_cheat.rs:335` 注释）。
-8. **下载器能力缺口（中）**：① BitComet 的解封路径未接（上游 `BitComet.java:554-556`
-   在 `removed` 非空时 `unban_peers`），根因是 `Downloader` trait 无解封入口，wave 只做整份
-   replace；② `getBTProtocolPort/setBTProtocolPort` 全缺但仍声明
+8. **下载器能力缺口（中）**：~~① BitComet 解封路径~~ 已修复（trait 新增
+   `unban_peers`，wave 在 `removed` 非空时先解封再整份替换，对齐 `BitComet.java:554-556`）；
+   ~~④ Deluge 每个 RPC 前重复 `auth.login`~~ 已修复（会话由 `login()` 建立，
+   RPC 只在「Not authenticated」时重登重试一次）。
+   仍缺：② `getBTProtocolPort/setBTProtocolPort` 全缺但仍声明
    `LIVE_UPDATE_BT_PROTOCOL_PORT`（上游 `BTStunInstance.java:119-121` 会改监听端口）；
    ③ `/api/utilities/replaceTracker` 整套缺失（需 trait 增 `getTrackers`/`setTrackers`/
-   `getAllTorrents`）；④ Deluge 每个 RPC 前都重新 `auth.login`（上游登录一次复用会话
-   `Deluge.java:118`）⇒ 每轮请求翻倍。
+   `getAllTorrents`）。
 9. **增量封禁 `raw_ip` 口径（中，待逐类型复核）**：review 认为上游非 qB 下载器交给
    qB `banPeers` 的是裸 IP（`TRPeer.java:20`、`Deluge.java:143`、`BiglyBT.java:394`、
    `BitComet.java:101`），本移植多类型拼 `ip:port`（`transmission/mod.rs:278`、

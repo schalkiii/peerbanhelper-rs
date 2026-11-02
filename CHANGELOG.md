@@ -14,6 +14,15 @@
   IP 黑白名单、订阅规则列表、PCB 前缀键、BTN 规则、自动范围封禁都改用该入口，
   不再「解析失败即 pass」；配置文件里的地址解析仍保持严格（坏配置忽略）。
 
+### fix(downloader): BitComet 解封路径接上、Deluge 会话复用
+
+- `Downloader` trait 新增 `unban_peers`（默认空操作）；wave 在 `removed` 非空时
+  **先按 peer 解封，再整份替换**（对齐上游 `BitComet.setBanList`，`BitComet.java:554-556`）。
+  此前 `BitCometDownloader::unban_peers` 是死代码，被封禁后断开连接的 peer 永远不解封。
+- Deluge：`auth.login` 只在 `login()`（每轮一次）里发，其余 RPC 复用 cookie 会话；
+  会话中途失效（`Not authenticated`）时重新登录并重试一次。此前每个 RPC 前都重发登录，
+  每轮请求量翻倍。
+
 ### fix(config): 支持上游 v9.5.3 的顶层 `auto-stun:` / `stun:` 段
 
 - 上游把 AutoSTUN 设置放在**顶层**（`auto-stun.enabled/downloaders`、

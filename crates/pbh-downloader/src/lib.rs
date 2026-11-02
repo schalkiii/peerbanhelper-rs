@@ -160,6 +160,15 @@ pub trait Downloader: Send + Sync {
     ) -> BoxFuture<'a, anyhow::Result<Vec<PeerData>>>;
     fn ban_peers<'a>(&'a self, peers: &'a [BanEntry]) -> BoxFuture<'a, anyhow::Result<()>>;
     fn replace_banned_ips<'a>(&'a self, ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>>;
+
+    /// 按 peer 解封（上游 `Downloader.unbanPeers`）。
+    ///
+    /// 目前只有 BitComet 实现了这个端点（上游 `BitComet.setBanList` 在 `removed` 非空时
+    /// 先调 `unbanPeers` 再整份替换）；其它适配器依赖 [`Self::replace_banned_ips`]
+    /// 的整份列表替换，默认实现为空操作。
+    fn unban_peers<'a>(&'a self, _ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>>;
 
     /// 同一轮 wave 内并发拉取 peers 的槽位数。
