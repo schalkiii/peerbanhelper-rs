@@ -215,6 +215,7 @@ mod tests {
             port,
             raw_ip: format!("{ip}:{port}"),
             connection: None,
+            handshaking: None,
         }
     }
 

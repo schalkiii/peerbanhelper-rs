@@ -191,6 +191,12 @@ pub struct PeerData {
     pub port: u16,
     pub raw_ip: String,
     pub connection: Option<String>,
+    /// 下载器上报的「握手中」位。
+    ///
+    /// `None` = 该适配器不上报，按速率推导（与上游其它适配器一致）；
+    /// Aria2Next 会透传（上游 `A2Peer.isHandshaking()` 直接返回该字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handshaking: Option<bool>,
 }
 
 impl PeerData {
@@ -205,7 +211,9 @@ impl PeerData {
     }
     /// 握手中：up_speed<=0 && dl_speed<=0（SPEC 2.3 [GOLDEN]）
     pub fn is_handshaking(&self) -> bool {
-        self.up_speed <= 0 && self.dl_speed <= 0
+        // Aria2Next 透传下载器上报值（上游直接返回该字段）；其余适配器按速率推导
+        self.handshaking
+            .unwrap_or(self.up_speed <= 0 && self.dl_speed <= 0)
     }
     /// 我们是否正在向该 peer 上传（PCB 判定前置条件）
     pub fn is_uploading_to_peer(&self) -> bool {

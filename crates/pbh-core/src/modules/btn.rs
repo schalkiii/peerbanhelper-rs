@@ -1186,6 +1186,7 @@ mod tests {
             port,
             raw_ip: format!("{ip}:{port}"),
             connection: Some("uTP".to_string()),
+            handshaking: None,
         }
     }
 

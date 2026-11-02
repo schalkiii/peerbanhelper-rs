@@ -1572,6 +1572,7 @@ module:
             port: 6881,
             raw_ip: "1.2.3.4:6881".into(),
             connection: Some("uTP".into()),
+            handshaking: None,
         };
         let ctx = crate::module::CheckContext {
             now_ms: 0,

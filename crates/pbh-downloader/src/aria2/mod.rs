@@ -372,6 +372,8 @@ impl Aria2Downloader {
             raw_ip,
             // 上游 `A2Peer` 无连接类型字段
             connection: None,
+            // 上游 `A2Peer.isHandshaking()` 直接返回下载器上报的 `handshaking`
+            handshaking: Some(peer.handshaking),
         }
     }
 
@@ -1351,6 +1353,36 @@ mod tests {
         assert_eq!(
             mock.methods(),
             vec![M_GET_GLOBAL_OPTION, M_CHANGE_GLOBAL_OPTION]
+        );
+    }
+
+    /// 上游 `A2Peer.isHandshaking()` 直接返回下载器上报的 `handshaking` 位（不看速率）：
+    /// 零速但对端已握手的 peer 应继续参与判定；本移植此前一律按速率推导。
+    #[tokio::test]
+    async fn peer_handshaking_comes_from_downloader_flag() {
+        let mock = Aria2Mock::new();
+        *mock.peers.lock().unwrap() = (
+            200,
+            ok(r#"[
+              { "ip": "1.1.1.1", "port": "1000", "handshaking": "true",
+                "downloadSpeed": "100", "uploadSpeed": "100", "progress": "0.5" },
+              { "ip": "2.2.2.2", "port": "2000", "handshaking": "false",
+                "downloadSpeed": "0", "uploadSpeed": "0", "progress": "0.5" }
+            ]"#),
+        );
+        let dl = downloader(mock.clone());
+        let torrents = dl.fetch_torrents().await.unwrap();
+        let torrent = torrent_by_hash(&torrents, "1111111111111111111111111111111111111111");
+        let peers = dl.fetch_peers(torrent).await.unwrap();
+        let by_ip: std::collections::HashMap<&str, &PeerData> =
+            peers.iter().map(|p| (p.ip.as_str(), p)).collect();
+        assert!(
+            by_ip["1.1.1.1"].is_handshaking(),
+            "下载器上报 handshaking=true 时必须视为握手中"
+        );
+        assert!(
+            !by_ip["2.2.2.2"].is_handshaking(),
+            "下载器上报 false 时零速也不算握手中"
         );
     }
 

@@ -105,6 +105,7 @@ mod tests {
             port: 1,
             raw_ip: format!("{ip}:1"),
             connection: None,
+            handshaking: None,
         }
     }
 

@@ -279,6 +279,7 @@ impl TransmissionDownloader {
                     // 上游 `TRPeer`：rawIp 是**裸 IP**（`new PeerAddress(addr, port, addr)`）
                     raw_ip: p.address.clone(),
                     connection: None,
+                    handshaking: None,
                 }
             })
             .collect()

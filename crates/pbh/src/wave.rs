@@ -1329,6 +1329,7 @@ mod tests {
             port: 6881,
             raw_ip: "198.51.100.7:6881".to_string(),
             connection: None,
+            handshaking: None,
         };
         let mut peers = HashMap::new();
         peers.insert("hash-a".to_string(), vec![peer]);

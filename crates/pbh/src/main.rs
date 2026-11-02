@@ -980,6 +980,7 @@ mod tests {
             port: 51413,
             raw_ip: "1.2.3.4:51413".to_string(),
             connection: Some("uTP".to_string()),
+            handshaking: None,
         }
     }
 

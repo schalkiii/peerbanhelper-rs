@@ -1241,6 +1241,7 @@ module:
             port: 6881,
             raw_ip: "1.2.3.4".into(),
             connection: None,
+            handshaking: None,
         };
         let ctx = CheckContext::default();
         let decision = |pipeline: &Pipeline, client: &str| {

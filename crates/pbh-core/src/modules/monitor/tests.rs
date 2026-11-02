@@ -34,6 +34,7 @@ fn peer(ip: &str, port: u16, flags: &str) -> PeerData {
         port,
         raw_ip: format!("{ip}:{port}"),
         connection: Some("uTP".to_string()),
+        handshaking: None,
     }
 }
 

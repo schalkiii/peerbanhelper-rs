@@ -43,6 +43,7 @@ fn peer(client_name: Option<&str>, peer_id: Option<&str>, ip: &str) -> PeerData 
         port: 6881,
         raw_ip: format!("{ip}:6881"),
         connection: None,
+        handshaking: None,
     }
 }
 

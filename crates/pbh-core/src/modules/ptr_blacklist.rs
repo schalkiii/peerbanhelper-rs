@@ -614,6 +614,7 @@ mod tests {
             port: 51413,
             raw_ip: format!("{ip}:51413"),
             connection: None,
+            handshaking: None,
         }
     }
 

@@ -175,12 +175,9 @@
    （未启用 ⇒ REQUIRE_TAKE_ACTIONS，成功结果缓存）、增量走 `/transfer/shadowbanPeers`、
    全量写 `shadow_banned_IPs`、`shadowbanned=true` 的 peer 按不存在处理；
    `use-shadow-ban` 支持 YAML/界面 camelCase 往返。
-2. **Aria2Next 的「握手中」口径（高，逐 peer 结果不同）**：上游读下载器上报的
-   `handshaking` 字段（`aria2next/bean/A2Peer.java:97-99`），本移植按速率推导
-   （`crates/pbh-core/src/model.rs:207-209`）。该闸门控制 PCB / PeerId / ClientName /
-   MultiDialing / BTN-legacy：零速但已握手的 peer 上游继续判定、本移植跳过。
-   修法：`PeerData` 增 `is_handshaking: Option<bool>` 覆盖位（约 50 处构造点需补默认值），
-   aria2 适配器填下载器值；生产已在使用 Aria2Next，优先级最高。
+2. ~~**Aria2Next 的「握手中」口径**~~ —— 已修复：`PeerData` 增加 `handshaking: Option<bool>`
+   覆盖位，Aria2Next 透传下载器上报值（上游 `A2Peer.isHandshaking()` 直接返回该字段），
+   其余适配器保持速率推导；补了「true+有速 / false+零速」两个方向的用例。
 3. ~~**规则流水线不热重载**~~ —— 已修复：`SharedPipeline`（`RwLock<Arc<Pipeline>>`）按
    轮/按请求取快照；`POST /api/general/reload` 与配置保存都会从磁盘重读配置并重建流水线。
    重建时沿用同一个 `ban_list` Arc、PCB 先 flush 再 `load_persisted`、BTN 网络对象不重建

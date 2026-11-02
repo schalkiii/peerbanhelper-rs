@@ -27,6 +27,7 @@ fn peer(
         port,
         raw_ip: format!("{ip}:{port}"),
         connection: Some("uTP".into()),
+        handshaking: None,
     }
 }
 

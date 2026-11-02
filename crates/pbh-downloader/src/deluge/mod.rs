@@ -252,6 +252,7 @@ impl DelugeDownloader {
                 raw_ip: raw_ip.clone(),
                 // Deluge 无连接类型概念
                 connection: None,
+                handshaking: None,
             });
         }
         out

@@ -311,6 +311,7 @@ mod tests {
             port: 6881,
             raw_ip: "1.2.3.4:6881".into(),
             connection: None,
+            handshaking: None,
         }
     }
 

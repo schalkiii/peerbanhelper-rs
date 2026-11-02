@@ -508,6 +508,7 @@ impl Downloader for BiglyBtDownloader {
                     raw_ip: raw_ip.to_string(),
                     // 上游 `PeerImpl` 无连接类型字段
                     connection: None,
+                    handshaking: None,
                 });
             }
             Ok(out)

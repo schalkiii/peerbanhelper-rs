@@ -578,6 +578,7 @@ impl Downloader for QBittorrentDownloader {
                     port,
                     raw_ip: raw_ip.clone(),
                     connection: p.connection,
+                    handshaking: None,
                 });
             }
             Ok(out)

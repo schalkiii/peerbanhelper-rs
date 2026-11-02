@@ -26,6 +26,7 @@ fn sample_peer() -> PeerData {
         port: 12345,
         raw_ip: "1.2.3.4:12345".to_string(),
         connection: None,
+        handshaking: None,
     }
 }
 
