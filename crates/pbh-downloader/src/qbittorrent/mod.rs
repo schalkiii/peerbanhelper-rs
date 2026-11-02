@@ -195,26 +195,48 @@ impl QBittorrentDownloader {
         Ok(!info.libtorrent.as_deref().unwrap_or("").is_empty())
     }
 
-    /// 登录成功后的收尾：版本校验 + 首次健康时关闭「同 IP 多连接」。
-    async fn finish_login(&self) -> anyhow::Result<LoginResult> {
-        // 上游 `getDownloaderVersion()` 在 `login0` 的 try 内（异常 → EXCEPTION，不进入冷却）
-        let version_resp = match self.get("/app/version").await {
-            Ok(v) => v,
-            Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
-        };
-        // 上游 `getDownloaderVersion()` 在 `!response.isSuccessful()` 时抛
-        // `IllegalStateException`（`login0` 的 catch → EXCEPTION，不进入冷却）；
-        // 缺了这一步，403/404 或反代返回的 HTML 会被当成版本串解析。
-        if !(200..300).contains(&version_resp.status) {
-            return Ok(LoginResult::exception(format!(
+    /// 上游 `AbstractQbittorrent.updateAndApplyMetadataIfRequired()`：**只要当前状态不是
+    /// HEALTHY** 就重发 `setPreferences` 并刷新版本号（界面版本列与 `RANGE_BAN_IP` 能力位
+    /// 都依赖它）。上游在 `isLoggedIn()` 内部就会调用，所以「复用会话」这条路径同样会刷新。
+    ///
+    /// 传输失败或版本接口非 2xx 以 `Err` 返回（上游 `getDownloaderVersion()` 抛
+    /// `IllegalStateException` ⇒ `login0` 的 catch ⇒ EXCEPTION，不计入登录冷却）。
+    async fn refresh_metadata_if_required(&self) -> anyhow::Result<()> {
+        if self.healthy.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if self.config.disable_same_ip_multi_connection
+            && pbh_core::external_switch::boolean(
+                "pbh.downloader.qbittorrent.disableSameIpMultiConnection",
+                true,
+            )
+        {
+            let form = self.set_preferences(
+                serde_json::json!({ "enable_multi_connections_from_same_ip": false }),
+            );
+            self.post_form("/app/setPreferences", form).await?;
+        }
+        let resp = self.get("/app/version").await?;
+        if !(200..300).contains(&resp.status) {
+            anyhow::bail!(
                 "failed to fetch qBittorrent version: statusCode={}",
-                version_resp.status
-            )));
+                resp.status
+            );
         }
-        let version = version_resp.body.trim().trim_start_matches('v').to_string();
+        let version = resp.body.trim().trim_start_matches('v').to_string();
         if let Ok(mut last) = self.last_version.lock() {
-            *last = version.clone();
+            *last = version;
         }
+        self.healthy.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// 登录成功后的收尾：刷新元数据（状态非 HEALTHY 时）+ 版本门槛。
+    async fn finish_login(&self) -> anyhow::Result<LoginResult> {
+        if let Err(e) = self.refresh_metadata_if_required().await {
+            return Ok(LoginResult::exception(format!("{e:#}")));
+        }
+        let version = self.cached_version();
         // API Key 认证要求 qB >= 5.2.0；口令认证要求 >= 4.5.0
         let (min_major, min_minor, min_patch) = if self
             .config
@@ -240,30 +262,10 @@ impl QBittorrentDownloader {
             ));
         }
 
-        let first_healthy = !self.healthy.swap(true, Ordering::SeqCst);
-        if first_healthy
-            && self.config.disable_same_ip_multi_connection
-            && pbh_core::external_switch::boolean(
-                "pbh.downloader.qbittorrent.disableSameIpMultiConnection",
-                true,
-            )
-        {
-            let form = self.set_preferences(
-                serde_json::json!({ "enable_multi_connections_from_same_ip": false }),
-            );
-            // 上游在 `login0` 的 try 内调用（异常 → EXCEPTION，不进入冷却）
-            if let Err(e) = self.post_form("/app/setPreferences", form).await {
-                return Ok(LoginResult::exception(format!("{e:#}")));
-            }
-        }
-
         Ok(LoginResult::success("OK", version))
     }
 
-    /// 上一次真正登录时取到的版本号。
-    ///
-    /// 对齐上游 `lastSemver` 的滞后感：复用会话时不重新取版本，因此 `RANGE_BAN_IP`
-    /// 能力位也只在真正登录之后才更新。
+    /// 最近一次刷新到的版本号（对齐上游 `lastSemver`：不每轮重取，有滞后）。
     fn cached_version(&self) -> String {
         self.last_version
             .lock()
@@ -338,10 +340,14 @@ impl Downloader for QBittorrentDownloader {
 
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
-            // 上游 `login0` 开头：`if (isLoggedIn()) return SUCCESS`（重用 Session 会话）。
-            // 复用分支**不做**版本门槛、也不重发 setPreferences——把版本校验放在这里会让
-            // 老版本 qB 每轮都拿到 REQUIRE_TAKE_ACTIONS，整轮不下发封禁（2026-11-02 review）。
+            // 上游 `login0` 开头：`if (isLoggedIn()) return SUCCESS`（重用 Session 会话）——
+            // 复用分支**不做版本门槛**（老版本 qB 否则会每轮 REQUIRE_TAKE_ACTIONS、
+            // 整轮不下发封禁）。但上游 `isLoggedIn()` 内部会调用
+            // `updateAndApplyMetadataIfRequired()`，所以偏好与版本仍按状态刷新。
             if self.session_valid().await.unwrap_or(false) {
+                if let Err(e) = self.refresh_metadata_if_required().await {
+                    return Ok(LoginResult::exception(format!("{e:#}")));
+                }
                 return Ok(LoginResult::success("OK", self.cached_version()));
             }
             // API Key 无效时不再尝试表单登录（上游直接返回凭据错误）
@@ -1008,24 +1014,44 @@ mod tests {
         }
     }
 
-    /// 会话有效时复用 Cookie：上游 `login0` 第一行直接 SUCCESS——不查版本、不下发偏好、
-    /// 不 `/auth/login`（版本与 `RANGE_BAN_IP` 能力位因此只在真正登录后更新，与上游 `lastSemver` 一致）。
+    /// 会话有效 ⇒ 直接 SUCCESS：**不做版本门槛**（老版本 qB 也必须继续下发封禁）、
+    /// 不 `/auth/login`；但按上游 `isLoggedIn()` 的副作用刷新偏好与版本，
+    /// 已经 HEALTHY 之后不再重复刷新。
     #[tokio::test]
-    async fn login_reuses_existing_session_and_skips_form_login() {
+    async fn login_reuses_session_without_version_gate() {
         let mock = QbMock::new();
+        *mock.version.lock().unwrap() = (200, "v4.4.9".into());
         let dl = mock_downloader(mock.clone());
         let result = dl.login().await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.version, "", "复用会话不取版本（对齐上游提前返回）");
-        let urls: Vec<String> = mock.requests().iter().map(|r| r.url.clone()).collect();
+        assert!(result.success, "复用会话不应被版本门槛拦住");
+        assert_eq!(result.version, "4.4.9", "版本按上游副作用刷新");
+        let first: Vec<String> = mock.requests().iter().map(|r| r.url.clone()).collect();
         assert!(
-            !urls.iter().any(|u| u.ends_with("/app/version")),
-            "复用会话不应查版本：{urls:?}"
+            !first.iter().any(|u| u.ends_with("/auth/login")),
+            "会话有效不应表单登录：{first:?}"
         );
-        assert!(!urls.iter().any(|u| u.ends_with("/auth/login")));
         assert!(
-            !urls.iter().any(|u| u.ends_with("/app/setPreferences")),
-            "复用会话不应重发偏好：{urls:?}"
+            first.iter().any(|u| u.ends_with("/app/version")),
+            "非 HEALTHY 时应刷新版本：{first:?}"
+        );
+        assert!(
+            first.iter().any(|u| u.ends_with("/app/setPreferences")),
+            "非 HEALTHY 时应重发偏好：{first:?}"
+        );
+
+        let before = mock.requests().len();
+        assert!(dl.login().await.unwrap().success);
+        let later: Vec<String> = mock.requests()[before..]
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        assert!(
+            !later.iter().any(|u| u.ends_with("/app/version")),
+            "已 HEALTHY 不应重复取版本：{later:?}"
+        );
+        assert!(
+            !later.iter().any(|u| u.ends_with("/app/setPreferences")),
+            "已 HEALTHY 不应重复发偏好：{later:?}"
         );
     }
 

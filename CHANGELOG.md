@@ -3,6 +3,34 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.5（2026-11-02）
+
+> 承接 rs.4 的两处自纠（都由 rs.4 部署到生产后的实测暴露），另有一处测试稳定性加固。
+
+### fix(downloader): qBittorrent 复用会话时仍按状态刷新版本与偏好
+
+- rs.4 把「复用会话直接 SUCCESS」实现成了「什么都不做」，漏了上游 `isLoggedIn()` 内部会调用
+  `updateAndApplyMetadataIfRequired()`（`AbstractQbittorrent.java:241-243`、`252-256`）：
+  **只要状态不是 HEALTHY**，就重发 `setPreferences` 并刷新 `lastSemver`。
+- 生产实测到的后果：qBittorrent 开着「绕过本地认证」时 `buildInfo` 不带 cookie 也返回 200
+  ⇒ 永远走复用分支 ⇒ 下载器版本列变空、`RANGE_BAN_IP` 能力位不再声明，
+  自动范围封禁退化成单 IP 封禁。
+- 现在：复用分支依旧**不做版本门槛**（rs.4 修的那条老版本 qB 整轮不下发的问题不回退），
+  但会按状态刷新偏好与版本；已经 HEALTHY 之后不再重复刷新。
+- 测试改成三条断言：会话有效 + 版本 4.4.9 ⇒ 仍 SUCCESS 且版本记为 `4.4.9`；
+  首轮发了 `setPreferences`/`app/version`；第二轮（已 HEALTHY）两者都不再发。
+
+### fix(config): 默认规则补齐的「已见过」集合必须落盘
+
+- rs.4 只在**真的追加了规则**时才写配置，于是「本次没有缺失项」的启动不会把指纹写回 ⇒
+  下次启动仍按第一次见到处理，用户删掉的默认规则会被复活（正好是这个特性要避免的行为）。
+- 改为「指纹集合有增长就写盘」。
+
+### test: 放宽 STUN 探测用例的事务超时
+
+- `FAST_TIMEOUT` 30ms → 250ms：整套测试并发跑时环回 UDP 往返偶尔超过几十毫秒，
+  `auto_stun_probe` 的几个用例会偶发退化成 `Unknown` 而假失败（单跑稳定、全量并发跑才复现）。
+
 ## 9.5.3-rs.4（2026-11-02）
 
 > 对 Java v9.5.3 做全量 review 后的补齐：新增默认规则自动补齐迁移，修复 14 组

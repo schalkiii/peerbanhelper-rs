@@ -99,6 +99,12 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 
 ## 当前状态（2026-11-02）
 
+- **9.5.3-rs.5（2026-11-02；rs.4 的两处自纠）**：qBittorrent 复用会话时**仍要**按
+  `lastStatus != HEALTHY` 刷新 `setPreferences` 与版本（上游在 `isLoggedIn()` 内部调用
+  `updateAndApplyMetadataIfRequired`；漏掉会让「绕过本地认证」的 qB 版本列变空、
+  `RANGE_BAN_IP` 不再声明 ⇒ 范围封禁退化）；默认规则补齐的指纹集合改为「有增长就落盘」，
+  否则下次启动会把用户删除过的规则再补回来。STUN 探测用例的 `FAST_TIMEOUT` 30→250ms
+  （全量并发跑时环回 UDP 偶发超时导致假失败）。工作区 707 通过（另 1 ignore）、clippy 零警告。
 - **9.5.3-rs.4（2026-11-02；全量 review 补齐，已部署生产）**：新增**默认规则补齐迁移**
   （`rule_backfill` + `profile.default-rules-seen`，等价上游 `config-version`+`ProfileUpdateScript`，
   只补一次、不复活用户删除项）；修复 14 组不一致：push 渠道缺 `config` 子对象（保存写空）、

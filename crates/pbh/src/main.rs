@@ -119,8 +119,11 @@ async fn main() -> anyhow::Result<()> {
     // 默认规则补齐（对齐上游 `ProfileUpdateScript` 的意图）：随程序版本新增的默认
     // 客户端名 / Peer ID 规则也要落到从旧版本或 Java 版带过来的配置里，只补一次，
     // 用户之后删掉的不会被复活。必须在构建流水线之前完成。
+    let seen_before = cfg.profile.default_rules_seen.len();
     let backfilled = pbh_core::rule_backfill::apply_missing_defaults(&mut cfg.profile);
-    if !backfilled.is_empty() {
+    // 只要「已见过」集合有增长就要落盘：否则下次启动又把它当第一次见到，
+    // 用户删掉的默认规则会被再次补回来
+    if !backfilled.is_empty() || cfg.profile.default_rules_seen.len() != seen_before {
         if let Err(e) = cfg.save_to(&cfg_path) {
             warn!("默认规则补齐后写回配置失败（本次仍按补齐后的内存配置运行）: {e}");
         }

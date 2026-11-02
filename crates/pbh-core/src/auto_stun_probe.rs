@@ -580,7 +580,9 @@ mod tests {
     use std::sync::Mutex;
 
     /// 调短超时（默认常量必须仍是上游值，见 `default_constants_match_upstream`）。
-    const FAST_TIMEOUT: Duration = Duration::from_millis(30);
+    /// 单次事务超时。不能取得太小：整个测试套件的线程并发跑，环回 UDP 往返偶尔会超过
+    /// 几十毫秒，30ms 会让 `open_internet_*` 这类用例偶发退化成 `Unknown`（假失败）。
+    const FAST_TIMEOUT: Duration = Duration::from_millis(250);
 
     fn fast_client() -> UdpStunClient {
         UdpStunClient::with_tuning(FAST_TIMEOUT, 1).expect("绑定 UDP socket")
