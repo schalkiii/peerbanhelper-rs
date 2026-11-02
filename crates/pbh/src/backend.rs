@@ -9,7 +9,6 @@ use crate::push::{AlertLevel, AlertManager, PushManager};
 use crate::wave::DownloaderEntry;
 
 use pbh_core::config::ProfileConfig;
-use pbh_core::pipeline::Pipeline;
 use pbh_core::remap::RemapConfig;
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
 use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
@@ -54,7 +53,7 @@ pub struct PbhBackend {
     config: StdMutex<AppConfig>,
     remap: Arc<RemapConfig>,
     blocklist_url: String,
-    pipeline: Arc<Pipeline>,
+    pipeline: pbh_core::pipeline::SharedPipeline,
     entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
     statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
     alert_manager: Arc<AlertManager>,
@@ -80,7 +79,7 @@ impl PbhBackend {
         config: AppConfig,
         remap: Arc<RemapConfig>,
         blocklist_url: String,
-        pipeline: Arc<Pipeline>,
+        pipeline: pbh_core::pipeline::SharedPipeline,
         entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
         statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
         alert_manager: Arc<AlertManager>,
@@ -231,8 +230,8 @@ impl WebBackend for PbhBackend {
     }
 
     fn modules(&self) -> Vec<ModuleRecord> {
-        let mut out: Vec<ModuleRecord> = self
-            .pipeline
+        let snapshot = self.pipeline.load();
+        let mut out: Vec<ModuleRecord> = snapshot
             .modules
             .iter()
             .map(|m| ModuleRecord {
@@ -371,11 +370,8 @@ impl WebBackend for PbhBackend {
     fn ban_peers(&self, ips: &[String]) -> Result<(), String> {
         // 只改内存封禁表（对齐上游 `scheduleBanPeerNoAssign`）：持久化由 ban wave 的
         // 定时全量 `saveBanList` 完成（`WaveEngine::persist_ban_list`）。
-        let mut list = self
-            .pipeline
-            .ban_list
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let ban_list = self.pipeline.ban_list();
+        let mut list = ban_list.lock().unwrap_or_else(|e| e.into_inner());
         for ip in ips {
             list.add(ip, 0, MANUAL_MODULE, false);
         }
@@ -386,11 +382,8 @@ impl WebBackend for PbhBackend {
     }
 
     fn unban_peers(&self, ips: &[String]) -> Result<usize, String> {
-        let mut list = self
-            .pipeline
-            .ban_list
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let ban_list = self.pipeline.ban_list();
+        let mut list = ban_list.lock().unwrap_or_else(|e| e.into_inner());
         // 返回实际解封条数（上游 `Map.of("count", pendingRemovals.size())`）
         let removed = if ips.iter().any(|ip| ip == "*") {
             // 对齐上游 DELETE /api/bans 的 `*` 清空语义

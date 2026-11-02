@@ -19,7 +19,6 @@ use pbh_core::model::{PeerData, TorrentData};
 use pbh_core::module::{CheckContext, CheckResult};
 use pbh_core::modules::{IdleConnectionDosProtection, ProgressCheatBlocker};
 use pbh_core::pipeline::Decision;
-use pbh_core::Pipeline;
 use pbh_db::{peer_geoip_json, Database, HistoryRecord};
 use pbh_downloader::{BanEntry, Downloader, LoginResult, LoginStatus};
 use pbh_web::{DownloaderStatus, Metrics};
@@ -215,7 +214,7 @@ struct BanRecord {
 pub struct WaveEngine {
     /// 下载器列表由 Web 后端热管理（`/api/downloaders` 增删改），与引擎共享同一份实例。
     pub entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
-    pub pipeline: Arc<Pipeline>,
+    pub pipeline: pbh_core::pipeline::SharedPipeline,
     pub db: Arc<Database>,
     pub metrics: Arc<StdMutex<Metrics>>,
     pub statuses: Arc<StdMutex<Vec<DownloaderStatus>>>,
@@ -253,8 +252,10 @@ pub struct WaveEngine {
 
 impl WaveEngine {
     /// 内存封禁表（由 `Pipeline` 持有，供 `auto-range-ban` 读取）。
-    fn ban_list(&self) -> &Arc<StdMutex<BanList>> {
-        &self.pipeline.ban_list
+    ///
+    /// 流水线可热替换，但 `ban_list` 的 Arc 由新旧流水线共享，取快照不会丢状态。
+    fn ban_list(&self) -> Arc<StdMutex<BanList>> {
+        self.pipeline.ban_list()
     }
 
     /// 执行一轮 ban wave。
@@ -393,9 +394,8 @@ impl WaveEngine {
 
     /// 把本轮变更过的 PCB 实体写回数据库。
     fn persist_pcb_state(&self) {
-        let Some(pcb) = self
-            .pipeline
-            .module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
+        let snapshot = self.pipeline.load();
+        let Some(pcb) = snapshot.module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
         else {
             return;
         };
@@ -439,28 +439,31 @@ impl WaveEngine {
         if removed.is_empty() {
             return;
         }
-        let Some(pcb) = self.pcb_module() else {
-            return;
-        };
-        for record in removed {
-            let torrent_id = record.metadata.torrent.hash.clone();
-            if torrent_id.is_empty() {
-                continue;
+        self.with_pcb_module(|pcb| {
+            for record in removed {
+                let torrent_id = record.metadata.torrent.hash.clone();
+                if torrent_id.is_empty() {
+                    continue;
+                }
+                pcb.on_unban(&record.metadata.downloader.id, &torrent_id, &record.ip);
+                if let Err(e) =
+                    self.db
+                        .delete_pcb_addr(&record.metadata.downloader.id, &torrent_id, &record.ip)
+                {
+                    warn!("删除 PCB 历史失败 ({}): {e}", record.ip);
+                }
             }
-            pcb.on_unban(&record.metadata.downloader.id, &torrent_id, &record.ip);
-            if let Err(e) =
-                self.db
-                    .delete_pcb_addr(&record.metadata.downloader.id, &torrent_id, &record.ip)
-            {
-                warn!("删除 PCB 历史失败 ({}): {e}", record.ip);
-            }
-        }
+        });
     }
 
-    /// 取回 PCB 模块（供启动时恢复历史与定期清理）。
-    pub fn pcb_module(&self) -> Option<&ProgressCheatBlocker> {
-        self.pipeline
+    /// 在流水线快照上操作 PCB 模块（启动恢复 / 定期清理 / 解封回调）。
+    ///
+    /// 流水线可热替换，不能把模块引用带出快照的生命周期，所以用闭包形式。
+    pub fn with_pcb_module<R>(&self, f: impl FnOnce(&ProgressCheatBlocker) -> R) -> Option<R> {
+        let snapshot = self.pipeline.load();
+        snapshot
             .module_as::<ProgressCheatBlocker>("progress-cheat-blocker")
+            .map(f)
     }
 
     /// 解封到期条目（内存封禁表为准；持久化由 [`WaveEngine::persist_ban_list`] 定时全量保存）。
@@ -872,7 +875,7 @@ impl WaveEngine {
         for torrent in torrents {
             let dl = dl.clone();
             let permit_sem = sem.clone();
-            let pipeline = self.pipeline.clone();
+            let pipeline = self.pipeline.load();
             let features = features.clone();
             let alert_manager = self.alert_manager.clone();
             let monitor = self.monitor.clone();
@@ -1529,7 +1532,7 @@ mod tests {
         ));
         WaveEngine {
             entries: Arc::new(StdMutex::new(Vec::new())),
-            pipeline: Arc::new(Pipeline::default()),
+            pipeline: pbh_core::pipeline::SharedPipeline::new(pbh_core::pipeline::Pipeline::default()),
             db,
             metrics: Arc::new(StdMutex::new(Metrics::default())),
             statuses: Arc::new(StdMutex::new(Vec::new())),

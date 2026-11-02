@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use pbh_core::config::{IpRuleListConfig, IpRuleSubscriptionConfig};
-use pbh_core::pipeline::Pipeline;
 use pbh_db::Database;
 use pbh_web::SubModule;
 use serde_json::{json, Value};
@@ -19,7 +18,7 @@ use crate::rulesub::{refresh_all, UPDATE_TYPE_MANUAL};
 
 /// 规则订阅 Web 后端。
 pub struct RuleSubBackend {
-    pipeline: Arc<Pipeline>,
+    pipeline: pbh_core::pipeline::SharedPipeline,
     db: Arc<Database>,
     data_dir: PathBuf,
     http: Arc<reqwest::Client>,
@@ -31,7 +30,7 @@ pub struct RuleSubBackend {
 
 impl RuleSubBackend {
     pub fn new(
-        pipeline: Arc<Pipeline>,
+        pipeline: pbh_core::pipeline::SharedPipeline,
         db: Arc<Database>,
         data_dir: PathBuf,
         http: Arc<reqwest::Client>,
@@ -70,7 +69,7 @@ impl RuleSubBackend {
             }
             cfg
         };
-        let pipeline = self.pipeline.clone();
+        let pipeline = self.pipeline.load();
         let data_dir = self.data_dir.clone();
         let http = self.http.clone();
         let db = self.db.clone();
@@ -95,8 +94,8 @@ impl RuleSubBackend {
 impl SubModule for RuleSubBackend {
     fn list_rules(&self) -> Vec<Value> {
         let rules = self.rules.read().unwrap();
-        let counts: std::collections::HashMap<String, usize> = self
-            .pipeline
+        let pipeline = self.pipeline.load();
+        let counts: std::collections::HashMap<String, usize> = pipeline
             .module_as::<pbh_core::modules::ip_rule_list::IpRuleListModule>(
                 crate::rulesub::MODULE_NAME,
             )
@@ -179,8 +178,8 @@ impl SubModule for RuleSubBackend {
             }
             self.save(&rules)?;
         }
-        if let Some(module) = self
-            .pipeline
+        let pipeline = self.pipeline.load();
+        if let Some(module) = pipeline
             .module_as::<pbh_core::modules::ip_rule_list::IpRuleListModule>(
                 crate::rulesub::MODULE_NAME,
             )

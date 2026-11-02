@@ -20,7 +20,6 @@ use pbh_core::config::IpRuleListConfig;
 use pbh_core::geoip::{geoip_force_disabled, GeoIpDb, GeoIpProvider};
 use pbh_core::modules::progress_cheat::PcbEntityKind;
 use pbh_core::modules::{BtnNetworkOnline, MonitorSink, ProgressCheatBlocker};
-use pbh_core::Pipeline;
 use pbh_db::{Database, DbBtnSubmitSource, DbMetadataStore, DbMonitorSink};
 use pbh_downloader::http::ReqwestFetcher;
 use pbh_web::{build_router_with_cors, AppState, DownloaderStatus, Metrics, RingLog};
@@ -290,9 +289,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // 判定流水线：由 profile 段驱动（模块开关/ban-duration/规则集/bypass 地址/GeoIP 注入）
-    let pipeline = Arc::new(cfg.profile.build_pipeline_with_geo(geo.clone()));
+    let pipeline =
+        pbh_core::pipeline::SharedPipeline::new(cfg.profile.build_pipeline_with_geo(geo.clone()));
     {
-        let names: Vec<&str> = pipeline.modules.iter().map(|m| m.config_name()).collect();
+        let snapshot = pipeline.load();
+        let names: Vec<&str> = snapshot.modules.iter().map(|m| m.config_name()).collect();
         if names.is_empty() {
             warn!(
                 "没有任何规则模块被启用：请检查 config.yml 的 profile.module 段（与上游一致，\
@@ -335,7 +336,7 @@ async fn main() -> anyhow::Result<()> {
                     cfg.language.locale.clone(),
                 )),
                 live_peer_map.clone(),
-                pipeline.ban_list.clone(),
+                pipeline.ban_list(),
                 translator.clone(),
                 cfg.language.locale.clone(),
             ));
@@ -422,11 +423,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // PCB 历史恢复（对齐上游 `enable-persist` + `loadFromDatabase` 的落库分支）
-    if let Some(pcb) = pipeline.module_as::<ProgressCheatBlocker>("progress-cheat-blocker") {
-        let mut rows = db.load_pcb_rows(PcbEntityKind::Addr).unwrap_or_default();
-        rows.extend(db.load_pcb_rows(PcbEntityKind::Range).unwrap_or_default());
-        info!("已恢复 {} 条 PCB 记录", rows.len());
-        pcb.load_persisted(rows);
+    {
+        let snapshot = pipeline.load();
+        if let Some(pcb) = snapshot.module_as::<ProgressCheatBlocker>("progress-cheat-blocker") {
+            let mut rows = db.load_pcb_rows(PcbEntityKind::Addr).unwrap_or_default();
+            rows.extend(db.load_pcb_rows(PcbEntityKind::Range).unwrap_or_default());
+            info!("已恢复 {} 条 PCB 记录", rows.len());
+            pcb.load_persisted(rows);
+        }
     }
 
     // 内存封禁表：从数据库恢复未到期条目（对齐上游 loadBanListToMemory）。
@@ -456,7 +460,7 @@ async fn main() -> anyhow::Result<()> {
             });
         }
         info!("已从数据库恢复 {} 条封禁记录", records.len());
-        if let Ok(mut list) = pipeline.ban_list.lock() {
+        if let Ok(mut list) = pipeline.ban_list().lock() {
             let restored = records.len();
             list.load(records);
             if restored > 0 {
@@ -471,7 +475,7 @@ async fn main() -> anyhow::Result<()> {
     // 上游 `DownloaderServerImpl.load()` 末尾的 `unbanWhitelistedPeers()`：从 Java 版
     // 或旧配置带过来的持久化封禁里，落在 `ignore-peers-from-addresses` 段（LAN/CGNAT 等）
     // 的条目必须立即排期解封，否则重启后仍在持续下发给下载器。
-    let unbanned = pipeline.unban_whitelisted();
+    let unbanned = pipeline.load().unban_whitelisted();
     if !unbanned.is_empty() {
         info!(
             "启动解封：{} 条封禁落在 ignore-peers-from-addresses 内，已排期解封（示例 {}）",
@@ -537,7 +541,7 @@ async fn main() -> anyhow::Result<()> {
         started: Arc::new(std::time::Instant::now()),
         downloaders: statuses.clone(),
         static_dir: Arc::new(Mutex::new(Some(data_dir.join("static")))),
-        ban_list: pipeline.ban_list.clone(),
+        ban_list: pipeline.ban_list(),
         remap: remap.clone(),
         translator: translator.clone(),
         locale: cfg.language.locale.clone(),
@@ -626,8 +630,10 @@ async fn main() -> anyhow::Result<()> {
                 let cfg = rulesub_shared.read().unwrap().clone();
                 let interval = Duration::from_millis(cfg.check_interval_ms.max(60_000) as u64);
                 // 启动立即拉取一次（首次不等待 interval，对齐上游 initialDelay=0）
+                // 每轮取一次流水线快照：热重载后能跟上新模块
+                let snapshot = pipeline.load();
                 for line in rulesub::refresh_all(
-                    &pipeline,
+                    &snapshot,
                     &cfg,
                     &data_dir,
                     &http,
@@ -638,7 +644,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     info!("{line}");
                 }
-                rulesub::log_summary(&pipeline);
+                rulesub::log_summary(&snapshot);
                 tokio::time::sleep(interval).await;
             }
         });
@@ -782,9 +788,10 @@ async fn main() -> anyhow::Result<()> {
                 // PCB 过期清理（默认每 8 小时）
                 if std::time::Instant::now() >= next_pcb_cleanup {
                     debug!("PCB 8h 清理开始");
-                    if let Some(pcb) = engine.pcb_module() {
+                    if let Some((cutoff, evicted)) = engine.with_pcb_module(|pcb| {
                         let cutoff = now - pcb.config.persist_duration_ms;
-                        let evicted = pcb.cleanup_expired(cutoff);
+                        (cutoff, pcb.cleanup_expired(cutoff))
+                    }) {
                         match db.cleanup_pcb(cutoff) {
                             Ok(n) if n > 0 || evicted > 0 => {
                                 info!("清理过期 PCB 记录：数据库 {n} 条 / 内存 {evicted} 条");
@@ -851,7 +858,7 @@ const BTN_SYNC_TICK: Duration = Duration::from_secs(5);
 /// （对齐上游注入 `PBHPeerController` 的 `BtnNetwork` 单例）。
 fn spawn_btn_transport<F>(
     config: &BtnNetworkConfig,
-    pipeline: &Arc<Pipeline>,
+    pipeline: &pbh_core::pipeline::SharedPipeline,
     http_factory: F,
     metadata: Arc<dyn BtnMetadataStore>,
     submit_source: Arc<dyn BtnSubmitSource>,
@@ -865,7 +872,7 @@ where
     }
     // 上游 `BtnNetwork` 与判定模块是两个对象，但本移植的规则注入入口全部在模块上：
     // 流水线里没有 `btn` 模块就没有任何可落地的数据 ⇒ 视为未启用（直接返回 `None`）。
-    pipeline.module_as::<BtnNetworkOnline>("btn")?;
+    pipeline.load().module_as::<BtnNetworkOnline>("btn")?;
     let pipeline = pipeline.clone();
     let config_url = config.config_url.clone();
     let config = config.clone();
@@ -882,14 +889,16 @@ where
             // 允许列表更新后需要解封（上游 `DownloaderServer.getBanList()`）
             let network = Arc::new(
                 BtnNetwork::new(config, http, metadata)
-                    .with_ban_list(pipeline.ban_list.clone())
+                    .with_ban_list(pipeline.ban_list())
                     .with_submit_source(submit_source),
             );
             network_slot.set(network.clone());
             info!("BTN 传输层已启动：config-url={config_url}, tick={BTN_SYNC_TICK:?}");
             loop {
+                // 每轮取一次快照：热重载后 BTN 线程自动跟上新的 btn 模块
+                let snapshot = pipeline.load();
                 // 对齐上游 `scheduleWithFixedDelay(this::updateRule, 0, interval, MS)`：先跑再等
-                let Some(module) = pipeline.module_as::<BtnNetworkOnline>("btn") else {
+                let Some(module) = snapshot.module_as::<BtnNetworkOnline>("btn") else {
                     warn!("btn 模块已不在流水线中，BTN 同步线程退出");
                     return;
                 };
@@ -941,12 +950,12 @@ mod tests {
         }))
     }
 
-    fn btn_pipeline() -> Arc<Pipeline> {
-        let mut pipeline = Pipeline::default();
+    fn btn_pipeline() -> pbh_core::pipeline::SharedPipeline {
+        let mut pipeline = pbh_core::pipeline::Pipeline::default();
         pipeline.add_module(Box::new(BtnNetworkOnline::new(
             pbh_core::modules::btn::BTN_BAN_DURATION_MS,
         )));
-        Arc::new(pipeline)
+        pbh_core::pipeline::SharedPipeline::new(pipeline)
     }
 
     /// 测试用空数据源：trait 默认实现即「没有任何待提交数据」。
@@ -1027,7 +1036,8 @@ mod tests {
         }
         assert_eq!(calls.load(Ordering::Relaxed), 0, "未启用时一个请求都不能发");
 
-        let btn = pipeline
+        let snapshot = pipeline.load();
+        let btn = snapshot
             .module_as::<BtnNetworkOnline>("btn")
             .expect("btn 模块");
         assert!(!btn.is_manager_initialized());
@@ -1041,7 +1051,7 @@ mod tests {
     fn active_btn_without_module_spawns_nothing() {
         let calls = Arc::new(AtomicUsize::new(0));
         let http = counting_http(calls.clone());
-        let pipeline = Arc::new(Pipeline::default());
+        // 流水线里没有 btn 模块 ⇒ 不起线程（用空流水线构造快照）
         let config = BtnNetworkConfig {
             enabled: true,
             config_url: "https://btn.test/config".to_string(),
@@ -1049,7 +1059,7 @@ mod tests {
         };
         assert!(spawn_btn_transport(
             &config,
-            &pipeline,
+            &pbh_core::pipeline::SharedPipeline::new(pbh_core::pipeline::Pipeline::default()),
             move || Ok(http.clone()),
             Arc::new(InMemoryMetadataStore::new()),
             Arc::new(EmptySubmitSource),

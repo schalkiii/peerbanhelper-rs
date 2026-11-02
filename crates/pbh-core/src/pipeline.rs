@@ -5,7 +5,7 @@ use crate::i18n::TranslationComponent;
 use crate::iputil::IpSet;
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 
 pub struct Pipeline {
     pub modules: Vec<Box<dyn RuleModule>>,
@@ -28,6 +28,42 @@ impl Default for Pipeline {
     }
 }
 
+/// 可热替换的流水线句柄。
+///
+/// `POST /api/general/reload` 会按磁盘上的最新配置整体重建 [`Pipeline`] 并替换内部的
+/// `Arc`；所有持有者（wave / Web / BTN 线程）在各自入口 `load()` 一次快照，因此
+/// 同一轮内的模块集合保持稳定，下一轮即可看到新模块。
+///
+/// `ban_list` 由新旧流水线**共享同一个 Arc**：重建只换模块，封禁状态不丢。
+#[derive(Clone)]
+pub struct SharedPipeline(Arc<StdRwLock<Arc<Pipeline>>>);
+
+impl SharedPipeline {
+    pub fn new(pipeline: Pipeline) -> Self {
+        Self(Arc::new(StdRwLock::new(Arc::new(pipeline))))
+    }
+
+    /// 取当前快照（读多写少，`RwLock` 足够；调用方按轮/按请求持有）。
+    pub fn load(&self) -> Arc<Pipeline> {
+        self.0
+            .read()
+            .map(|guard| Arc::clone(&guard))
+            .unwrap_or_else(|poisoned| Arc::clone(&poisoned.into_inner()))
+    }
+
+    pub fn store(&self, pipeline: Arc<Pipeline>) {
+        match self.0.write() {
+            Ok(mut guard) => *guard = pipeline,
+            Err(poisoned) => *poisoned.into_inner() = pipeline,
+        }
+    }
+
+    /// 当前流水线持有的内存封禁表（重建时必须沿用它）。
+    pub fn ban_list(&self) -> Arc<StdMutex<crate::banlist::BanList>> {
+        self.load().ban_list.clone()
+    }
+}
+
 /// 对单个 peer 的最终决策
 #[derive(Clone, Debug)]
 pub enum Decision {
@@ -40,6 +76,12 @@ pub enum Decision {
 }
 
 impl Pipeline {
+    /// 换用给定的内存封禁表（reload 重建时沿用旧 Arc，封禁状态不丢）。
+    pub fn with_ban_list(mut self, ban_list: Arc<StdMutex<crate::banlist::BanList>>) -> Self {
+        self.ban_list = ban_list;
+        self
+    }
+
     pub fn add_module(&mut self, m: Box<dyn RuleModule>) {
         self.modules.push(m);
     }
