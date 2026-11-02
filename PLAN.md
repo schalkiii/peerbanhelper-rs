@@ -259,7 +259,30 @@
   `WebBackend::set_token` 写回 `config.yml`，重启保持）与下载器（经后端持久化）；
   `btn` 与 `database` 段忽略（Rust 版固定内置 SQLite，无外部数据库配置项）。
 
-### 4.4 原生 GUI（Tauri 托盘壳）——已完成（M1）
+### 4.4 2026-11-02 第二轮复查的遗留项（按影响排序）
+
+> 本轮复查（覆盖 i18n / BTN / 监控 / 推送 / PTR / 工具接口 / GUI / 构建）已修复：
+> GUI `--port` 未传给子进程、心跳行降级后会被看门狗误判冻结、`heapdump` 伪产物、
+> 实验室两个只读端点缺失。下列为仍未完成项：
+
+1. **BTN `multi_if` 心跳在生产永不发送（中高）**：`btn_transport/network.rs` 的
+   `local_ips_provider` 只有测试注入，且未按源地址 bind、未做「每个 IP 直连/代理各发一次
+   取外部 IP」；服务端下发 `multi_if:true` 时心跳恒失败。修：启动时枚举网卡并把结果注入，
+   或先退化为 `["default"]` + 上游双发语义。
+2. **BTN reconfigure 后同轮用旧下标（中）**：`network.rs` 的 `reset_abilities()`
+   重建列表后继续用旧 `index` 执行剩余能力，可能发到别的 endpoint。修：`run_ability`
+   内按 kind 重新定位。
+3. **监控写入节奏绑在 wave 循环（低中）**：`check-interval > 60s` 时流量日志、日阈值告警、
+   flush/cleanup 全部变慢；上游各模块有独立 scheduler。修：监控用独立 tokio interval。
+4. **PTR 解析模型与上游不同（中低）**：逐服务器串行各 3s（最坏 N×3s）、系统 DNS 只作最后
+   兜底而未并入 resolver 列表；上游是列表 + load-balance + 单查询总预算 3s。
+5. **BTN 面板字段仍是占位（中低）**：`/api/modules/btn` 的 `displayName` 用枚举 Debug 名、
+   `description` 是 endpoint、`configResult` 是裸码；上游本地化展示。
+6. **`/api/pbhplus/claimRenewFreeLicenseCaptcha` 恒失败（低）**：前端「免费试用」会抛错；
+   属于 PBH+ 许可域，未实现。
+7. **GUI 自身版本号仍 0.1.0（低）**：Cargo 版本与主程序 9.5.3 不一致（仅展示用）。
+
+### 4.5 原生 GUI（Tauri 托盘壳）——已完成（M1）
 
 - [x] **架构**：独立 crate `crates/pbh-gui`（**不在 workspace members**——Tauri 在 Linux 需要
       webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建；Windows 侧单独构建）。
@@ -272,7 +295,7 @@
       已随 `9.5.1-rs.1` 发布（产物含 `pbh-gui.exe` + `WebView2Loader.dll`）。
 - [ ] **里程碑 M2/M3（未做）**：开机自启、托盘菜单进一步完善、Linux（libwebkit2gtk-4.1）/macOS 适配与打包。
 
-### 4.5 长时对跑基建（数十小时 ~ 数天）
+### 4.6 长时对跑基建（数十小时 ~ 数天）
 
 - [x] **采样脚本 `longrun_sample.ps1`**：周期（默认 5 分钟）采样两侧进程 RSS/私有内存/CPU、
       SQLite 文件大小、`/health` 状态，追加 JSONL；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
@@ -288,7 +311,7 @@
       磁盘水位告警（剩余空间 / 单库体积阈值，JSONL 打 flag）；`pbh --tag` 身份标记
       （写入 `metadata.dualrun_tag` + `dualrun_started_at` + 启动日志）。
 
-### 4.6 扩展项（超出上游对等范围）
+### 4.7 扩展项（超出上游对等范围）
 
 - [ ] MySQL / PostgreSQL 支持（sqlx）——上游默认 sqlite/h2，属部署扩展
 - [ ] 插件系统评估（WASM / wasmtime）

@@ -173,6 +173,8 @@ fn rotate_log_if_needed(path: &std::path::Path, max_bytes: u64, keep: usize) {
 fn spawn_child(args: &Args) -> std::io::Result<Child> {
     let mut cmd = Command::new(&args.pbh_path);
     cmd.arg("--data").arg(&args.data_dir);
+    // 端口必须显式传给服务端：GUI 只用它做探活/导航，漏传会让自定义端口永远等不到服务
+    cmd.arg("--port").arg(args.port.to_string());
     // 日志重定向：GUI 是 Windows GUI 子系统进程（无控制台），不重定向时子进程
     // 的 stdout/stderr（tracing 全部输出）直接丢失。追加写入 data 目录的
     // pbh-gui.log，同时作为外部看门狗的日志心跳源（冻结诊断依赖）。

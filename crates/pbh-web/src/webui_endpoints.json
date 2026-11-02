@@ -113,7 +113,9 @@
 
     { "method": "GET", "path": "/api/laboratory/experiments", "shape": "lab" },
     { "method": "PUT", "path": "/api/laboratory/experiment/sqlite_vacuum", "shape": "any" },
+    { "method": "GET", "path": "/api/laboratory/config", "shape": "any" },
     { "method": "POST", "path": "/api/laboratory/config", "shape": "any" },
+    { "method": "GET", "path": "/api/laboratory/isExperimentActivated?id=sqlite_vacuum", "shape": "any" },
 
     { "method": "GET", "path": "/api/modules/btn", "shape": "object" },
     { "method": "GET", "path": "/api/modules/ipblacklist/ip", "shape": "object", "_note": "BlackList<T> = {[K in T]: ...[]}，是对象不是数组" },

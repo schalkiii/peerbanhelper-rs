@@ -37,6 +37,17 @@
 - 已知差异：`tunnel/{id}/connections` 返回**空分页**——逐连接明细需要转发器做
   per-connection 记账（建立时间/最近活跃/双向字节/GeoIP），已记入 PLAN §4.3。
 
+### fix: 第二轮复查发现的四处问题
+
+- **GUI `--port` 未传给子进程**：自定义端口时 GUI 只用该端口探活/导航，服务端仍监听 9898
+  ⇒ 永远等不到服务、循环重启子进程。现在显式 `--port` 传给服务端。
+- **心跳行降级后会被看门狗误判冻结**：`wave#N 主循环返回` 改为 **INFO**——用户按文档
+  `RUST_LOG=info` 降噪时，健康进程不会再被判定冻结并重启。
+- **`/api/general/heapdump` 不再输出伪产物**：Rust 没有 JVM 堆转储，此前返回的两行文本
+  被前端当成 `.hprof.gz` 下载、解开即损坏；改为 501 + 明确说明。
+- **补齐实验室只读端点**：`GET /api/laboratory/config` 与
+  `GET /api/laboratory/isExperimentActivated?id=`（契约清单同步）。
+
 ### test / docs
 
 - 新增：qB 端口读写；`AutoStun::set_enabled` / 隧道登记；管理器 endpoint 主机解析；

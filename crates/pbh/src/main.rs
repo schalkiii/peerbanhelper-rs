@@ -89,7 +89,7 @@ fn parse_bind_addr(address: &str, port: u16) -> anyhow::Result<SocketAddr> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ring_log = Arc::new(RingLog::new(4096));
-    // 默认 `pbh=debug`：封禁链路的排障依赖这些 DEBUG 打点（看门狗也靠「主循环返回」心跳）。
+    // 默认 `pbh=debug`：封禁链路的排障依赖这些 DEBUG 打点；「主循环返回」心跳为 INFO。
     // 想更安静用 `RUST_LOG=info`，想看协议级细节用 `RUST_LOG=pbh=trace`。
     // 上游 `Main` 的 `pbh.log.level`：覆盖默认级别；`RUST_LOG` 仍然优先
     let default_level = pbh_core::external_switch::parse("pbh.log.level")
@@ -740,7 +740,9 @@ async fn main() -> anyhow::Result<()> {
                 debug!("wave#{} 开始", wave_count + 1);
                 let report = engine.run_once(now).await;
                 wave_count += 1;
-                debug!("wave#{wave_count} 主循环返回，耗时 {:?}", wave_started.elapsed());
+                // 看门狗以这一行为心跳（`scripts/pbh-watchdog.ps1`）：必须是 INFO，
+                // 否则用户把日志降到 info 时健康进程会被判「冻结」
+                info!("wave#{wave_count} 主循环返回，耗时 {:?}", wave_started.elapsed());
                 // 完成日志与上游 `Lang.BAN_WAVE_CHECK_COMPLETED` 逐字一致（含参数顺序），
                 // 计数为上游 `ProcessingStatistics` 口径（只统计有检查结果的下载器/种子/peer），
                 // 便于长时对跑直接把两侧日志逐行 diff。附加诊断降级到 DEBUG。

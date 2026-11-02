@@ -226,7 +226,14 @@ pub fn api_routes() -> Router<crate::AppState> {
         // —— 实验性功能（`Laboratory`）——
         .route("/laboratory/experiments", get(labs::experiments))
         .route("/laboratory/experiment/{id}", put(labs::set_experiment))
-        .route("/laboratory/config", post(labs::set_config))
+        .route(
+            "/laboratory/config",
+            get(labs::get_config).post(labs::set_config),
+        )
+        .route(
+            "/laboratory/isExperimentActivated",
+            get(labs::is_experiment_activated),
+        )
         // —— AutoSTUN（`/api/autostun/*`；核心隧道已实现，但这组 WebUI 管理端点
         // 尚未接线。端点仍需存在以免前端拿到 API_NOT_FOUND，响应为「未启用」的诚实状态）——
         .route("/autostun/status", get(autostun::status))

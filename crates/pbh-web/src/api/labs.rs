@@ -12,10 +12,11 @@
 //! 组号 = `abs(installationId.hashCode() % 5)`（`Java String.hashCode()`），
 //! 与上游 `Laboratory.experimentalGroup` 对齐，保证同样的灰度行为。
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use std::collections::HashMap;
 use pbh_core::i18n::TranslationComponent;
 use serde_json::{json, Value};
 use std::path::Path as StdPath;
@@ -148,6 +149,52 @@ pub async fn experiments(State(state): State<AppState>) -> Response {
         ),
     )
         .into_response()
+}
+
+/// `GET /api/laboratory/config`：实验配置（对齐 `PBHLabController` 的读接口）。
+pub async fn get_config(State(state): State<AppState>) -> Response {
+    let Some(path) = state.lab_path.as_ref() else {
+        return disabled();
+    };
+    let map = read_lab(path);
+    let enabled = lab_enabled(&map);
+    let group = experimental_group(&state.backend.installation_id());
+    let mut experiments = serde_json::Map::new();
+    for def in EXPERIMENTS {
+        experiments.insert(def.id.to_string(), json!(is_activated(def, &map, group)));
+    }
+    (
+        StatusCode::OK,
+        crate::std_resp(
+            true,
+            None,
+            json!({ "enabled": enabled, "experiments": experiments }),
+        ),
+    )
+        .into_response()
+}
+
+/// `GET /api/laboratory/isExperimentActivated?id=<id>`：单个实验是否激活。
+pub async fn is_experiment_activated(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(path) = state.lab_path.as_ref() else {
+        return disabled();
+    };
+    let Some(def) = params
+        .get("id")
+        .and_then(|id| EXPERIMENTS.iter().find(|def| def.id == id))
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            crate::std_resp(false, Some("LAB_EXPERIMENT_NOT_FOUND"), Value::Null),
+        )
+            .into_response();
+    };
+    let map = read_lab(path);
+    let activated = is_activated(def, &map, experimental_group(&state.backend.installation_id()));
+    (StatusCode::OK, crate::std_resp(true, None, json!(activated))).into_response()
 }
 
 /// `PUT /api/laboratory/experiment/{id}`：设置单个实验开关（body: `{status}`）。

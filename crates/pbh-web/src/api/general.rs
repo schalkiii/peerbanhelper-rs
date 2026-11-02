@@ -356,18 +356,15 @@ pub async fn config_put(
 
 /// `GET /api/general/heapdump`：下载运行摘要（Rust 无 JVM 堆，输出线程统计文本）。
 pub async fn heapdump() -> Response {
-    let body = format!(
-        "PeerBanHelper-RS {}\nthreads: {}\n",
-        env!("CARGO_PKG_VERSION"),
-        std::thread::current().name().unwrap_or("main")
-    );
+    // Rust 没有 JVM 堆转储；此前返回两行文本会被前端当成 `.hprof.gz` 下载、解开即损坏。
+    // 明确 501 + 说明，前端显示为失败而不是给出伪产物。
     (
-        StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; charset=utf-8",
-        )],
-        body,
+        StatusCode::NOT_IMPLEMENTED,
+        crate::std_resp(
+            false,
+            Some("HEAPDUMP_NOT_SUPPORTED: Rust 版本没有 JVM 堆转储"),
+            Value::Null,
+        ),
     )
         .into_response()
 }
