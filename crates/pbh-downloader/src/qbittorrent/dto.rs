@@ -27,6 +27,10 @@ pub struct QBittorrentPeer {
     pub port: Option<i64>,
     #[serde(default)]
     pub connection: Option<String>,
+    /// 仅 qBittorrentEE 上报（`QBittorrentEEPeer.shadowBanned`）；
+    /// 已影子封禁的 peer 按「不存在」处理（上游 `QBittorrentEE.getPeers`）
+    #[serde(default, rename = "shadowbanned", alias = "shadowBanned")]
+    pub shadowbanned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

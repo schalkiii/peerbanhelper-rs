@@ -14,6 +14,18 @@
   IP 黑白名单、订阅规则列表、PCB 前缀键、BTN 规则、自动范围封禁都改用该入口，
   不再「解析失败即 pass」；配置文件里的地址解析仍保持严格（坏配置忽略）。
 
+### feat(downloader): 补齐 qBittorrentEE 适配（影子封禁）
+
+- 上游 `qbittorrentee` 与普通 qBittorrent 共享 `AbstractQbittorrent`，差异在：
+  ① 登录成功后自检下载器的 `shadow_ban_enabled`（`/app/preferences`），未启用 ⇒
+  `REQUIRE_TAKE_ACTIONS`（成功结果缓存，未启用时每次重查）；
+  ② 增量封禁走 `/transfer/shadowbanPeers`；③ 全量列表写 `shadow_banned_IPs` 偏好键；
+  ④ 响应里 `shadowbanned: true` 的 peer 按「不存在」处理。
+- 本移植此前构建矩阵里没有该分支（选了直接构造失败），但界面一直暴露这个类型。
+  现已接线：`build_downloader` 支持 `qbittorrentee`，`use-shadow-ban` 支持 YAML 与界面
+  camelCase（`useShadowBan`）双向，`/api/downloaders/{id}/status` 回显真实开关值。
+- 测试：登录自检三态与缓存、影子端点/偏好键、影子封禁 peer 过滤、构建与配置往返。
+
 ### fix(downloader): BitComet 解封路径接上、Deluge 会话复用
 
 - `Downloader` trait 新增 `unban_peers`（默认空操作）；wave 在 `removed` 非空时

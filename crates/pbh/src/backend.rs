@@ -688,7 +688,10 @@ pub fn build_downloader(
     blocklist_url: &str,
 ) -> Result<(Arc<dyn Downloader>, bool), String> {
     let (downloader, increment): (Arc<dyn Downloader>, bool) = match d.kind.as_str() {
-        "qbittorrent" => {
+        // `qbittorrentee` 与普通 qBittorrent 共用同一个适配器（上游也共享
+        // `AbstractQbittorrent`）：差异只在影子封禁的端点/偏好键，以及登录时的
+        // `shadow_ban_enabled` 自检
+        "qbittorrent" | "qbittorrentee" => {
             let qb_cfg = QBConfig {
                 id: d.resolved_id(),
                 name: d.name.clone(),
@@ -703,6 +706,12 @@ pub fn build_downloader(
                 disable_same_ip_multi_connection: true,
                 max_concurrent_slots: 128,
                 remap: remap.as_ref().clone(),
+                kind: if d.kind == "qbittorrentee" {
+                    "qbittorrentee"
+                } else {
+                    "qbittorrent"
+                },
+                use_shadow_ban: d.kind == "qbittorrentee" && d.use_shadow_ban,
             };
             (
                 Arc::new(QBittorrentDownloader::new(qb_cfg).map_err(|e| e.to_string())?),
@@ -1061,6 +1070,23 @@ module:
         assert_eq!(base["module"]["ptr-blacklist"]["enabled"], true);
         assert_eq!(base["module"]["peer-id-blacklist"]["enabled"], false);
         assert!(base["module"]["peer-id-blacklist"]["banned-peer-id"].is_sequence());
+    }
+
+    /// `qbittorrentee` 必须能构造出下载器（此前构建矩阵里没有该分支，选了直接报错）。
+    #[test]
+    fn build_downloader_supports_qbittorrentee() {
+        let remap = Arc::new(RemapConfig::default());
+        let base: DownloaderConfig =
+            serde_json::from_value(json!({"type": "qbittorrent", "name": "ee"})).unwrap();
+        let cfg = DownloaderConfig {
+            kind: "qbittorrentee".into(),
+            endpoint: "http://127.0.0.1:8080".into(),
+            use_shadow_ban: true,
+            ..base
+        };
+        let (dl, _) = build_downloader(&cfg, &remap, "http://127.0.0.1:9898").unwrap();
+        assert_eq!(dl.downloader_type(), "qbittorrentee");
+        assert_eq!(dl.id(), "ee");
     }
 
     /// 编辑下载器弹窗提交的 `config` 来自 `web_json()`，里面没有 `id` 字段

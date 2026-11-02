@@ -608,6 +608,11 @@ pub struct DownloaderConfig {
     /// 启动时暂停该下载器（对齐上游配置的 `paused`，Deluge 使用）
     #[serde(default)]
     pub paused: bool,
+    /// 增强版 qBittorrent（`qbittorrentee`）的影子封禁开关（上游 `use-shadow-ban`）；
+    /// 普通 qBittorrent 也允许存这个键但不生效（对齐 `QBittorrentConfigImpl`）
+    #[serde(default)]
+    #[serde(rename = "use-shadow-ban", alias = "useShadowBan")]
+    pub use_shadow_ban: bool,
 }
 
 /// 上游 `QBittorrentBasicAuth(user, pass)`。
@@ -793,9 +798,9 @@ impl DownloaderConfig {
                 out.insert((*key).to_string(), value.clone());
             }
         }
-        // qBittorrentEE 的 useShadowBan 本移植未实现，按 false 回显（表单开关不缺失）
+        // 影子封禁开关（上游 `use-shadow-ban`）：EE 与普通 qB 都可保存，只有 EE 生效
         if self.kind == "qbittorrentee" && !out.contains_key("useShadowBan") {
-            out.insert("useShadowBan".into(), serde_json::json!(false));
+            out.insert("useShadowBan".into(), serde_json::json!(self.use_shadow_ban));
         }
         serde_json::Value::Object(out)
     }
@@ -1483,6 +1488,19 @@ client:
         assert!(
             matches!(as_yaml["api-key"], serde_yaml::Value::Null | serde_yaml::Value::String(_)),
             "api-key 写出为字符串或 null（未配置时）");
+    }
+
+    /// EE 的 `use-shadow-ban` 必须能往返：界面保存提交的是 `useShadowBan`（camelCase），
+    /// 被忽略的话开关一保存就消失。
+    #[test]
+    fn use_shadow_ban_round_trips_for_qbittorrentee() {
+        let cfg = dl_config(serde_json::json!({
+            "type": "qbittorrentee", "name": "ee", "useShadowBan": true
+        }));
+        assert!(cfg.use_shadow_ban, "camelCase 保存体必须能解析");
+        assert_eq!(cfg.web_json()["useShadowBan"], true, "回显真实值而不是恒 false");
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        assert!(yaml.contains("use-shadow-ban: true"), "{yaml}");
     }
 
     /// 各推送渠道 `web_json` 的键集必须等于上游 `saveJson()`（Gson 序列化 `Config` 类），

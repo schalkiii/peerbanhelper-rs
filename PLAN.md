@@ -170,11 +170,11 @@
 > 本轮 review（Java v9.5.3 ↔ 本移植逐模块比对）已修复的项见 CHANGELOG `9.5.3-rs.4`；
 > 下列是**已确认但本轮未动**的缺口，每条都给了复核入口。
 
-1. **qBittorrentEE 适配器缺失（高）**：上游有独立类型与影子封禁链路
-   （`DownloaderManagerImpl.java:84-85`、`qbittorrent/impl/enhanced/QBittorrentEE.java` 的
-   `shadowbanPeers` / `shadow_banned_IPs` / 登录自检跳过已影子封禁 peer），本移植
-   `crates/pbh/src/backend.rs` 的构建矩阵无该分支，选了该类型会直接构造失败——但
-   `crates/pbh/src/config.rs` 的类型清单与界面下拉仍在暴露它。
+1. ~~**qBittorrentEE 适配器缺失**~~ —— 已实现：`qbittorrentee` 与普通 qB 共用适配器
+   （上游同样共享 `AbstractQbittorrent`），差异点全部接上——登录自检 `shadow_ban_enabled`
+   （未启用 ⇒ REQUIRE_TAKE_ACTIONS，成功结果缓存）、增量走 `/transfer/shadowbanPeers`、
+   全量写 `shadow_banned_IPs`、`shadowbanned=true` 的 peer 按不存在处理；
+   `use-shadow-ban` 支持 YAML/界面 camelCase 往返。
 2. **Aria2Next 的「握手中」口径（高，逐 peer 结果不同）**：上游读下载器上报的
    `handshaking` 字段（`aria2next/bean/A2Peer.java:97-99`），本移植按速率推导
    （`crates/pbh-core/src/model.rs:207-209`）。该闸门控制 PCB / PeerId / ClientName /

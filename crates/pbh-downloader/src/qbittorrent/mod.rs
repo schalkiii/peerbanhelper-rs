@@ -38,6 +38,11 @@ pub struct QBConfig {
     pub max_concurrent_slots: usize,
     /// `config.yml` 的 `banlist-remapping` / `ip-remapping` 配置
     pub remap: RemapConfig,
+    /// 下载器类型字符串（`qbittorrent` / `qbittorrentee`），用于状态与界面展示
+    pub kind: &'static str,
+    /// 增强版（`qbittorrentee`）的 `use-shadow-ban`：走影子封禁端点与偏好键，
+    /// 并在登录时自检 `shadow_ban_enabled`（对齐 `QBittorrentEE`）
+    pub use_shadow_ban: bool,
 }
 
 impl Default for QBConfig {
@@ -56,6 +61,8 @@ impl Default for QBConfig {
             disable_same_ip_multi_connection: true,
             max_concurrent_slots: qbcfg::MAX_CONCURRENT_SLOTS,
             remap: RemapConfig::default(),
+            kind: "qbittorrent",
+            use_shadow_ban: false,
         }
     }
 }
@@ -74,6 +81,8 @@ pub struct QBittorrentDownloader {
     props_ttl: Duration,
     /// 协商得到的下载器版本（去掉前导 `v`），决定能力标志（对齐上游 `lastSemver`）
     last_version: Mutex<String>,
+    /// EE 影子封禁能力自检结果（上游 `banHandler.test()` 内部同样缓存）
+    shadow_ban_ok: AtomicBool,
 }
 
 impl QBittorrentDownloader {
@@ -100,6 +109,7 @@ impl QBittorrentDownloader {
             props_cache: Mutex::new(HashMap::new()),
             props_ttl,
             last_version: Mutex::new(String::new()),
+            shadow_ban_ok: AtomicBool::new(false),
         })
     }
 
@@ -265,6 +275,50 @@ impl QBittorrentDownloader {
         Ok(LoginResult::success("OK", version))
     }
 
+    /// EE：下载器是否真的启用了影子封禁 API（`/app/preferences` 的 `shadow_ban_enabled`）。
+    ///
+    /// 结果缓存：上游 `banHandler.test()` 在成功后就缓存，未启用时每次重查。
+    async fn shadow_ban_available(&self) -> anyhow::Result<bool> {
+        if self.shadow_ban_ok.load(Ordering::Relaxed) {
+            return Ok(true);
+        }
+        let resp = self.get("/app/preferences").await?;
+        if !(200..300).contains(&resp.status) {
+            anyhow::bail!(
+                "failed to fetch qBittorrent preferences: statusCode={}",
+                resp.status
+            );
+        }
+        let prefs: serde_json::Value = serde_json::from_str(&resp.body).unwrap_or_default();
+        let enabled = prefs
+            .get("shadow_ban_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if enabled {
+            self.shadow_ban_ok.store(true, Ordering::Relaxed);
+        }
+        Ok(enabled)
+    }
+
+    /// 上游 `QBittorrentEE.login0` 的包装：基础登录成功后再做影子封禁自检，
+    /// 未启用 ⇒ `REQUIRE_TAKE_ACTIONS`（提示用户打开下载器的影子封禁 API）。
+    async fn apply_shadow_ban_gate(&self, result: LoginResult) -> LoginResult {
+        if !result.success
+            || !self.config.use_shadow_ban
+            || self.shadow_ban_ok.load(Ordering::Relaxed)
+        {
+            return result;
+        }
+        match self.shadow_ban_available().await {
+            Ok(true) => result,
+            Ok(false) => LoginResult::require_take_actions(
+                "shadow ban API unavailable (shadow_ban_enabled=false)",
+                String::new(),
+            ),
+            Err(e) => LoginResult::exception(format!("{e:#}")),
+        }
+    }
+
     /// 最近一次刷新到的版本号（对齐上游 `lastSemver`：不每轮重取，有滞后）。
     fn cached_version(&self) -> String {
         self.last_version
@@ -312,7 +366,7 @@ impl Downloader for QBittorrentDownloader {
         &self.config.name
     }
     fn downloader_type(&self) -> &'static str {
-        "qbittorrent"
+        self.config.kind
     }
     fn max_concurrent_peer_requests(&self) -> usize {
         pbh_core::external_switch::integer(
@@ -348,7 +402,8 @@ impl Downloader for QBittorrentDownloader {
                 if let Err(e) = self.refresh_metadata_if_required().await {
                     return Ok(LoginResult::exception(format!("{e:#}")));
                 }
-                return Ok(LoginResult::success("OK", self.cached_version()));
+                let result = LoginResult::success("OK", self.cached_version());
+                return Ok(self.apply_shadow_ban_gate(result).await);
             }
             // API Key 无效时不再尝试表单登录（上游直接返回凭据错误）
             if self
@@ -390,7 +445,8 @@ impl Downloader for QBittorrentDownloader {
             }
 
             // 3. 版本校验 + 首次健康时下发偏好（失败会把健康位复位）
-            self.finish_login_tracked().await
+            let result = self.finish_login_tracked().await?;
+            Ok(self.apply_shadow_ban_gate(result).await)
         })
     }
 
@@ -500,6 +556,10 @@ impl Downloader for QBittorrentDownloader {
                 if key_lower.contains(".onion") || key_lower.contains(".i2p") {
                     continue;
                 }
+                // 上游 `QBittorrentEE.getPeers`：已影子封禁的 peer 当不存在处理
+                if p.shadowbanned.unwrap_or(false) {
+                    continue;
+                }
                 let port = p.port.unwrap_or(0).clamp(0, u16::MAX as i64) as u16;
                 // 对齐 `AbstractQbittorrent.getPeers` 的 `addressTranslate`：
                 // Teredo（配置开关）→ NAT64 → IPv4-mapped 归一；
@@ -531,8 +591,14 @@ impl Downloader for QBittorrentDownloader {
             }
             let payload: Vec<String> = peers.iter().map(|p| p.raw_ip.clone()).collect();
             let payload = dedupe_join(&payload, "|");
+            // EE：走影子封禁端点（上游 `QBittorrentEE` 的 `banHandler`）
+            let path = if self.config.use_shadow_ban {
+                "/transfer/shadowbanPeers"
+            } else {
+                "/transfer/banPeers"
+            };
             let resp = self
-                .post_form("/transfer/banPeers", vec![("peers".to_string(), payload)])
+                .post_form(path, vec![("peers".to_string(), payload)])
                 .await?;
             // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_INCREAMENT_BAN_FAILED`
             // 并抛异常；静默成功会把「封禁未生效」当成已下发。
@@ -558,7 +624,15 @@ impl Downloader for QBittorrentDownloader {
                 }
             }
             joined.sort();
-            let form = self.set_preferences(serde_json::json!({ "banned_IPs": joined.join("\n") }));
+            // EE 的全量列表写到 `shadow_banned_IPs`（上游 `QBittorrentEE` 用影子封禁处理器）
+            let key = if self.config.use_shadow_ban {
+                "shadow_banned_IPs"
+            } else {
+                "banned_IPs"
+            };
+            let mut prefs = serde_json::Map::new();
+            prefs.insert(key.to_string(), serde_json::json!(joined.join("\n")));
+            let form = self.set_preferences(serde_json::Value::Object(prefs));
             let resp = self.post_form("/app/setPreferences", form).await?;
             // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_FAILED_SAVE_BANLIST` 并抛异常
             if !(200..300).contains(&resp.status) {
@@ -875,7 +949,9 @@ mod tests {
                     let body = self.peers.lock().unwrap().clone();
                     return Ok(HttpResponse::new(200, body));
                 }
-                if req.url.ends_with("/transfer/banPeers") {
+                if req.url.ends_with("/transfer/banPeers")
+                    || req.url.ends_with("/transfer/shadowbanPeers")
+                {
                     return Ok(HttpResponse::new(200, String::new()));
                 }
                 if req.url.ends_with("/app/preferences") {
@@ -906,6 +982,99 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn ee_downloader(mock: Arc<QbMock>) -> Arc<QBittorrentDownloader> {
+        let config = QBConfig {
+            id: "qb-ee-test".into(),
+            name: "qBittorrentEE Test".into(),
+            endpoint: "http://mock.local".into(),
+            kind: "qbittorrentee",
+            use_shadow_ban: true,
+            ..QBConfig::default()
+        };
+        Arc::new(
+            QBittorrentDownloader::with_fetcher(
+                config,
+                mock as Arc<dyn HttpFetcher>,
+                Duration::from_secs(65),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// EE：`use-shadow-ban` 开启时要求下载器自报 `shadow_ban_enabled`，
+    /// 未启用 ⇒ REQUIRE_TAKE_ACTIONS（上游 `QBittorrentEE.login0` 的包装）；
+    /// 启用后结果缓存，后续登录不再重复查询。
+    #[tokio::test]
+    async fn ee_login_requires_shadow_ban_enabled() {
+        let mock = QbMock::new();
+        let dl = ee_downloader(mock.clone());
+        let r = dl.login().await.unwrap();
+        assert!(!r.success, "下载器未启用影子封禁 API 时不应放行");
+        assert_eq!(r.status, LoginStatus::RequireTakeActions);
+        assert!(r.message.contains("shadow"), "{}", r.message);
+
+        let mock = QbMock::new();
+        *mock.preferences.lock().unwrap() = (200, json!({"shadow_ban_enabled": true}).to_string());
+        let dl = ee_downloader(mock.clone());
+        assert!(dl.login().await.unwrap().success);
+        let before = mock.requests().len();
+        assert!(dl.login().await.unwrap().success);
+        let later: Vec<String> = mock.requests()[before..]
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        assert!(
+            !later.iter().any(|u| u.ends_with("/app/preferences")),
+            "自检结果应缓存，不再重复查询：{later:?}"
+        );
+    }
+
+    /// EE：影子封禁走 `/transfer/shadowbanPeers` 与 `shadow_banned_IPs` 偏好键。
+    #[tokio::test]
+    async fn ee_uses_shadow_ban_endpoints_and_keys() {
+        let mock = QbMock::new();
+        let dl = ee_downloader(mock.clone());
+        dl.ban_peers(&[BanEntry {
+            ip: "1.2.3.4".into(),
+            port: 1,
+            raw_ip: "1.2.3.4:1".into(),
+        }])
+        .await
+        .unwrap();
+        assert!(
+            mock.requests()
+                .iter()
+                .any(|r| r.url.ends_with("/transfer/shadowbanPeers")),
+            "增量封禁应走影子封禁端点"
+        );
+        assert!(!mock
+            .requests()
+            .iter()
+            .any(|r| r.url.ends_with("/transfer/banPeers")));
+
+        dl.replace_banned_ips(&["5.6.7.8".to_string()])
+            .await
+            .unwrap();
+        let form = mock.request("/app/setPreferences").json_form();
+        assert!(form.get("shadow_banned_IPs").is_some(), "{form}");
+        assert!(form.get("banned_IPs").is_none(), "{form}");
+    }
+
+    /// EE：已影子封禁的 peer 按「不存在」处理（上游 `QBittorrentEE.getPeers`）。
+    #[tokio::test]
+    async fn ee_filters_shadow_banned_peers() {
+        let mock = QbMock::new();
+        *mock.peers.lock().unwrap() = json!({"peers": {
+            "1.2.3.4:1000": {"ip": "1.2.3.4", "port": 1000, "client": "qB", "shadowbanned": true},
+            "5.6.7.8:2000": {"ip": "5.6.7.8", "port": 2000, "client": "qB", "shadowbanned": false}
+        }})
+        .to_string();
+        let dl = ee_downloader(mock.clone());
+        let peers = dl.fetch_peers(&torrent("abc")).await.unwrap();
+        assert_eq!(peers.len(), 1, "{peers:?}");
+        assert_eq!(peers[0].ip, "5.6.7.8");
     }
 
     /// 读取：`GET /api/v2/app/preferences`，单位 bytes/s（无换算）。
