@@ -196,6 +196,22 @@ impl PbhBackend {
         }
     }
 
+    /// AutoSTUN 的实时配置（管理器每 5 秒取一次，Web 修改后无需重启）。
+    pub fn auto_stun_settings(&self) -> pbh_core::auto_stun::AutoStunSettings {
+        let cfg = self
+            .config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        pbh_core::auto_stun::AutoStunSettings {
+            enabled: cfg.ip_remapping.auto_stun.enabled,
+            use_friendly_loopback_mapping: cfg.ip_remapping.auto_stun.use_friendly_loopback_mapping,
+            downloaders: cfg.ip_remapping.auto_stun.downloaders.clone(),
+            stun_servers: cfg.ip_remapping.auto_stun.tcp_servers.clone(),
+            available_test: cfg.stun_available_test(),
+        }
+    }
+
     /// 重建规则流水线（读磁盘上的最新配置；失败时保留当前流水线）。
     fn rebuild_pipeline(&self) {
         let cfg = match AppConfig::reload_from(&self.config_path) {
@@ -414,8 +430,10 @@ impl WebBackend for PbhBackend {
                         );
                     }
                 }
-                let parsed = serde_yaml::from_value::<AppConfig>(yaml_value)
+                let mut parsed = serde_yaml::from_value::<AppConfig>(yaml_value)
                     .map_err(|e| format!("配置校验失败: {e}"))?;
+                // 上游布局别名（`auto-stun` 等）并入内部结构，否则保存时会被丢弃
+                parsed.normalize_upstream();
                 self.save_config(&parsed)?;
             }
             "profile" => {

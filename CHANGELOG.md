@@ -3,6 +3,46 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.8（2026-11-02）
+
+> 补齐最后一个大缺口：**AutoSTUN 应用层接线**。核心 STUN/TCP 隧道早已移植，
+> 但此前没有编排层与管理端点，功能实际不可用。
+
+### feat(autostun): 按上游 `BTStunManager` / `BTStunInstance` 接线
+
+- 新增 `crates/pbh/src/auto_stun_manager.rs`：每 5 秒读一次**实时配置**巡检
+  `auto-stun.downloaders`——
+  - 只对「在线 + 登录成功 + 声明 `LIVE_UPDATE_BT_PROTOCOL_PORT`」的下载器注册
+    （Deluge 与上游一致地不支持）；
+  - `!在线 且 连续登录失败 > 10` 次 ⇒ 注销并关闭隧道（对齐 `failedLoginAttempts > 10`）；
+  - 隧道失效（keepalive 连续失败）即关旧重建；
+  - 建隧道成功后**仅当端口不同才**改写下载器 BT 端口；改写失败 ⇒ 注销（上游异常语义）；
+  - 把隧道登记进 `AutoStun` 注册表，`translate` 先查隧道连接表（还原 peer 真实地址与端口）
+    再回退到静态映射；关闭开关时立即关闭全部隧道。
+- **下载器端口 API**：`Downloader` trait 新增 `bt_protocol_port` / `set_bt_protocol_port`
+  与 `endpoint`；实现——qBittorrent（含 EE，`listen_port`）、Transmission（`peer-port`，
+  同时关闭随机端口）、BiglyBT（`/listenport`）、BitComet（`connection_config.listen_port_tcp`，
+  同时打开 `enable_listen_tcp`）、Aria2Next（`getGlobalOption`/`changeGlobalOption`）。
+  失败语义逐适配器对齐上游（有的抛错、有的只记日志、有的返回 -1）。
+- `stun.available-test` 现在真正被消费（建映射后做可用性自测）；`auto-stun.enabled`
+  改为运行态开关，Web 启停无需重启。
+
+### feat(web): `/api/autostun/*` 从 501 占位改为真实实现
+
+- `GET /status`：enabled / 友好回环 / 已选下载器（id,name,type）/ NAT 类型；
+- `PUT /config`：写回 `auto-stun.*`（经配置视图 + 增量合并）后触发重载；
+- `GET /tunnels` / `GET /tunnel/{id}/info`：有效位、心跳时间、连接/失败/拒绝计数、
+  双向字节、监听与上游端点（字段对齐前端 `TunnelInfo`）；
+- `POST /refreshNatType`：立即返回、异步 UDP 探测；`POST /restart`：等价 reload；
+- 已知差异：`tunnel/{id}/connections` 返回**空分页**——逐连接明细需要转发器做
+  per-connection 记账（建立时间/最近活跃/双向字节/GeoIP），已记入 PLAN §4.3。
+
+### test / docs
+
+- 新增：qB 端口读写；`AutoStun::set_enabled` / 隧道登记；管理器 endpoint 主机解析；
+  `/api/autostun` 契约测试从前端「501」预期改为真实响应。
+- SPEC §3.6/§7、docs/API.md 同步；工作区 **724 测试通过**（另 1 ignore）、clippy 零警告。
+
 ## 9.5.3-rs.7（2026-11-02）
 
 > 关闭 PLAN.md §4.2 的剩余高/中优先项。

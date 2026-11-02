@@ -128,12 +128,12 @@
 | GET/PUT/DELETE | `/api/pbhplus/status`、`/api/pbhplus/key` | PBH Plus 授权状态/密钥 |
 | GET | `/api/pbhplus/claimRenewFreeLicenseCaptcha` | 免费续期验证码 |
 | POST | `/api/pbhplus/renewFreeLicense` | 免费续期 |
-| GET | `/api/autostun/status` | AutoSTUN 状态（当前恒「未启用」） |
-| PUT | `/api/autostun/config` | 保存配置（当前 501） |
-| GET | `/api/autostun/tunnels` | 隧道列表（空数组） |
-| GET | `/api/autostun/tunnel/{id}/info` | 单隧道信息（`success=false`） |
-| GET | `/api/autostun/tunnel/{id}/connections` | 隧道连接（空分页） |
-| POST | `/api/autostun/refreshNatType` | 刷新 NAT 类型（当前 501） |
+| GET | `/api/autostun/status` | AutoSTUN 状态（enabled / 下载器 / NAT 类型，读实时配置） |
+| PUT | `/api/autostun/config` | 保存 `auto-stun.*` 并触发重载 |
+| GET | `/api/autostun/tunnels` | 隧道列表（`[{downloader, tunnel}]`） |
+| GET | `/api/autostun/tunnel/{id}/info` | 单隧道信息（未启用返回 `AUTOSTUN_NOT_SUPPORTED`） |
+| GET | `/api/autostun/tunnel/{id}/connections` | 隧道连接明细（当前恒空分页，见 SPEC §7） |
+| POST | `/api/autostun/refreshNatType` | 立即返回、异步刷新 NAT 类型 |
 | POST | `/api/autostun/restart` | 重启 AutoSTUN（当前 501） |
 
 > AutoSTUN 的**核心**（NAT 翻译 / TCP 隧道 / NAT 类型探测）已在

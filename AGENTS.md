@@ -99,6 +99,13 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 
 ## 当前状态（2026-11-02）
 
+- **9.5.3-rs.8（2026-11-02；AutoSTUN 接线，已部署生产）**：新增应用层管理器
+  （每 5s 按实时配置巡检：仅 HEALTHY + 登录成功 + 具备 `LIVE_UPDATE_BT_PROTOCOL_PORT`
+  才注册；失败 >10 次注销；隧道失效重建；端口仅不同才改写；关闭即拆隧道）；
+  下载器 trait 增加 `bt_protocol_port`/`set_bt_protocol_port`/`endpoint`，qB(含 EE)/TR/
+  BiglyBT/BitComet/Aria2 已实现（Deluge 与上游一样不支持）；`translate` 先查隧道连接表；
+  `stun.available-test` 真正消费；`/api/autostun/*` 全部真实实现（仅 `connections` 明细
+  恒空，需逐连接记账，已记 PLAN §4.3）。工作区 **724 测试通过**（另 1 ignore）、clippy 零警告。
 - **9.5.3-rs.7（2026-11-02；关闭 review 剩余高/中项）**：**规则流水线热重载**
   （`SharedPipeline` + reload/保存时从磁盘重读重建；ban_list 沿用、PCB flush/恢复、
   BTN 回灌 abilities、订阅从缓存恢复）；Aria2Next 透传 `handshaking`；

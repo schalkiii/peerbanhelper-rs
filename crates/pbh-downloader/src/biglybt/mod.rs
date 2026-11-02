@@ -300,6 +300,10 @@ impl Downloader for BiglyBtDownloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         "biglybt"
     }
@@ -557,6 +561,35 @@ impl Downloader for BiglyBtDownloader {
     }
 
     /// 对齐 `BiglyBT.getStatistics()`；失败时对齐调用方语义（记日志 + 返回 0，不抛错）。
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async move {
+            // 上游 `BiglyBT.getBTProtocolPort`：`GET /listenport` ⇒ `{"port": n}`
+            let resp = self.get("/listenport").await?;
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("getBTProtocolPort failed: statusCode={}", resp.status);
+            }
+            let parsed: serde_json::Value = serde_json::from_str(&resp.body)?;
+            Ok(parsed
+                .get("port")
+                .and_then(|v| v.as_i64())
+                .filter(|p| (0..=u16::MAX as i64).contains(p))
+                .map(|p| p as u16))
+        })
+    }
+
+    fn set_bt_protocol_port<'a>(&'a self, port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 上游 `BiglyBT.setBTProtocolPort`：`POST /listenport` 体 `{"port": n}`
+            let resp = self
+                .post_json("/listenport", serde_json::json!({ "port": port }).to_string())
+                .await?;
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("setBTProtocolPort failed: statusCode={}", resp.status);
+            }
+            Ok(())
+        })
+    }
+
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
         Box::pin(async move {
             let resp = match self.get("/statistics").await {

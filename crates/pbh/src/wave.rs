@@ -99,7 +99,7 @@ impl LoginGate {
         now_ms < self.next_login_try_ms.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
+    /// 当前连续登录失败次数（AutoSTUN 巡检按上游 `failedLoginAttempts > 10` 注销实例）。
     pub fn attempts(&self) -> u32 {
         self.failed_attempts.load(Ordering::Relaxed)
     }

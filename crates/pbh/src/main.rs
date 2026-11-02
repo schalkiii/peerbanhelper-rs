@@ -1,3 +1,4 @@
+mod auto_stun_manager;
 mod backend;
 mod btn_legacy;
 mod config;
@@ -10,7 +11,6 @@ mod submodule;
 mod wave;
 
 use clap::Parser;
-use pbh_core::auto_stun::{AutoStunRefresher, DEFAULT_REFRESH_INTERVAL, DEFAULT_STUN_TIMEOUT};
 use pbh_core::banlist::BannedRecord;
 use pbh_core::btn_transport::{
     now_millis, BtnHttpClient, BtnMetadataStore, BtnNetwork, BtnNetworkConfig, BtnSubmitSource,
@@ -181,30 +181,22 @@ async fn main() -> anyhow::Result<()> {
     //（对齐上游 `BTStunManager.load()`：不注册任何 provider，翻译恒直通）。
     // 启用时构造映射表挂到 remap 配置上，并起后台线程每 5 秒刷新一次隧道映射
     //（对齐 `BTStunInstance` 的 `scheduleWithFixedDelay(this::restart, 0, 5, SECONDS)`）。
-    let _auto_stun_refresher: Option<AutoStunRefresher> = if cfg.ip_remapping.auto_stun.enabled {
+    // 隧道编排由 `auto_stun_manager` 负责（5s 巡检 + 端口改写）；这里只建注册表与
+    // NAT 类型探测器（上游 `StunManager` 每小时刷新一次 NAT 类型，仅用于展示）。
+    let mut _auto_stun_nat_prober: Option<pbh_core::auto_stun::AutoStunRefresher> = None;
+    if cfg.ip_remapping.auto_stun.enabled {
         let registry = cfg.ip_remapping.auto_stun.build();
-        let servers = cfg.ip_remapping.auto_stun.tcp_servers.clone();
-        if servers.is_empty() {
+        if cfg.ip_remapping.auto_stun.tcp_servers.is_empty() {
             warn!("auto-stun.enabled=true 但 stun.tcp-servers 为空，翻译将保持直通");
         }
-        let refresher = registry.clone().spawn_refresher(
-            servers,
-            // 上游 `StunTcpTunnelImpl` 固定以 "0.0.0.0" 为源地址；隧道端口交给系统分配
-            "0.0.0.0".to_string(),
-            0,
-            DEFAULT_REFRESH_INTERVAL,
-            DEFAULT_STUN_TIMEOUT,
-        );
+        _auto_stun_nat_prober = Some(registry.clone().spawn_nat_type_prober());
         cfg.ip_remapping = cfg.ip_remapping.clone().with_auto_stun(registry);
         info!(
             "AutoSTUN 已启用（下载器: {:?}，友好回环映射: {}）",
             cfg.ip_remapping.auto_stun.downloaders,
             cfg.ip_remapping.auto_stun.use_friendly_loopback_mapping
         );
-        Some(refresher)
-    } else {
-        None
-    };
+    }
 
     // 下载器
     let remap = Arc::new(cfg.remap_config());
@@ -546,6 +538,11 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| cfg.server.token.clone());
+    // AutoSTUN 的实时配置读取（Web 状态展示与管理器巡检共用）
+    let auto_stun_settings = {
+        let backend = backend.clone();
+        Arc::new(move || backend.auto_stun_settings()) as Arc<dyn Fn() -> _ + Send + Sync>
+    };
     let state = AppState {
         db: db.clone(),
         token: Arc::new(Mutex::new(api_token)),
@@ -558,6 +555,7 @@ async fn main() -> anyhow::Result<()> {
         remap: remap.clone(),
         proxy_setting: cfg.proxy.setting,
         auto_stun_registry: cfg.ip_remapping.auto_stun_registry.clone(),
+        auto_stun_settings: auto_stun_settings.clone(),
         translator: translator.clone(),
         locale: cfg.language.locale.clone(),
         backend: backend.clone(),
@@ -664,6 +662,17 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+
+    // AutoSTUN 编排：每 5 秒读一次实时配置（Web 启停/改下载器无需重启）；
+    // 关闭时关闭全部隧道且不产生任何网络活动
+    let mut auto_stun_manager = auto_stun_manager::AutoStunManager::spawn(
+        cfg.ip_remapping.auto_stun_registry.clone(),
+        auto_stun_settings,
+        entries.clone(),
+        statuses.clone(),
+        login_gates.clone(),
+        tokio::runtime::Handle::current(),
+    );
 
     // ban wave 引擎
     let engine = WaveEngine {
@@ -843,6 +852,11 @@ async fn main() -> anyhow::Result<()> {
                 if cfg.persist.banlist {
                     let written = engine.persist_ban_list();
                     debug!("退出前封禁列表已落库 {written} 条");
+                }
+                // 关闭 AutoSTUN 隧道（上游 shutdown hook → `BTStunManager.close()`）
+                auto_stun_manager.close();
+                if let Some(prober) = _auto_stun_nat_prober.as_mut() {
+                    prober.close();
                 }
                 break;
             }

@@ -68,6 +68,9 @@ pub struct AppState {
     pub proxy_setting: i64,
     /// AutoSTUN 注册表（`/api/general/status` 的 `network.nat_type` 取它的缓存值）
     pub auto_stun_registry: Option<Arc<pbh_core::auto_stun::AutoStun>>,
+    /// AutoSTUN 实时配置（`/api/autostun/status` 展示 enabled/下载器列表）
+    pub auto_stun_settings:
+        Arc<dyn Fn() -> pbh_core::auto_stun::AutoStunSettings + Send + Sync>,
     /// 内嵌/覆盖文案表（与 ban wave 共用，支持 `data/lang` 覆盖）
     pub translator: Arc<Translator>,
     /// 服务端默认 locale（请求未指定 `locale` 时使用）

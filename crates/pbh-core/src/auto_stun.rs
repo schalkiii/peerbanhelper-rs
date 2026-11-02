@@ -163,19 +163,22 @@ pub struct StunMapping {
 
 /// AutoSTUN 运行时映射表（对齐上游 Spring 单例 `NatAddressProviderRegistry` + 各实例的连接表）。
 pub struct AutoStun {
-    enabled: bool,
+    /// 运行态开关：Web `/api/autostun/config` 可在不重建对象的情况下启停
+    enabled: AtomicBool,
     use_friendly_loopback_mapping: bool,
     downloaders: Vec<String>,
     udp_servers: Vec<String>,
     nat_type_prober: NatTypeProber,
     mappings: RwLock<Vec<NatMapping>>,
     public_endpoint: RwLock<Option<SocketAddr>>,
+    /// 已建立的 TCP 隧道（`BTStunInstance` 的集合；`translate` 先查连接表反查）。
+    tunnels: RwLock<Vec<(String, Arc<crate::auto_stun_forwarder::StunTcpTunnel>)>>,
 }
 
 impl std::fmt::Debug for AutoStun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AutoStun")
-            .field("enabled", &self.enabled)
+            .field("enabled", &self.is_enabled())
             .field(
                 "use_friendly_loopback_mapping",
                 &self.use_friendly_loopback_mapping,
@@ -192,19 +195,26 @@ impl std::fmt::Debug for AutoStun {
 impl AutoStun {
     pub fn new(config: &AutoStunConfig) -> Self {
         Self {
-            enabled: config.enabled,
+            enabled: AtomicBool::new(config.enabled),
             use_friendly_loopback_mapping: config.use_friendly_loopback_mapping,
             downloaders: config.downloaders.clone(),
             udp_servers: config.udp_servers.clone(),
             nat_type_prober: NatTypeProber::new(),
             mappings: RwLock::new(Vec::new()),
             public_endpoint: RwLock::new(None),
+            tunnels: RwLock::new(Vec::new()),
         }
     }
 
     /// `auto-stun.enabled`：关闭时翻译严格直通（对齐上游「未注册任何 provider」）。
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// 热更新开关（Web `/api/autostun/config`；关闭时翻译立即直通、
+    /// 管理器会关闭全部隧道）。
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// `auto-stun.use-friendly-loopback-mapping`（见模块文档：不参与静态前缀改写）。
@@ -270,8 +280,18 @@ impl AutoStun {
     ///   `TCPForwarderImpl.connectToUpstreamFriendly` 的友好回环绑定也只对 `Inet4Address` 生效，
     ///   故 STUN 发现路径登记的全部是 IPv4 网段，IPv6 peer 地址不会命中映射，原样直通。
     pub fn translate(&self, addr: IpAddr, port: u16) -> Option<(IpAddr, u16)> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return None;
+        }
+        // 先查隧道连接表：下载器看到的「本机套接字地址」→ peer 真实地址
+        // （对齐 `BTStunInstance.translate` → `Forwarder.translate`；端口同样要还原）
+        if let Ok(tunnels) = self.tunnels.read() {
+            let natted = SocketAddr::new(addr, port);
+            for (_, tunnel) in tunnels.iter() {
+                if let Some(real) = tunnel.translate(natted) {
+                    return Some((real.ip(), real.port()));
+                }
+            }
         }
         let mappings = self.mappings.read().ok()?;
         mappings
@@ -293,7 +313,7 @@ impl AutoStun {
         source_port: u16,
         timeout: Duration,
     ) -> Option<StunMapping> {
-        if !self.enabled {
+        if !self.is_enabled() {
             return None;
         }
         let client = TcpStunClient::new(servers.to_vec(), source_host, source_port)?;
@@ -371,7 +391,7 @@ impl AutoStun {
     /// 与上游的差异：上游 `StunManager` 无条件每小时探测（与 enabled 无关）；本移植按
     /// 「disabled ⇒ 严格 no-op」约束改为仅在启用时运行（见模块文档）。
     pub fn refresh_nat_type(&self) -> NatType {
-        if !self.enabled {
+        if !self.is_enabled() {
             tracing::debug!("[AutoSTUN] 未启用，跳过 NAT 类型探测（严格 no-op）");
             return NatType::Unknown;
         }
@@ -386,7 +406,7 @@ impl AutoStun {
 
     /// [`AutoStun::spawn_nat_type_prober`] 的可注入周期版本（测试用短周期）。
     pub fn spawn_nat_type_prober_with(self: &Arc<Self>, interval: Duration) -> AutoStunRefresher {
-        if !self.enabled {
+        if !self.is_enabled() {
             tracing::debug!("[AutoSTUN] 未启用，不启动 NAT 类型探测线程（严格 no-op）");
             return AutoStunRefresher::completed();
         }
@@ -416,7 +436,7 @@ impl AutoStun {
         downloader_host: &str,
         config: &TunnelConfig,
     ) -> Option<StunTcpTunnel> {
-        if !self.enabled {
+        if !self.is_enabled() {
             tracing::debug!("[AutoSTUN] 未启用，跳过隧道创建（严格 no-op）");
             return None;
         }
@@ -429,6 +449,49 @@ impl AutoStun {
             }
         }
     }
+
+    /// 登记一条已建立的隧道（管理器在建/重建成功后调用；`translate` 会查它的连接表）。
+    pub fn register_tunnel(
+        &self,
+        downloader_id: impl Into<String>,
+        tunnel: Arc<crate::auto_stun_forwarder::StunTcpTunnel>,
+    ) {
+        if let Ok(mut tunnels) = self.tunnels.write() {
+            tunnels.push((downloader_id.into(), tunnel));
+        }
+    }
+
+    /// 关闭并清空全部隧道（关闭 AutoSTUN / 进程退出时）。
+    pub fn clear_tunnels(&self) {
+        if let Ok(mut tunnels) = self.tunnels.write() {
+            for (_, tunnel) in tunnels.drain(..) {
+                tunnel.close();
+            }
+        }
+    }
+
+    /// 当前隧道数量（Web `/api/autostun/tunnels` 与测试用）。
+    pub fn tunnel_count(&self) -> usize {
+        self.tunnels.read().map(|t| t.len()).unwrap_or(0)
+    }
+
+    /// 隧道快照（下载器 id + 隧道；Web API 展示用）。
+    pub fn tunnels(&self) -> Vec<(String, Arc<crate::auto_stun_forwarder::StunTcpTunnel>)> {
+        self.tunnels
+            .read()
+            .map(|tunnels| tunnels.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// AutoSTUN 的实时配置视图（应用层管理器每 5 秒取一次；Web 修改后无需重启）。
+#[derive(Debug, Clone, Default)]
+pub struct AutoStunSettings {
+    pub enabled: bool,
+    pub use_friendly_loopback_mapping: bool,
+    pub downloaders: Vec<String>,
+    pub stun_servers: Vec<String>,
+    pub available_test: bool,
 }
 
 /// 后台刷新句柄，对齐 `BTStunInstance` 的定时任务与 `close()`。

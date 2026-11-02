@@ -1003,17 +1003,25 @@ impl AppConfig {
                 target.downloaders = v;
             }
         }
-        if let Some(top) = self.stun.take() {
+        if let Some(top) = self.stun.as_mut() {
             let target = &mut self.ip_remapping.auto_stun;
-            if let Some(v) = top.tcp_servers {
+            if let Some(v) = top.tcp_servers.take() {
                 target.tcp_servers = v;
             }
-            if let Some(v) = top.udp_servers {
+            if let Some(v) = top.udp_servers.take() {
                 target.udp_servers = v;
             }
-            // `available-test` 尚未消费，保留读取（字段建模即可）
-            let _ = top.available_test;
+            // `available-test` 留在顶层（AutoSTUN 建隧道时消费）；
+            // 服务器列表已在上面并入 `ip-remapping.auto-stun`，这里清空避免写两份
         }
+    }
+
+    /// `stun.available-test`（默认 true）：AutoSTUN 建隧道后是否做可用性自测。
+    pub fn stun_available_test(&self) -> bool {
+        self.stun
+            .as_ref()
+            .and_then(|stun| stun.available_test)
+            .unwrap_or(true)
     }
 
     /// 序列化并写回配置文件（Web 配置保存与下载器/推送热管理的共用写入口）。
@@ -1034,14 +1042,13 @@ impl AppConfig {
                 "push-notification",
                 "push_notification",
                 "auto-stun",
-                "stun",
             ] {
                 mapping.remove(serde_yaml::Value::String(key.into()));
             }
         }
         if let Some(mapping) = document.as_mapping_mut() {
             // 上游布局的别名：内容已并入 `downloaders` / `push`，移除避免下次加载重复
-            for key in ["client", "push-notification", "auto-stun", "stun"] {
+            for key in ["client", "push-notification", "auto-stun"] {
                 mapping.remove(serde_yaml::Value::String(key.into()));
             }
         }
@@ -1079,9 +1086,9 @@ pub struct TopLevelAutoStun {
 /// 上游顶层 `stun:` 段（`config.yml:136-153`）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TopLevelStun {
-    #[serde(rename = "tcp-servers", default)]
+    #[serde(rename = "tcp-servers", default, skip_serializing_if = "Option::is_none")]
     pub tcp_servers: Option<Vec<String>>,
-    #[serde(rename = "udp-servers", default)]
+    #[serde(rename = "udp-servers", default, skip_serializing_if = "Option::is_none")]
     pub udp_servers: Option<Vec<String>>,
     /// 上游用于决定是否做 STUN 可用性测试；本移植尚未消费（见 PLAN §4.2 第 13 条），
     /// 仅建模以便与上游配置互通。
@@ -1658,6 +1665,18 @@ auto-stun:"),
             "顶层 auto-stun 别名不应落盘：{saved}"
         );
         assert!(saved.contains("ip-remapping:"), "{saved}");
+        // 顶层 `stun:` 只保留 `available-test`（服务器列表已并入嵌套段，避免写两份）
+        assert!(saved.contains("stun:"), "{saved}");
+        assert!(
+            saved.contains("available-test: false"),
+            "available-test 必须保留（AutoSTUN 建隧道时消费）: {saved}"
+        );
+        assert_eq!(
+            saved.matches("turn.example:3478").count(),
+            1,
+            "tcp-servers 只能出现一次（并入嵌套段后从顶层移除）: {saved}"
+        );
+        assert!(!cfg.stun_available_test(), "available-test 必须读到 false");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

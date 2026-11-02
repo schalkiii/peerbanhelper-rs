@@ -230,10 +230,12 @@
 
 ### 4.3 已知且保留的行为差异（说明，不计划「修复」）
 
-> **`setBTProtocolPort` / `getBTProtocolPort` 未实现**：上游由 AutoSTUN 隧道
-> （`BTStunInstance`）在映射成功后改写下载器监听端口。本移植未实现 AutoSTUN 隧道，
-> 该接口没有调用方；`LIVE_UPDATE_BT_PROTOCOL_PORT` 能力位仍按上游声明（前端不读它），
-> 等隧道功能移植时一并补上。
+> ~~**`setBTProtocolPort` / `getBTProtocolPort` 未实现**~~ —— 已实现（qBittorrent /
+> Transmission / BiglyBT / BitComet / Aria2Next；Deluge 与上游一致地不支持），
+> AutoSTUN 管理器在映射成功后按需改写监听端口。
+> **`/api/autostun/tunnel/{id}/connections` 恒空**：上游的逐连接明细（建立时间、最近活跃、
+> 双向字节、GeoIP）依赖转发器的 per-connection 记账，本移植只做地址反查与总量计数；
+> 前端该弹窗会显示「无连接」。补齐需要在 `TcpForwarder` 增加连接生命周期表。
 > **`/api/utilities/replaceTracker` 未实现**：上游前端**从不调用**该接口（是给外部脚本的
 > 集成 API），本移植的下载器 trait 没有 `getTrackers/setTrackers/getAllTorrents` 三件套，
 > 单独为它扩接口的收益低于风险。若将来有人需要，按 PLAN 记录的方式在 trait 上补齐。

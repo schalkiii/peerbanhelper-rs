@@ -280,6 +280,10 @@ impl Downloader for DelugeDownloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         "deluge"
     }

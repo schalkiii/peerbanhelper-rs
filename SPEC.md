@@ -190,7 +190,9 @@
 
 对齐 `AbstractDownloader.addressTranslate`（在 `getPeers` 解析阶段执行，顺序不可调换）：
 
-1. 内置 NAT（AutoSTUN）——需要 AutoSTUN 服务端，本阶段不支持；
+1. 内置 NAT（AutoSTUN）：`auto-stun.enabled` 时按 **隧道连接表**反查
+   （下载器看到的「本机套接字地址」→ peer 真实地址，IP 与端口都还原），
+   再回退到 `inter → outer` 的地址映射；关闭时严格直通；
 2. Teredo（`ip-remapping.teredo`，默认 **false**）→ 按 `extractTeredo` 改写 IP **与端口**；
 3. NAT64（`ip-remapping.nat64.enabled` 默认 true，`prefix` 默认 `["64:ff9b::/96"]`）
    → 取低 32 位作为内嵌 IPv4，端口不变；
@@ -549,10 +551,15 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   `pbh.bitcomet.fetchTorrentsLimit`（BitComet 任务列表分页大小，默认 50）。
 - **`GET /api/sub/logs/{ruleId}`**：单条订阅的刷新日志分页（`rule_sub_log` 按 ruleId 过滤）；
   `/api/sub/logs` 继续返回全部日志。
-- **`GET /api/autostun/tunnel/{id}/info`**：Web AutoSTUN 未接线时返回
-  `success=false` + `AUTOSTUN_NOT_SUPPORTED`，不伪造 `TunnelInfoDTO`。
-- **`POST /api/general/refreshNatStatus`**：上游旧版入口，复用 `/api/autostun/refreshNatType`
-  （当前返回 501）。
+- **AutoSTUN 管理端点（`/api/autostun/*`）**：`status`（enabled / 友好回环 /
+  已选下载器 / NAT 类型）、`PUT config`（写回 `auto-stun.*` 后 reload）、`tunnels`、
+  `tunnel/{id}/info`（有效位、心跳、连接/字节计数、监听与上游端点）、
+  `refreshNatType`（立即返回、异步探测）、`restart`（= reload）。
+  隧道编排由应用层管理器每 5 秒按**实时配置**巡检：仅对 `HEALTHY`、登录成功且声明
+  `LIVE_UPDATE_BT_PROTOCOL_PORT` 的下载器建隧道（`Deluge` 无该能力，恒不注册）；
+  `stun.available-test` 在建映射时消费；端口**仅在与映射端口不同时**改写。
+  `POST /api/general/refreshNatStatus` 是上游旧版入口，复用同一处理器。
+  已知差异：`tunnel/{id}/connections` 的分页结果恒为空（转发器未做逐连接记账）。
 - **BitComet 任务列表分页（上游 v9.5.2 / BitComet 2.23）**：`getTorrents()` 的
   requirements 固定带 `keyword=""`、`query_mode="stateless"`、`validate_task_ids=[]`，
   并按 `start`/`limit` 分页循环——**非 2xx 记日志后跳过该页继续下一页**，某页取回

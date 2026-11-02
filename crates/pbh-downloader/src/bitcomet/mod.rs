@@ -575,6 +575,10 @@ impl Downloader for BitCometDownloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         "bitcomet"
     }
@@ -958,6 +962,49 @@ impl Downloader for BitCometDownloader {
     }
 
     /// 对齐 `BitComet.getStatistics()`；失败时对齐上游：`warn` 后抛出。
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async move {
+            // 上游 `BitComet.getBTProtocolPort`：`connection_config.listen_port_tcp`，
+            // 任何失败都返回 -1（此处 `None`，管理器据此仍会尝试改写）
+            let Ok(resp) = self
+                .post_authed(GET_CONNECTION_CONFIG, "{}".to_string())
+                .await
+            else {
+                return Ok(None);
+            };
+            if !is_success(resp.status) {
+                return Ok(None);
+            }
+            let Ok(parsed) = serde_json::from_str::<BCConnectionConfigResponse>(&resp.body) else {
+                return Ok(None);
+            };
+            Ok(parsed
+                .connection_config
+                .and_then(|config| config.listen_port_tcp)
+                .filter(|port| (0..=u16::MAX as i64).contains(port))
+                .map(|port| port as u16))
+        })
+    }
+
+    fn set_bt_protocol_port<'a>(&'a self, port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 上游 `BitComet.setBTProtocolPort`：同时打开 `enable_listen_tcp`
+            let body = serde_json::json!({
+                "connection_config": {
+                    "enable_listen_tcp": true,
+                    "listen_port_tcp": port,
+                }
+            });
+            let resp = self
+                .post_authed(SET_CONNECTION_CONFIG, body.to_string())
+                .await?;
+            if !is_success(resp.status) {
+                anyhow::bail!("set listen_port_tcp failed: statusCode={}", resp.status);
+            }
+            Ok(())
+        })
+    }
+
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>> {
         Box::pin(async move {
             match self.fetch_statistics().await {

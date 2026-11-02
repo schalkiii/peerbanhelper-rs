@@ -308,6 +308,10 @@ pub struct TcpForwarder {
     handled: AtomicU64,
     failed: AtomicU64,
     rejected: AtomicU64,
+    /// 已转发给下游（peer）的字节数（`TunnelInfoDTO.totalToDownstreamBytes`）
+    to_downstream_bytes: AtomicU64,
+    /// 已转发给上游（下载器）的字节数（`totalToUpstreamBytes`）
+    to_upstream_bytes: AtomicU64,
     stop: AtomicBool,
     /// 实际监听地址（`proxy_port = 0` 时由系统分配）
     bound_addr: RwLock<Option<SocketAddr>>,
@@ -323,6 +327,8 @@ impl TcpForwarder {
             handled: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            to_downstream_bytes: AtomicU64::new(0),
+            to_upstream_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             bound_addr: RwLock::new(None),
             accept_thread: Mutex::new(None),
@@ -422,7 +428,7 @@ impl TcpForwarder {
             connections.insert(peer, upstream_local);
         }
         self.release_connection(peer.ip());
-        relay(downstream, upstream);
+        relay(downstream, upstream, Arc::clone(self));
         if let Ok(mut connections) = self.connections.write() {
             connections.remove(&peer);
         }
@@ -506,6 +512,20 @@ impl TcpForwarder {
             .map(|(downstream, _)| *downstream)
     }
 
+    /// 已转发给下游 / 上游的累计字节数（Web 隧道信息用）。
+    pub fn total_to_downstream_bytes(&self) -> u64 {
+        self.to_downstream_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn total_to_upstream_bytes(&self) -> u64 {
+        self.to_upstream_bytes.load(Ordering::Relaxed)
+    }
+
+    /// 转发器配置（宿主/端口，Web 隧道信息用）。
+    pub fn config(&self) -> &TcpForwarderConfig {
+        &self.config
+    }
+
     /// `getEstablishedConnections()`。
     pub fn established_connections(&self) -> usize {
         self.connections
@@ -538,18 +558,29 @@ impl TcpForwarder {
 }
 
 /// 双向中继（对齐 `RelayHandler`：任一侧关闭即断开另一侧）。
-fn relay(mut downstream: TcpStream, mut upstream: TcpStream) {
+///
+/// 顺带累计两个方向的字节数（Web `/api/autostun/tunnels` 的 `totalTo*Bytes`）。
+fn relay(mut downstream: TcpStream, mut upstream: TcpStream, forwarder: Arc<TcpForwarder>) {
     let (Ok(mut down_clone), Ok(mut up_clone)) = (downstream.try_clone(), upstream.try_clone())
     else {
         return;
     };
+    let up_counter = Arc::clone(&forwarder);
     let to_upstream = std::thread::Builder::new()
         .name("TCPForwarder-RelayUp".to_string())
         .spawn(move || {
-            let _ = io::copy(&mut down_clone, &mut up_clone);
+            if let Ok(bytes) = io::copy(&mut down_clone, &mut up_clone) {
+                up_counter
+                    .to_upstream_bytes
+                    .fetch_add(bytes, Ordering::Relaxed);
+            }
             let _ = up_clone.shutdown(Shutdown::Both);
         });
-    let _ = io::copy(&mut upstream, &mut downstream);
+    if let Ok(bytes) = io::copy(&mut upstream, &mut downstream) {
+        forwarder
+            .to_downstream_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
     let _ = downstream.shutdown(Shutdown::Both);
     if let Ok(handle) = to_upstream {
         let _ = handle.join();

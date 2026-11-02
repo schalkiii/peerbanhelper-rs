@@ -21,6 +21,7 @@ fn test_state(db: Arc<Database>) -> AppState {
         remap: Arc::new(pbh_core::remap::RemapConfig::default()),
         proxy_setting: 0,
         auto_stun_registry: None,
+        auto_stun_settings: Arc::new(Default::default),
         translator: Arc::new(Translator::embedded()),
         locale: "zh_cn".to_string(),
         backend: Arc::new(NoopBackend),
@@ -1440,8 +1441,10 @@ async fn parity_alias_routes_exist() {
         Some("{}".into()),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "AutoSTUN 未接线");
+    // AutoSTUN 已接线：刷新 NAT 类型立即返回，异步探测
+    assert_eq!(status, StatusCode::OK);
 
+    // 注册表不存在（auto-stun 未启用）⇒ 明确告知不支持，而不是假装成功
     let (status, body) = get_json(&state, "/api/autostun/tunnel/dl-1/info").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["success"], false);

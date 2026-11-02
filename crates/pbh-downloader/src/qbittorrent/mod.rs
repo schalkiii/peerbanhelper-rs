@@ -365,6 +365,10 @@ impl Downloader for QBittorrentDownloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         self.config.kind
     }
@@ -638,6 +642,35 @@ impl Downloader for QBittorrentDownloader {
             // 上游 `!response.isSuccessful()` 时记 `DOWNLOADER_QB_FAILED_SAVE_BANLIST` 并抛异常
             if !(200..300).contains(&resp.status) {
                 anyhow::bail!("save qBittorrent banlist error: statusCode={}", resp.status);
+            }
+            Ok(())
+        })
+    }
+
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async move {
+            // 上游 `AbstractQbittorrent.getBTProtocolPort`：`/app/preferences` 的 `listen_port`
+            let resp = self.get("/app/preferences").await?;
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("Request failed with code: {}", resp.status);
+            }
+            let preferences: serde_json::Value =
+                serde_json::from_str(&resp.body).unwrap_or_default();
+            Ok(preferences
+                .get("listen_port")
+                .and_then(|v| v.as_i64())
+                .filter(|p| (0..=u16::MAX as i64).contains(p))
+                .map(|p| p as u16))
+        })
+    }
+
+    fn set_bt_protocol_port<'a>(&'a self, port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 上游 `AbstractQbittorrent.setBTProtocolPort`：setPreferences `{"listen_port": n}`
+            let form = self.set_preferences(serde_json::json!({ "listen_port": port }));
+            let resp = self.post_form("/app/setPreferences", form).await?;
+            if !(200..300).contains(&resp.status) {
+                anyhow::bail!("set listen_port failed: statusCode={}", resp.status);
             }
             Ok(())
         })
@@ -1002,6 +1035,20 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// AutoSTUN 用：读写 `listen_port`（上游 `getBTProtocolPort`/`setBTProtocolPort`）。
+    #[tokio::test]
+    async fn bt_protocol_port_reads_and_writes_listen_port() {
+        let mock = QbMock::new();
+        *mock.preferences.lock().unwrap() =
+            (200, json!({"listen_port": 51413}).to_string());
+        let dl = mock_downloader(mock.clone());
+        assert_eq!(dl.bt_protocol_port().await.unwrap(), Some(51413));
+
+        dl.set_bt_protocol_port(6881).await.unwrap();
+        let form = mock.request("/app/setPreferences").json_form();
+        assert_eq!(form["listen_port"], json!(6881), "{form}");
     }
 
     /// EE：`use-shadow-ban` 开启时要求下载器自报 `shadow_ban_enabled`，

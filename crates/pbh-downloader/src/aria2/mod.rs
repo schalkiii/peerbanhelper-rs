@@ -429,6 +429,10 @@ impl Downloader for Aria2Downloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         "aria2"
     }
@@ -625,6 +629,39 @@ impl Downloader for Aria2Downloader {
                 .await?;
             if !result.eq_ignore_ascii_case("OK") {
                 anyhow::bail!("Aria2Next setSpeedLimiter returned non-OK result: {result}");
+            }
+            Ok(())
+        })
+    }
+
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async move {
+            // 上游 `Aria2Next.getBTProtocolPort`：`aria2.getGlobalOption` 的 `listen-port`
+            let options: serde_json::Value = self
+                .send_rpc_request("aria2.getGlobalOption", Vec::new())
+                .await?;
+            let port = options.get("listen-port").and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))
+            });
+            Ok(port
+                .filter(|port| (0..=u16::MAX as i64).contains(port))
+                .map(|port| port as u16))
+        })
+    }
+
+    fn set_bt_protocol_port<'a>(&'a self, port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 上游 `Aria2Next.setBTProtocolPort`：失败只记日志（不打断 AutoSTUN 巡检）
+            let result: anyhow::Result<String> = self
+                .send_rpc_request(
+                    "aria2.changeGlobalOption",
+                    vec![serde_json::json!({ "listen-port": port.to_string() })],
+                )
+                .await;
+            if let Err(e) = result {
+                tracing::warn!("Aria2Next setBTProtocolPort 失败: {e}");
             }
             Ok(())
         })

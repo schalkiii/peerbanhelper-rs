@@ -149,6 +149,12 @@ impl DownloaderFeature {
 pub trait Downloader: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
+
+    /// 下载器端点（AutoSTUN 校验主机是否为 LAN 地址时需要）。
+    /// 默认空串（不支持该语义的适配器）。
+    fn endpoint(&self) -> &str {
+        ""
+    }
     fn downloader_type(&self) -> &'static str;
     fn feature_flags(&self) -> Vec<String>;
 
@@ -167,6 +173,20 @@ pub trait Downloader: Send + Sync {
     /// 先调 `unbanPeers` 再整份替换）；其它适配器依赖 [`Self::replace_banned_ips`]
     /// 的整份列表替换，默认实现为空操作。
     fn unban_peers<'a>(&'a self, _ips: &'a [String]) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// 读取下载器当前 BT 监听端口（上游 `getBTProtocolPort`）。
+    ///
+    /// `None` = 适配器不支持或读取失败（上游失败返回 -1，AutoSTUN 仍会尝试改写端口）；
+    /// 默认实现表示不支持——Deluge 在上游同样没有该能力。
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// 改写下载器 BT 监听端口（上游 `setBTProtocolPort`，AutoSTUN 映射成功后调用）。
+    /// 默认实现为空操作（适配器不支持）。
+    fn set_bt_protocol_port<'a>(&'a self, _port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
         Box::pin(async { Ok(()) })
     }
     fn statistics<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<DownloaderStatistics>>;

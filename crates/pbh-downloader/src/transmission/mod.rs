@@ -293,6 +293,10 @@ impl Downloader for TransmissionDownloader {
     fn name(&self) -> &str {
         &self.config.name
     }
+
+    fn endpoint(&self) -> &str {
+        &self.config.endpoint
+    }
     fn downloader_type(&self) -> &'static str {
         "transmission"
     }
@@ -437,6 +441,39 @@ impl Downloader for TransmissionDownloader {
                 Err(e) => {
                     tracing::error!("Transmission blocklist-update 失败: {e:#}");
                 }
+            }
+            Ok(())
+        })
+    }
+
+    fn bt_protocol_port<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<Option<u16>>> {
+        Box::pin(async move {
+            // 上游 `Transmission.getBTProtocolPort`：`session-get peer-port`，失败返回 -1
+            // ⇒ 这里返回 `None`（管理器的判断是「与目标端口不同才改写」，与上游一致）
+            match self
+                .rpc::<SessionGet>("session-get", serde_json::json!({ "fields": ["peer-port"] }))
+                .await
+            {
+                Ok((result, session)) if result == "success" => Ok(Some(session.peer_port as u16)),
+                _ => Ok(None),
+            }
+        })
+    }
+
+    fn set_bt_protocol_port<'a>(&'a self, port: u16) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            // 上游 `Transmission.setBTProtocolPort`：`session-set` + 关闭随机端口；失败只记日志
+            let (result, _) = self
+                .rpc::<SessionGet>(
+                    "session-set",
+                    serde_json::json!({
+                        "peer-port": port,
+                        "peer-port-random-on-start": false,
+                    }),
+                )
+                .await?;
+            if result != "success" {
+                tracing::warn!("Transmission setBTProtocolPort 返回 {result}");
             }
             Ok(())
         })

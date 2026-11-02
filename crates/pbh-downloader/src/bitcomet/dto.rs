@@ -281,4 +281,7 @@ pub struct BCConnectionConfig {
     pub max_upload_speed: Option<i64>,
     #[serde(default, rename = "max_download_speed")]
     pub max_download_speed: Option<i64>,
+    /// BT 监听端口（AutoSTUN 用；上游 `ConnectionConfigDTO.listen_port_tcp`）
+    #[serde(default, rename = "listen_port_tcp")]
+    pub listen_port_tcp: Option<i64>,
 }
