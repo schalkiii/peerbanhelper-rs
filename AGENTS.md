@@ -113,7 +113,8 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
   `sessionAnalyse` 全部 17 个计数列；配置保存 201 + reload 结果体；
   封禁列表无条件排除 `excludeFromDisplay`；日志条目键 `seq`→`offset`。
   工作区 **722 测试通过**（另 1 ignore）、clippy 零警告。
-  仅剩 §4.3 的两条「无调用方、不计划修复」项（BT 监听端口改写、replaceTracker）。
+  当时仅剩 §4.3 的两条「无调用方」项；BT 监听端口改写已在 rs.8 由 AutoSTUN 接线补齐，
+  `replaceTracker` 仍保留。
 - **9.5.3-rs.6（2026-11-02；继续关闭 review 遗留项）**：不可解析地址回落占位地址
   `127.123.123.123`（上游 `INVALID_ADDRESS_MISSINGNO`）；`proxy.setting` 按上游代码改为
   1=HTTP / 2=SOCKS5（0 保留环境为有意差异）；支持上游顶层 `auto-stun` / `stun` 段；
@@ -122,7 +123,7 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
   `PUT /api/modules/ipblacklist/*` 201→200、`geoIpInfo` 无 IPDB 时本地化文案 + `data=null`。
   工作区 **718 测试通过**（另 1 ignore）、clippy 零警告。
   仍待办（PLAN §4.2）：规则流水线热重载、Aria2Next `handshaking` 口径、`nat_type`/`use_proxy`、
-  `sessionAnalyse` 指标、`demoMode`/`apiToken`/`log.level`、BT 端口与 replaceTracker 接口等。
+  `sessionAnalyse` 指标、`demoMode`/`apiToken`/`log.level` 等（BT 端口已在 rs.8 补齐）。
 - **9.5.3-rs.5（2026-11-02；rs.4 的两处自纠）**：qBittorrent 复用会话时**仍要**按
   `lastStatus != HEALTHY` 刷新 `setPreferences` 与版本（上游在 `isLoggedIn()` 内部调用
   `updateAndApplyMetadataIfRequired`；漏掉会让「绕过本地认证」的 qB 版本列变空、
