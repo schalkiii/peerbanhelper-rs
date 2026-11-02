@@ -153,9 +153,10 @@
 > PTR 反查、ExternalSwitch、代理/CORS/EcoQoS、下载器自动发现、live snapshot、
 > 配置保存保留未知键（详见 CHANGELOG）。当前只剩以下**已知实现边界**：
 >
-> 1. **代理应用方式**：`proxy.setting=2` 在启动期写入进程代理环境变量；`0/1` 保留环境代理
->    （上游 0 = 强制不用代理，本移植为兼容依赖 `HTTP_PROXY` 的部署改为「不额外配置」）；
->    `pbh.downloader.bypassproxy` 不生效，修改 `proxy.*` 需重启。
+> 1. **代理应用方式**：`proxy.setting=1` ⇒ HTTP 代理、`2` ⇒ SOCKS5（以上游
+>    `HTTPUtil.java:96-117` 的代码为准，`config.yml` 的注释与代码矛盾）；`0`（默认）保留为
+>    「不额外配置、沿用部署环境」——上游此处是强制直连，本移植为兼容依赖 `HTTP_PROXY` 的
+>    部署保留该差异（2026-10-25 生产实测）。`pbh.downloader.bypassproxy` 不生效，改 `proxy.*` 需重启。
 > 2. **ExternalSwitch 覆盖面**：仅接线行为相关开关（PCB/idle/qBittorrent/并发槽位/
 >    forceDisableIPDB/allowCors 等）；GUI、Sentry、MySQL 等基础设施开关不适用。
 > 3. **下载器发现平台差异**：Windows/Linux 枚举全部 TCP LISTEN；macOS 等平台退化为
@@ -190,13 +191,10 @@
    （`StunManager.java:37`），本移植放在 `ip-remapping.auto-stun`
    （`crates/pbh/src/config.rs:982-987`）⇒ 直接搬 Java 的 config.yml 时这些键被当未知键
    保留但从不读取。修法：加顶层 serde 别名并在加载期迁移。
-5. **`proxy.setting` 数值语义（高，需按上游代码而非注释对齐）**：上游 `HTTPUtil.java:96-117`
-   是 `1 → HTTP(host:port)`、`2 → SOCKS(host:port)`（与 `config.yml` 的注释矛盾，以代码为准）；
-   本移植 `0|1` 一律「沿用环境代理」、`2` 写 HTTP 环境变量 ⇒ 填 1 的用户完全不走代理、
-   填 2 的用户由 SOCKS 变 HTTP。修同时需同步 README/PLAN §4.1 第 1 条的表述。
-6. **不可解析 IP 的回落缺失（中）**：上游 `IPAddressUtil.getIPAddress` 解析失败返回占位地址
-   `127.123.123.123` 并继续参与黑名单/GeoIP 判定（`IPBlackList.java:308,316`）；
-   本移植解析失败即 pass（`modules/ip_blacklist.rs:243` → `iputil.rs:29-38`）。
+5. ~~**`proxy.setting` 数值语义**~~ —— 已修复：`1` ⇒ HTTP、`2` ⇒ SOCKS5（按上游代码），
+   `0` 保留环境为有意差异，见 §4.1 第 1 条。
+6. ~~**不可解析 IP 的回落缺失**~~ —— 已修复：新增 `iputil::parse_addr_or_invalid`
+   （占位地址 `127.123.123.123`），IP 黑名单 / 订阅列表 / PCB / BTN / 范围封禁统一回落。
 7. **PCB 内存实体不做空闲淘汰（中，已核对不宜按 review 建议改）**：上游两个缓存是
    `expireAfterAccess=180s`（`ProgressCheatBlocker.java:56-73`），活跃 swarm 每 2 分钟被
    访问一次实际不会淘汰；本移植常驻。注意**不能**改成「解封时连内存一起删」——

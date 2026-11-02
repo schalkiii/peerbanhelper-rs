@@ -376,8 +376,12 @@ impl RuleModule for ProgressCheatBlocker {
         let c = &self.config;
         let now = ctx.now_ms;
 
-        let prefix_string = prefix_block(&peer.ip, c.ipv4_prefix_length, c.ipv6_prefix_length)
-            .unwrap_or_else(|| peer.ip.clone());
+        // 上游的 prefix 来自 PeerAddress（构造时已把不可解析地址回落成占位地址），
+        // 所以这里同样不保留原始字符串：否则 PCB 计数键与上游不同
+        let normalized = crate::iputil::parse_addr_or_invalid(&peer.ip).to_string();
+        let prefix_string =
+            prefix_block(&normalized, c.ipv4_prefix_length, c.ipv6_prefix_length)
+                .unwrap_or(normalized);
         // range 实体按 `(downloader, torrent, prefix)` 共享（对齐上游 `CacheKeyPrefix`），
         // 同前缀不同 IP 的上传增量累加到同一计数器。
         let range_key = (

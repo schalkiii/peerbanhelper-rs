@@ -516,6 +516,10 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
   （拿不到时留空，不给错值）。
 - **`GET /api/peer/{ip}`**：`found = banCount>0 || torrentAccessCount>0`；`torrentAccessCount`
   为 `peer_records` 行数；`geo` 实时查询；`btnQueryAvailable` 取决于 `ip_query` 能力。
+- **地址解析回落 [GOLDEN]**：对等体地址解析失败时统一回落占位地址 `127.123.123.123`
+  （上游 `IPAddressUtil.INVALID_ADDRESS_MISSINGNO`，在 `PeerAddress` 构造期完成），
+  继续参与 GeoIP / IP 规则 / PCB（前缀键）/ BTN / 范围封禁判定，**不得**直接 pass。
+  配置文件里的地址解析仍严格（坏配置忽略）。
 - **`GET /api/statistic/counter`**：`wastedTraffic` = 累计被封禁 peer 的 `uploaded`
   （对齐 `InMemoryMetrics#recordPeerBan`）。
 - **`POST /api/downloaders/scan` / `POST /api/oobe/scanDownloader`**：枚举本机 TCP LISTEN
@@ -535,7 +539,8 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 - **PTR / 代理 / CORS / EcoQoS**：`lookup.dns-reverse-lookup` 开启时封禁元数据异步回填
   `reverseLookup`、peers 列表返回 `ptrRecord`；`/api/peer/{ip}` 与上游一致始终尝试 PTR
   （3s 超时）。异步回填与系统解析器各用固定大小 worker 池（4 线程），线程数不随封禁数增长。`resolvers.servers` 支持普通 DNS（含自定义端口）与 DoH POST；
-  `proxy.setting=2` 在启动期写入进程代理环境变量（0/1 保留现有环境，0 不强制清除）；
+  `proxy.setting=1` ⇒ HTTP 代理、`2` ⇒ SOCKS5（按上游 `HTTPUtil.java:96-117` 的代码），
+  二者在启动期写入进程代理环境变量；`0` 保留现有环境（上游为强制直连，本移植有意保留差异）；
   `server.allow-cors` 或 `pbh.allowCors` 启用任意来源 CORS；
   `performance.windows-ecoqos-api` 应用 Windows EcoQoS。
 - **ExternalSwitch**：`pbh.*` 开关可用环境变量（原样键或大写下划线）或 `key=value`

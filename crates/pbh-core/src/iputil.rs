@@ -58,6 +58,25 @@ impl IpSet {
     }
 }
 
+/// 上游 `IPAddressUtil.INVALID_ADDRESS_MISSINGNO`（`IPAddressUtil.java:32`）：
+/// 地址字符串解析失败时使用的占位地址。上游在 `PeerAddress` 构造阶段就完成回落
+///（`PeerAddress.java:41-50` 调 `getIPAddress(ip).toPrefixBlock()`），
+/// 因此各规则模块看到的是占位地址，而不是「解析失败就跳过判定」。
+pub const INVALID_ADDRESS: &str = "127.123.123.123";
+
+/// 同 [`parse_addr`]，但解析失败回落到 [`INVALID_ADDRESS`]（不返回 `None`）。
+///
+/// 只用于「对等体地址参与判定」的路径（GeoIP / IP 规则 / PCB / BTN / 范围封禁），
+/// 与上游一致；纯配置项解析仍用 [`parse_addr`]（坏配置该被忽略而不是当成占位地址）。
+pub fn parse_addr_or_invalid(ip: &str) -> std::net::IpAddr {
+    match parse_addr(ip) {
+        Some(addr) => addr,
+        None => INVALID_ADDRESS
+            .parse()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+    }
+}
+
 /// 解析单个 IP 并归一化：去方括号、IPv4-mapped IPv6（`::ffff:a.b.c.d`）视为 IPv4。
 ///
 /// 对齐 `IPAddressUtil.getIPAddress` 的归一化部分（不伪造占位地址，解析失败返回 None）。
@@ -162,6 +181,26 @@ pub fn v6_unspecified() -> Ipv6Addr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 上游 `IPAddressUtil.getIPAddress` 的回落语义（`IPAddressUtil.java:70-77`）：
+    /// 解析失败返回占位地址 `127.123.123.123`，判定链继续走而不是跳过。
+    #[test]
+    fn parse_addr_or_invalid_falls_back_like_upstream() {
+        use std::net::Ipv4Addr;
+        let placeholder = std::net::IpAddr::V4(Ipv4Addr::new(127, 123, 123, 123));
+        assert_eq!(parse_addr_or_invalid("not-an-ip"), placeholder);
+        assert_eq!(parse_addr_or_invalid(""), placeholder);
+        assert_eq!(
+            parse_addr_or_invalid(" 8.8.8.8 "),
+            "8.8.8.8".parse::<std::net::IpAddr>().unwrap()
+        );
+        // IPv4-mapped IPv6 仍归一化成 IPv4（与 parse_addr 一致）
+        assert_eq!(
+            parse_addr_or_invalid("::ffff:1.2.3.4"),
+            "1.2.3.4".parse::<std::net::IpAddr>().unwrap()
+        );
+        assert_eq!(parse_addr("bogus"), None, "配置解析路径不受回落影响");
+    }
 
     #[test]
     fn cidr_contains() {

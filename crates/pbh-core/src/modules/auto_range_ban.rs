@@ -5,7 +5,7 @@
 
 use crate::banlist::BanList;
 use crate::i18n::TranslationComponent;
-use crate::iputil::{parse_addr, prefix_block};
+use crate::iputil::{parse_addr, parse_addr_or_invalid, prefix_block};
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, RuleModule};
 use std::net::IpAddr;
@@ -59,9 +59,8 @@ impl RuleModule for AutoRangeBan {
         if peer.is_handshaking() {
             return CheckResult::pass(&module);
         }
-        let Some(peer_addr) = parse_addr(&peer.ip) else {
-            return CheckResult::pass(&module);
-        };
+        // 与上游一致：不可解析的对等体地址回落成占位地址后继续判定
+        let peer_addr = parse_addr_or_invalid(&peer.ip);
         let Ok(list) = self.ban_list.lock() else {
             return CheckResult::pass(&module);
         };

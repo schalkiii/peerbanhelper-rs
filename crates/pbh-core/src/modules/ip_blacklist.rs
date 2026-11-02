@@ -65,7 +65,9 @@ impl IpBlacklist {
         if geo.regions.is_empty() && geo.asns.is_empty() {
             return None;
         }
-        let address = iputil::parse_addr(ip)?;
+        // 上游在 PeerAddress 构造阶段就把不可解析地址回落成占位地址，这里对齐：
+        // 解析失败不再跳过 GeoIP 判定
+        let address = iputil::parse_addr_or_invalid(ip);
         let data = self.geo_provider.as_ref()?.query(address)?;
         let module = self.module();
 

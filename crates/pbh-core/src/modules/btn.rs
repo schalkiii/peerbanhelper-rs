@@ -83,7 +83,7 @@
 use crate::avscript::ScriptDownloader;
 use crate::banlist::BanList;
 use crate::i18n::{Param, TranslationComponent};
-use crate::iputil::parse_addr;
+use crate::iputil::{parse_addr, parse_addr_or_invalid};
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, PeerAction, RuleModule};
 use crate::rule::{Matcher, RuleSet};
@@ -1090,7 +1090,7 @@ fn check_ip_rule(
     ruleset: &BtnRulesetParsed,
     peer: &PeerData,
 ) -> Option<CheckResult> {
-    let pa = parse_addr(&peer.ip)?.to_string();
+    let pa = parse_addr_or_invalid(&peer.ip).to_string();
     for (category, matcher) in &ruleset.ip_rules {
         if matcher.match_ip(&pa).is_some() {
             // 上游：rule = BTN_BTN_RULE(category, category)、reason = MODULE_BTN_BAN("IP", category, pa)

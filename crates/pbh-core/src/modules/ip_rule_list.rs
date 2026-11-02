@@ -13,7 +13,7 @@
 //! - 同一地址块重复出现时合并注释（`\n` 连接）。
 
 use crate::i18n::TranslationComponent;
-use crate::iputil::parse_addr;
+use crate::iputil::{parse_addr, parse_addr_or_invalid};
 use crate::model::{PeerData, TorrentData};
 use crate::module::{CheckContext, CheckResult, RuleModule};
 use ipnet::IpNet;
@@ -431,9 +431,8 @@ impl RuleModule for IpRuleListModule {
         if peer.is_handshaking() {
             return CheckResult::handshaking(&module);
         }
-        let Some(addr) = parse_addr(&peer.ip) else {
-            return CheckResult::pass(&module);
-        };
+        // 与上游一致：不可解析的地址按占位地址参与订阅列表匹配，而不是直接 pass
+        let addr = parse_addr_or_invalid(&peer.ip);
         let Ok(list) = self.subscriptions.read() else {
             return CheckResult::pass(&module);
         };
