@@ -91,8 +91,13 @@ async fn main() -> anyhow::Result<()> {
     let ring_log = Arc::new(RingLog::new(4096));
     // 默认 `pbh=debug`：封禁链路的排障依赖这些 DEBUG 打点（看门狗也靠「主循环返回」心跳）。
     // 想更安静用 `RUST_LOG=info`，想看协议级细节用 `RUST_LOG=pbh=trace`。
+    // 上游 `Main` 的 `pbh.log.level`：覆盖默认级别；`RUST_LOG` 仍然优先
+    let default_level = pbh_core::external_switch::parse("pbh.log.level")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "info,pbh=debug,reqwest=warn".to_string());
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,pbh=debug,reqwest=warn".into());
+        .unwrap_or_else(|_| default_level.into());
     tracing_subscriber::registry()
         .with(env_filter)
         // GUI 把 stdout 重定向到 pbh-gui.log：非终端时关掉 ANSI 颜色，
@@ -536,9 +541,14 @@ async fn main() -> anyhow::Result<()> {
         &cfg.resolvers,
         cfg.lookup.dns_reverse_lookup,
     ));
+    // 上游 `setupHttpServer`：`externalSwitch pbh.apiToken` 优先于配置里的 server.token
+    let api_token = pbh_core::external_switch::parse("pbh.apiToken")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| cfg.server.token.clone());
     let state = AppState {
         db: db.clone(),
-        token: Arc::new(Mutex::new(cfg.server.token.clone())),
+        token: Arc::new(Mutex::new(api_token)),
         silent_login: silent_login.clone(),
         metrics: metrics.clone(),
         started: Arc::new(std::time::Instant::now()),
@@ -546,6 +556,8 @@ async fn main() -> anyhow::Result<()> {
         static_dir: Arc::new(Mutex::new(Some(data_dir.join("static")))),
         ban_list: pipeline.ban_list(),
         remap: remap.clone(),
+        proxy_setting: cfg.proxy.setting,
+        auto_stun_registry: cfg.ip_remapping.auto_stun_registry.clone(),
         translator: translator.clone(),
         locale: cfg.language.locale.clone(),
         backend: backend.clone(),

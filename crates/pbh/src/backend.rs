@@ -229,7 +229,10 @@ impl WebBackend for PbhBackend {
         // 对齐上游 `saveDownloaderJson()`：Web API 用 camelCase 的 DTO 形状
         //（`web_json`），编辑表单按 `config.basicAuth` 等键填充；不能用 serde 直出
         // 内部结构（kebab-case 且缺 basicAuth，会让弹窗子表单渲染失败）
-        let config = d.web_json();
+        let mut config = d.web_json();
+        if pbh_core::external_switch::demo_mode() {
+            pbh_core::external_switch::redact_downloader_json(&mut config);
+        }
         Some(DownloaderMeta {
             endpoint: d.endpoint.clone(),
             // 上游这里回 `downloader.isPaused()`；本移植的暂停状态来自配置项 `paused`
@@ -352,6 +355,27 @@ impl WebBackend for PbhBackend {
                 // 上游配置文件是 `privacy.analytics`，WebUI 配置页也按该路径绑定；
                 // 本移植内部字段是顶层 `analytics`，这里补出上游视图。
                 let mut view = normalize_keys(&root);
+                // 演示模式：配置页隐藏下载器地址/凭据与 BTN 应用凭据（对齐上游
+                // `PBHGeneralController.handleGet` 的 demoMode 分支）
+                if pbh_core::external_switch::demo_mode() {
+                    if let Some(downloaders) =
+                        view.get_mut("downloaders").and_then(|v| v.as_array_mut())
+                    {
+                        for downloader in downloaders {
+                            pbh_core::external_switch::redact_downloader_json(downloader);
+                        }
+                    }
+                    if let Some(btn) = view.get_mut("btn").and_then(|v| v.as_object_mut()) {
+                        for key in ["app-id", "app-secret"] {
+                            if btn.contains_key(key) {
+                                btn.insert(
+                                    key.into(),
+                                    json!(pbh_core::external_switch::DEMO_REDACTED),
+                                );
+                            }
+                        }
+                    }
+                }
                 if let Some(object) = view.as_object_mut() {
                     let analytics = object
                         .get("analytics")

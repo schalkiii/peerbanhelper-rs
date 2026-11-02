@@ -113,8 +113,14 @@ pub async fn status(
                     "accessToChinaNetwork": china_ok,
                     "accessToGlobalNetwork": global_ok,
                 },
-                "nat_type": "unknown",
-                "use_proxy": false,
+                // 上游 `generateNetworkStats`：NAT 类型取 BTSTUN 缓存、use_proxy 看代理是否
+                // 生效（`HTTPUtil.getProxyType() != DIRECT` ⇒ `proxy.setting != 0`）
+                "nat_type": state
+                    .auto_stun_registry
+                    .as_ref()
+                    .map(|registry| registry.nat_type().as_str())
+                    .unwrap_or("Unknown"),
+                "use_proxy": state.proxy_setting != 0,
                 "reverse_proxy": false,
                 "client_ip": client_ip,
             },

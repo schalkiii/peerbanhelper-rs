@@ -19,6 +19,8 @@ fn test_state(db: Arc<Database>) -> AppState {
         static_dir: Arc::new(Mutex::new(None)),
         ban_list: Arc::new(Mutex::new(pbh_core::banlist::BanList::default())),
         remap: Arc::new(pbh_core::remap::RemapConfig::default()),
+        proxy_setting: 0,
+        auto_stun_registry: None,
         translator: Arc::new(Translator::embedded()),
         locale: "zh_cn".to_string(),
         backend: Arc::new(NoopBackend),
@@ -506,7 +508,10 @@ async fn btn_status_contract() {
 async fn general_status_contract() {
     // 缺陷回归：general/status 的 jvm.memory 为空对象（首页 0 Bytes 红点）、
     // compile_time=0（显示 1970）、无 btn 段（设置页显示 BTN 未启用）。
-    let (status, _, body) = raw_get(test_state(Arc::new(Database::open_in_memory().unwrap())), "/api/general/status").await;
+    let mut state = test_state(Arc::new(Database::open_in_memory().unwrap()));
+    // proxy.setting != 0 ⇒ use_proxy=true（上游 `getProxyType() != DIRECT`）
+    state.proxy_setting = 2;
+    let (status, _, body) = raw_get(state, "/api/general/status").await;
     assert_eq!(status, StatusCode::OK);
     let data = body.get("data").expect("data 字段");
     let available = data
@@ -523,7 +528,11 @@ async fn general_status_contract() {
     assert!(btn.get("enabled").and_then(|v| v.as_bool()).is_some());
     let net = data.pointer("/system/network").expect("必须含 system.network");
     assert!(net.get("internet_access").is_some(), "必须含 internet_access");
-    assert!(net.get("use_proxy").is_some(), "必须含 use_proxy");
+    assert_eq!(net["use_proxy"], serde_json::json!(true), "proxy.setting=2 时应为 true");
+    assert_eq!(
+        net["nat_type"], "Unknown",
+        "未启用 AutoSTUN 时取 BTSTUN 缓存默认值 Unknown（上游语义）"
+    );
 }
 
 #[tokio::test]

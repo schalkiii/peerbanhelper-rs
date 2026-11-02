@@ -64,6 +64,10 @@ pub struct AppState {
     pub ban_list: Arc<Mutex<pbh_core::banlist::BanList>>,
     /// `banlist-remapping` 配置（blocklist 端点默认按支持范围封禁处理）
     pub remap: Arc<pbh_core::remap::RemapConfig>,
+    /// `proxy.setting`（`/api/general/status` 的 `network.use_proxy`：非 0 即视为启用代理）
+    pub proxy_setting: i64,
+    /// AutoSTUN 注册表（`/api/general/status` 的 `network.nat_type` 取它的缓存值）
+    pub auto_stun_registry: Option<Arc<pbh_core::auto_stun::AutoStun>>,
     /// 内嵌/覆盖文案表（与 ban wave 共用，支持 `data/lang` 覆盖）
     pub translator: Arc<Translator>,
     /// 服务端默认 locale（请求未指定 `locale` 时使用）
@@ -714,17 +718,23 @@ async fn downloaders(State(state): State<AppState>) -> Response {
         .unwrap_or_default();
     // 对齐上游 `DownloaderWrapperDTO(id, name, endpoint, type, paused)`：
     // WebUI 卡片的编辑入口需要 endpoint，状态显示需要 paused
+    let demo = pbh_core::external_switch::demo_mode();
     let items: Vec<Value> = list
         .iter()
         .map(|s| {
             let meta = state.backend.downloader_meta(&s.id);
+            let endpoint = if demo {
+                pbh_core::external_switch::DEMO_REDACTED.to_string()
+            } else {
+                meta.as_ref().map(|m| m.endpoint.clone()).unwrap_or_default()
+            };
             json!({
                 "id": s.id,
                 "name": s.name,
                 "type": s.kind,
                 "online": s.online,
                 "version": s.version,
-                "endpoint": meta.as_ref().map(|m| m.endpoint.clone()).unwrap_or_default(),
+                "endpoint": endpoint,
                 "paused": meta.as_ref().map(|m| m.paused).unwrap_or(false),
             })
         })

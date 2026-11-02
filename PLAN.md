@@ -211,8 +211,8 @@
     → `ip_range`，**必须先于 schema.sql**，否则新索引引用旧库不存在的列）与 V1_3
     （`peer_records` 唯一键去 port + 按 `last_time_seen DESC, id DESC` 去重），
     与上游 flyway 脚本逐条一致；补了构造老库的迁移用例。
-11. **`/api/general/status` 与图表的字段缺口（中）**：`network.nat_type` / `use_proxy` 仍硬编码
-    （应接 AutoSTUN 缓存与代理配置，`PBHGeneralController.java:234-245`）；
+11. **`/api/general/status` 与图表的字段缺口（中）**：~~`network.nat_type` / `use_proxy`
+    硬编码~~ 已修复（NAT 类型取 AutoSTUN 缓存、`use_proxy` 看 `proxy.setting`）；
     `system.version` 在非 Linux 平台留空（无免依赖取法）；
     `/api/chart/sessionAnalyse` 的 16 个指标里 14 个恒 0 占位（口径与
     `PeerConnectionMetricsDTO` 不同）。
@@ -223,8 +223,9 @@
     `ignoreBanForDisconnect=false` 时未过 `excludeFromDisplay`（`PBHBanController.java:190-193`）；
     日志条目键 `seq` 对前端模型 `offset`（`api/model/log.ts:3`，当前视图未读）。
 13. **上游有、本移植未建模的配置（低）**：`pbh-plus-key`、`server.external-webui`、`gui`、
-    `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）、
-    `pbh.demoMode` / `pbh.apiToken` / `pbh.log.level` 三个开关；
+    `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）；
+    ~~`pbh.demoMode` / `pbh.apiToken` / `pbh.log.level`~~ 已接线（demoMode 打码下载器地址/凭据、
+    配置页下载器段与 BTN 凭据；apiToken 覆盖 Web token；log.level 覆盖默认级别）；
     另外 `ip-database.account-id` / `license-key` 字段已实现但出厂模板未列出，
     模板 `config-version` 落后上游一位。
 

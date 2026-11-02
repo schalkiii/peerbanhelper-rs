@@ -5,6 +5,41 @@
 
 ## 9.5.3-rs.7（2026-11-02）
 
+> 关闭 PLAN.md §4.2 的剩余高/中优先项。
+
+### feat(reload): 规则流水线支持热重载（无需重启）
+
+- 新增 `SharedPipeline`（`RwLock<Arc<Pipeline>>` 句柄）：wave 每轮、BTN 线程每 tick、
+  Web 每次调用各取一次快照，同一轮内模块集合稳定，下一轮即看到新模块。
+- `POST /api/general/reload` 与**配置保存**现在都会：从磁盘重读配置 → 重建规则模块。
+  此前界面改客户端名 / Peer ID / 模块开关后必须重启进程（上游 SimpleReloadLib 会即时生效）。
+- 重建时保证运行态不丢：内存封禁表沿用同一个 Arc；PCB 先 `flush_dirty` 再 `load_persisted`；
+  BTN 网络对象不重建、回灌 abilities 与允许列表；规则订阅从 `<data>/sub/*.txt` 缓存恢复。
+- 已知差异（已写进代码注释与 PLAN）：`multi-dialing-blocker` /
+  `idle-connection-dos-protection` 的内存计数在每次重载时归零（上游原地 reload 不归零）。
+
+### fix(module): Aria2Next 透传下载器上报的 `handshaking` 位
+
+- 上游 `A2Peer.isHandshaking()` 直接返回 `handshaking` 字段；本移植此前一律按速率推导，
+  「零速但对端已握手」的 peer 会被错误跳过（影响 PCB / PeerId / ClientName / MultiDialing /
+  BTN-legacy 的逐 peer 判定）。`PeerData` 新增 `handshaking: Option<bool>` 覆盖位，
+  aria2 适配器填下载器值，其余适配器保持速率推导。
+
+### feat(web): `/api/general/status` 的 `nat_type` / `use_proxy` 接真实值
+
+- `nat_type` 取 AutoSTUN 缓存的 NAT 类型（未启用时为 `Unknown`，与上游 BTSTUN 默认一致）；
+  `use_proxy` 由 `proxy.setting != 0` 决定（对齐 `HTTPUtil.getProxyType() != DIRECT`）。
+
+### feat(config): 接线 `pbh.demoMode` / `pbh.apiToken` / `pbh.log.level`
+
+- **demoMode**（演示/录屏）：`/api/downloaders` 的 endpoint、下载器状态 DTO 的
+  `config`（地址/用户名/密码/API Key/Basic 认证）、配置页的下载器段与 BTN `app-id/app-secret`
+  全部打码为 `REDACTED_IN_DEMO_MODE`（对齐上游同名分支）。
+- **apiToken**：优先于配置里的 `server.token` 作为 Web API 令牌（对齐 `Main.setupHttpServer`）。
+- **log.level**：覆盖默认日志级别（`RUST_LOG` 仍然优先）。
+
+## 9.5.3-rs.6（2026-11-02）
+
 > 关闭 PLAN.md §4.2 最后一个高优先项：规则流水线热重载。
 
 ### feat(reload): 规则流水线支持热重载（无需重启）
