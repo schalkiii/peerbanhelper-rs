@@ -504,7 +504,8 @@ impl Downloader for BiglyBtDownloader {
                     flags: peer_flag_string(peer),
                     ip,
                     port,
-                    raw_ip: format!("{raw_ip}:{raw_port}"),
+                    // 上游 `BiglyBT.java:394`：rawIp 传裸 IP
+                    raw_ip: raw_ip.to_string(),
                     // 上游 `PeerImpl` 无连接类型字段
                     connection: None,
                 });
@@ -1180,19 +1181,19 @@ mod tests {
         // 来源 DHT → "H"；useCrypto → "E"；uTP → "P"
         assert_eq!(tr.flags.as_deref(), Some("d u H E P"));
         assert_eq!(tr.port, 6881);
-        assert_eq!(tr.raw_ip, "9.9.9.9:6881");
+        assert_eq!(tr.raw_ip, "9.9.9.9", "上游 rawIp 是裸 IP");
         assert!(tr.connection.is_none());
 
         // 入站连接 → "I"（`localConnection = !incoming`）；来源 PeerExchange → "X"
         let incoming = by_ip.get("2001:db8::1").expect("peer 2001:db8::1");
         assert_eq!(incoming.flags.as_deref(), Some("K ? O S I X"));
-        assert_eq!(incoming.raw_ip, "2001:db8::1:7000");
+        assert_eq!(incoming.raw_ip, "2001:db8::1");
         assert_eq!(incoming.peer_id.as_deref(), Some("-TR"));
         assert_eq!(incoming.client_name, None);
 
         // NAT64 翻译为 1.2.3.4，raw_ip 保留原地址；奇数长度 hex 前置补 0
         let nat64 = by_ip.get("1.2.3.4").expect("NAT64 peer");
-        assert_eq!(nat64.raw_ip, "64:ff9b::102:304:7001");
+        assert_eq!(nat64.raw_ip, "64:ff9b::102:304");
         assert_eq!(nat64.port, 7001);
         assert_eq!(nat64.peer_id.as_deref(), Some("\u{2}\u{d5}E#"));
         assert_eq!(nat64.progress, 0.1);

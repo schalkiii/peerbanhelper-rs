@@ -821,14 +821,14 @@ async fn peers_are_mapped_with_raw_ip_and_translation() {
         })
     );
 
-    // 按下载器原始 `ip:port` 取（NAT64 翻译后与纯 IPv4 peer 的 `ip` 会重合）
+    // 按下载器原始地址取（上游 rawIp 是裸 IP；NAT64 翻译后与纯 IPv4 peer 的 `ip` 会重合）
     let by_raw: HashMap<&str, &PeerData> =
         peers.iter().map(|p| (p.raw_ip.as_str(), p)).collect();
 
     // 普通 peer：peer_id 十六进制解码（不截断），flags 恒为 None（上游传 null）
-    let normal = by_raw.get("9.9.9.9:6881").expect("peer 9.9.9.9");
+    let normal = by_raw.get("9.9.9.9").expect("peer 9.9.9.9");
     assert_eq!(normal.ip, "9.9.9.9");
-    assert_eq!(normal.raw_ip, "9.9.9.9:6881");
+    assert_eq!(normal.raw_ip, "9.9.9.9");
     assert_eq!(normal.port, 6881);
     assert_eq!(normal.peer_id.as_deref(), Some("-TR1000-abcdefghij"));
     assert_eq!(normal.client_name.as_deref(), Some("-TR1000-abcdefghij"));
@@ -842,7 +842,7 @@ async fn peers_are_mapped_with_raw_ip_and_translation() {
     assert!(!normal.is_handshaking());
 
     // ip 字段自带端口时优先于 remote_port；dl_size/up_size 为 null 按 -1 兼容
-    let explicit = by_raw.get("1.2.3.4:7000").expect("peer 1.2.3.4:7000");
+    let explicit = by_raw.get("1.2.3.4").expect("peer 1.2.3.4");
     assert_eq!(explicit.ip, "1.2.3.4");
     assert_eq!(explicit.port, 7000);
     assert_eq!(explicit.downloaded, -1);
@@ -851,15 +851,15 @@ async fn peers_are_mapped_with_raw_ip_and_translation() {
     assert_eq!(explicit.client_name, None);
     assert!(explicit.is_handshaking());
 
-    // NAT64 → 翻译为 IPv4，raw_ip 保留下载器原始 ip:port；奇数长度 hex 前置补 0
-    let translated = by_raw.get("64:ff9b::102:304:7001").expect("NAT64 peer");
+    // NAT64 → 翻译为 IPv4，raw_ip 保留下载器原始地址；奇数长度 hex 前置补 0
+    let translated = by_raw.get("64:ff9b::102:304").expect("NAT64 peer");
     assert_eq!(translated.ip, "1.2.3.4");
     assert_eq!(translated.port, 7001);
     assert_eq!(translated.peer_id.as_deref(), Some("\u{2}\u{d5}E#"));
     assert_eq!(translated.progress, 0.1);
 
     // 带方括号的 IPv6：解析出显式端口，地址不再重写
-    let v6 = by_raw.get("2001:db8::1:7002").expect("IPv6 peer");
+    let v6 = by_raw.get("2001:db8::1").expect("IPv6 peer");
     assert_eq!(v6.ip, "2001:db8::1");
     assert_eq!(v6.port, 7002);
     assert_eq!(v6.peer_id.as_deref(), Some("\0"));

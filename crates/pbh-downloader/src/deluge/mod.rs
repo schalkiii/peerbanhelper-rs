@@ -248,7 +248,8 @@ impl DelugeDownloader {
                 )),
                 ip,
                 port,
-                raw_ip: format!("{}:{}", raw_ip, raw_port),
+                // 上游 `Deluge.java:143`：rawIp 传裸 IP（端口单独在 PeerAddress 里）
+                raw_ip: raw_ip.clone(),
                 // Deluge 无连接类型概念
                 connection: None,
             });
@@ -908,14 +909,14 @@ mod tests {
         assert_eq!(normal.progress, 0.555);
         // flags=79（interesting+remoteChoked+remoteInterested+choked+localConnection）→ "d u"
         assert_eq!(normal.flags.as_deref(), Some("d u"));
-        assert_eq!(normal.raw_ip, "9.9.9.9:6881");
+        assert_eq!(normal.raw_ip, "9.9.9.9", "上游 rawIp 是裸 IP");
         assert_eq!(normal.port, 6881);
         assert!(normal.connection.is_none());
 
-        // NAT64 地址按 ip-remapping 翻译，raw_ip 保留下载器原始 ip:port
+        // NAT64 地址按 ip-remapping 翻译，raw_ip 保留下载器原始地址（裸 IP）
         let nat64 = by_ip.get("1.2.3.4").expect("NAT64 peer 翻译为 1.2.3.4");
         assert_eq!(nat64.port, 7001);
-        assert_eq!(nat64.raw_ip, "64:ff9b::102:304:7001");
+        assert_eq!(nat64.raw_ip, "64:ff9b::102:304");
         assert_eq!(nat64.peer_id.as_deref(), Some("-TR"));
         // flags=2049（interesting+optimisticUnchoke）+ source=14（dht+pex+lsd）→ "D ? O I H X L"
         assert_eq!(nat64.flags.as_deref(), Some("D ? O I H X L"));

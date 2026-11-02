@@ -803,7 +803,8 @@ async fn ipblacklist_crud_roundtrip() {
         .oneshot(request)
         .await
         .expect("路由调用");
-    assert_eq!(response.status(), StatusCode::CREATED, "PUT 应 201");
+    // 上游 `IPBlackList` 的 PUT 处理器不设置状态码 ⇒ Javalin 默认 200
+    assert_eq!(response.status(), StatusCode::OK, "PUT 应 200");
     // DELETE 移除
     let request = Request::builder()
         .method("DELETE")
@@ -1182,21 +1183,18 @@ async fn paginated_endpoints_response_shape() {
 #[tokio::test]
 async fn chart_endpoints_response_shape() {
     let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
-    // geoIpInfo：四个维度必须是 **KV 数组**——前端 `ispPie.vue` 的
-    // `onSuccess` 只判 `if (data.data)`，随后直接 `data.data[field].reduce(...)`，
-    // 返回对象会让整页报 `.reduce is not a function`（2026-10-12 生产问题）。
-    // 未安装 IP 库（geo=None）时返回四个空数组。
+    // geoIpInfo：未安装 IP 库（geo=None）时对齐上游 `PBHChartController.handleGeoIP`：
+    // `StdResp(false, 本地化文案, null)`——`data` 为 null 而不是空对象，
+    // 前端 `ispPie.vue` 的 `onSuccess` 有 `if (data.data)` 保护，不会再触发
+    // 「.reduce is not a function」（2026-10-12 的历史问题是返回了空对象）。
     let (_, body) = get_json(&state, "/api/chart/geoIpInfo").await;
-    let data = body.get("data").expect("data 字段");
-    for f in ["city", "isp", "province", "region"] {
-        let Some(field) = data.get(f) else {
-            panic!("geoIpInfo 缺 {f}")
-        };
-        assert!(
-            field.as_array().is_some(),
-            "geoIpInfo.{f} 必须是数组（前端要 .reduce），实际 {field}"
-        );
-    }
+    assert_eq!(body["success"], serde_json::json!(false));
+    assert!(body.get("data").is_some_and(|v| v.is_null()), "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("GeoIP"),
+        "message 必须是本地化文案而不是裸 key：{message}"
+    );
     // trend：两个趋势数组（trends.vue 读 connectedPeersTrend / bannedPeersTrend）
     let (_, body) = get_json(&state, "/api/chart/trend").await;
     let data = body.get("data").expect("data 字段");

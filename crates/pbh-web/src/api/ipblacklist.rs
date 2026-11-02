@@ -173,7 +173,8 @@ pub async fn put_rule(
 ) -> Response {
     match mutate(&state, &kind, &body, true) {
         Ok(()) => (
-            StatusCode::CREATED,
+            // 上游  的 PUT 处理器不设置状态码 ⇒ Javalin 默认 200
+            StatusCode::OK,
             crate::std_resp(true, Some("OPERATION_EXECUTE_SUCCESSFULLY"), Value::Null),
         )
             .into_response(),

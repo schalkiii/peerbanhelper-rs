@@ -25,20 +25,6 @@ fn sorted_kv(counter: BTreeMap<String, i64>) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// 空 GeoIP 结构：四个维度都是 **数组**。
-///
-/// 前端 `ispPie.vue` 的 `onSuccess` 只判 `if (data.data)`，随后直接
-/// `data.data[field].reduce(...)`——**四个维度必须是 `KV<string, number>[]`**；
-/// 返回 `{}`（对象）会让 `.reduce is not a function` 直接崩掉整个统计页。
-fn empty_geo() -> serde_json::Value {
-    json!({
-        "city": Vec::<serde_json::Value>::new(),
-        "isp": Vec::<serde_json::Value>::new(),
-        "province": Vec::<serde_json::Value>::new(),
-        "region": Vec::<serde_json::Value>::new(),
-    })
-}
-
 /// `GET /api/chart/geoIpInfo?startAt&endAt&bannedOnly&downloader`：IP 地理位置分布。
 ///
 /// 对齐上游 `handleGeoIP`：对每个去重 IP **实时查询 IPDB** 再计数（落库的精简
@@ -54,9 +40,21 @@ pub async fn geo_ip(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let Some(geo) = state.geo.as_ref() else {
+        // 上游 `PBHChartController.handleGeoIP`：`StdResp(false, tl(locale, CHARTS_IPDB_NEED_INIT), null)`
+        // —— 本地化文案 + `data=null`（此前给的是裸 key 和四个空数组）
+        let locale = pbh_core::i18n::normalize_locale(
+            params
+                .get("locale")
+                .map(String::as_str)
+                .unwrap_or(&state.locale),
+        );
+        let message = state.translator.render(
+            &pbh_core::i18n::TranslationComponent::new("CHARTS_IPDB_NEED_INIT"),
+            &locale,
+        );
         return (
             StatusCode::OK,
-            crate::std_resp(false, Some("IPDB_NEED_INIT"), empty_geo()),
+            crate::std_resp(false, Some(&message), serde_json::Value::Null),
         )
             .into_response();
     };

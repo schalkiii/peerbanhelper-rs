@@ -276,8 +276,8 @@ impl TransmissionDownloader {
                     flags: p.flag_str.clone(),
                     ip: ip.clone(),
                     port,
-                    // Transmission 没有独立的原始 ip:port 键，使用 address:port
-                    raw_ip: format!("{}:{}", p.address, p.port),
+                    // 上游 `TRPeer`：rawIp 是**裸 IP**（`new PeerAddress(addr, port, addr)`）
+                    raw_ip: p.address.clone(),
                     connection: None,
                 }
             })
@@ -898,7 +898,7 @@ mod tests {
         assert_eq!(nat64.peer_id.as_deref(), Some("-TR3000-abcdefghijkl"));
         assert_eq!(nat64.dl_speed, 5);
         assert_eq!(nat64.uploaded, 20);
-        assert_eq!(nat64.raw_ip, "64:ff9b::808:808:6881");
+        assert_eq!(nat64.raw_ip, "64:ff9b::808:808", "上游 TRPeer rawIp 是裸 IP");
         let missing = peers.iter().find(|p| p.ip == "1.2.3.4").expect("missing");
         assert_eq!(missing.dl_speed, -1);
         assert_eq!(missing.uploaded, -1);

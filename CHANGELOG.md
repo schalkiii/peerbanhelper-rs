@@ -14,6 +14,27 @@
   IP 黑白名单、订阅规则列表、PCB 前缀键、BTN 规则、自动范围封禁都改用该入口，
   不再「解析失败即 pass」；配置文件里的地址解析仍保持严格（坏配置忽略）。
 
+### fix(downloader): 非 qB 适配器的 `rawIp` 改为裸 IP（对齐上游）
+
+- Transmission / Deluge / BiglyBT / BitComet 构造 `PeerAddress` 时上游传的 rawIp 都是
+  **裸 IP**（端口单独存放），本移植此前拼成 `ip:port`。影响面是封禁记录里的
+  `downloaderRawIp`（历史 / 日志 / BTN 上报），不下发对象本身不变；qB 仍用原始
+  `ip:port` 键做增量封禁（与上游一致）。
+
+### fix(db): 老 Java 库打开时补齐 flyway V1_3 / V1_5 迁移
+
+- 打开数据库时先做 `pcb_range."range"` → `ip_range`（**必须先于 schema.sql**，
+  否则新库的唯一索引引用旧库不存在的列会直接报错），再做 `peer_records` 唯一键去 port
+  与去重（按 `last_time_seen DESC, id DESC` 保留一条，逐字对齐上游迁移脚本）。
+  此前停留在 V1_1/V1_2 的库会因列名/唯一键不同直接报错。
+
+### fix(web): 两处与上游不一致的状态码 / 文案
+
+- `PUT /api/modules/ipblacklist/*` 由 201 改回 **200**（上游 PUT 处理器不设状态码）。
+- `/api/chart/geoIpInfo` 在未安装 IP 库时按上游返回**本地化文案 + `data=null`**
+  （此前是裸 key `IPDB_NEED_INIT` 与四个空数组；前端 `ispPie.vue` 有
+  `if (data.data)` 保护，不会再出现 `.reduce is not a function`）。
+
 ### feat(downloader): 补齐 qBittorrentEE 适配（影子封禁）
 
 - 上游 `qbittorrentee` 与普通 qBittorrent 共享 `AbstractQbittorrent`，差异在：

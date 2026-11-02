@@ -206,27 +206,25 @@
    `LIVE_UPDATE_BT_PROTOCOL_PORT`（上游 `BTStunInstance.java:119-121` 会改监听端口）；
    ③ `/api/utilities/replaceTracker` 整套缺失（需 trait 增 `getTrackers`/`setTrackers`/
    `getAllTorrents`）。
-9. **增量封禁 `raw_ip` 口径（中，待逐类型复核）**：review 认为上游非 qB 下载器交给
-   qB `banPeers` 的是裸 IP（`TRPeer.java:20`、`Deluge.java:143`、`BiglyBT.java:394`、
-   `BitComet.java:101`），本移植多类型拼 `ip:port`（`transmission/mod.rs:278`、
-   `deluge/mod.rs:242`、`biglybt/mod.rs:507`、`bitcomet/mod.rs:447`；仅
-   `aria2/mod.rs:344` 一致）。改前要先确认上游各类型 `getRawIp()` 的真实返回值，
-   多下载器混跑时才影响下发载荷。
-10. **老 Java 库的增量迁移缺失（中）**：本移植只有 `CREATE TABLE IF NOT EXISTS` +
-    `ban_logs` 两条 ALTER（`crates/pbh-db/src/lib.rs:315-333`），不读 `flyway_schema_history`，
-    停留在 V1_1/V1_2 的库不会补做 V1_3（`peer_records` 唯一键去 port + 去重）与
-    V1_5（`pcb_range."range"` → `ip_range`）⇒ `ON CONFLICT(ip_range, …)` 可能直接报错。
+9. ~~**`raw_ip` 口径**~~ —— 已核对并修正：上游这四个适配器构造 `PeerAddress` 时
+   rawIp 传的都是**裸 IP**（`TRPeer.java:20`、`Deluge.java:143`、`BiglyBT.java:394`、
+   `BitComet.parseAddress`），qB 自己仍是 `ip:port`（它用原始键做增量封禁，本移植本来就对）。
+   影响面是封禁记录里的 `downloaderRawIp`（历史/日志/BTN 上报），不影响下发给谁。
+10. ~~**老 Java 库的增量迁移缺失**~~ —— 已修复：打开时先做 V1_5（`pcb_range."range"`
+    → `ip_range`，**必须先于 schema.sql**，否则新索引引用旧库不存在的列）与 V1_3
+    （`peer_records` 唯一键去 port + 按 `last_time_seen DESC, id DESC` 去重），
+    与上游 flyway 脚本逐条一致；补了构造老库的迁移用例。
 11. **`/api/general/status` 与图表的字段缺口（中）**：`network.nat_type` / `use_proxy` 仍硬编码
     （应接 AutoSTUN 缓存与代理配置，`PBHGeneralController.java:234-245`）；
     `system.version` 在非 Linux 平台留空（无免依赖取法）；
     `/api/chart/sessionAnalyse` 的 16 个指标里 14 个恒 0 占位（口径与
     `PeerConnectionMetricsDTO` 不同）。
-12. **状态码与文案差异（低）**：`PUT /api/modules/ipblacklist/netType` 返回 201（上游 200）；
-    `PUT /api/general/{config,profile}` 返回 200 + null（上游 201 + reload 结果体）；
-    `geoIpInfo` 无 IPDB 时 `message` 是裸 key 且 `data` 给四个空数组（上游本地化文本 +
-    `data=null`）；`ignoreBanForDisconnect=false` 时未过 `excludeFromDisplay`
-    （`PBHBanController.java:190-193`）；日志条目键 `seq` 对前端模型 `offset`
-    （`api/model/log.ts:3`，当前视图未读所以无表现）。
+12. **状态码与文案差异（低）**：~~`PUT /api/modules/ipblacklist/*` 返回 201~~ 已改为 200
+    （上游 PUT 处理器不设状态码）；~~`geoIpInfo` 无 IPDB 时裸 key + 空数组~~ 已改为
+    本地化文案 + `data=null`（上游 `PBHChartController.handleGeoIP`）。
+    仍缺：`PUT /api/general/{config,profile}` 返回 200 + null（上游 201 + reload 结果体）；
+    `ignoreBanForDisconnect=false` 时未过 `excludeFromDisplay`（`PBHBanController.java:190-193`）；
+    日志条目键 `seq` 对前端模型 `offset`（`api/model/log.ts:3`，当前视图未读）。
 13. **上游有、本移植未建模的配置（低）**：`pbh-plus-key`、`server.external-webui`、`gui`、
     `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）、
     `pbh.demoMode` / `pbh.apiToken` / `pbh.log.level` 三个开关；

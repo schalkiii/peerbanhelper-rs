@@ -444,7 +444,8 @@ impl BitCometDownloader {
                 flags: None,
                 ip,
                 port,
-                raw_ip: format!("{raw_ip}:{raw_port}"),
+                // 上游 `BitComet.parseAddress`：rawIp 是裸 IP（host 部分）
+                raw_ip: raw_ip.to_string(),
                 // 上游 `PeerImpl` 无连接类型字段
                 connection: None,
             });

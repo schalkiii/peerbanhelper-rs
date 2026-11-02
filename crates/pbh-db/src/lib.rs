@@ -198,6 +198,62 @@ pub(crate) fn select_torrent(
 ///
 /// 仅当旧表存在且新表为空时执行；旧表保留不删（便于人工回滚/排查）。
 /// 封禁列表的完整 `BanMetadata` 已不可恢复，用最小结构重建（保留地址/时间/模块）。
+/// 判断表中是否存在某列（大小写不敏感）。
+fn column_exists(conn: &Connection, table: &str, column: &str) -> anyhow::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name.eq_ignore_ascii_case(column) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 上游 flyway `V1_5__rename_pcb_range_column.sql`：老库的 `pcb_range."range"` 改名为 `ip_range`。
+fn migrate_pcb_range_column(conn: &Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "pcb_range")?
+        && column_exists(conn, "pcb_range", "range")?
+        && !column_exists(conn, "pcb_range", "ip_range")?
+    {
+        conn.execute("ALTER TABLE pcb_range RENAME COLUMN \"range\" TO ip_range", [])?;
+    }
+    Ok(())
+}
+
+/// 上游 flyway `V1_3__remove_unique_index_for_peer_records_port.sql`：
+/// 唯一键从 `(address, torrent_id, downloader, port)` 收敛为去掉 `port`，并先按
+/// `last_time_seen DESC, id DESC` 保留每组一条（与上游 SQL 逐字一致）。
+fn migrate_peer_records_unique_key(conn: &Connection) -> anyhow::Result<()> {
+    let index_sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_peer_records_unique'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let needs_migration = index_sql
+        .as_deref()
+        .is_some_and(|sql| sql.to_ascii_lowercase().contains("port"));
+    if !needs_migration {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"WITH ranked AS (
+               SELECT id,
+                      ROW_NUMBER() OVER (PARTITION BY address, torrent_id, downloader
+                                         ORDER BY last_time_seen DESC, id DESC) AS rn
+               FROM peer_records
+           )
+           DELETE FROM peer_records WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+           DROP INDEX IF EXISTS idx_peer_records_unique;
+           CREATE UNIQUE INDEX idx_peer_records_unique
+               ON peer_records (address, torrent_id, downloader);"#,
+    )?;
+    Ok(())
+}
+
 fn migrate_legacy_tables(conn: &Connection) -> anyhow::Result<()> {
     if table_exists(conn, "meta")? {
         let _ = conn.execute(
@@ -316,7 +372,12 @@ impl Database {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // 对齐上游 flyway V1_5：**必须先于 schema.sql** 执行——新 schema 的
+        // `idx_pcb_range_unique` 引用 `ip_range`，老库此时还叫 `"range"`，建索引会直接报错
+        migrate_pcb_range_column(&conn)?;
         conn.execute_batch(include_str!("schema.sql"))?;
+        // 对齐上游 flyway V1_3：老库的 `peer_records` 唯一键还带 port，先去重再收敛
+        migrate_peer_records_unique_key(&conn)?;
         migrate_legacy_tables(&conn)?;
         // 增量迁移（老库缺列时补齐；新库已含列，忽略重复列错误）
         for sql in [
@@ -2030,5 +2091,96 @@ mod tests {
             "标已读后不应再算未读"
         );
         assert!(db.alert_exists("dl-login-failed").unwrap());
+    }
+
+    /// 老 Java 库（flyway 停在 V1_1/V1_2）打开时要补齐两处结构：
+    /// `pcb_range."range"` → `ip_range`（V1_5）；`peer_records` 唯一键去 port 并去重（V1_3）。
+    #[test]
+    fn legacy_java_schema_is_migrated_on_open() {
+        let dir = std::env::temp_dir().join(format!("pbh-db-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE pcb_range (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    "range" TEXT NOT NULL,
+                    torrent_id TEXT NOT NULL,
+                    last_report_progress REAL NOT NULL,
+                    last_report_uploaded INTEGER NULL,
+                    tracking_uploaded_increase_total INTEGER NULL,
+                    rewind_counter INTEGER NOT NULL,
+                    progress_difference_counter INTEGER NOT NULL,
+                    first_time_seen INTEGER NOT NULL,
+                    last_time_seen INTEGER NOT NULL,
+                    downloader TEXT NOT NULL,
+                    ban_delay_window_end_at INTEGER NOT NULL,
+                    fast_pcb_test_execute_at INTEGER NOT NULL,
+                    last_torrent_completed_size INTEGER NOT NULL
+                );
+                CREATE TABLE peer_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    address TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    torrent_id INTEGER NOT NULL,
+                    downloader TEXT NOT NULL,
+                    peer_id TEXT NULL,
+                    client_name TEXT NULL,
+                    uploaded INTEGER NOT NULL,
+                    uploaded_offset INTEGER NOT NULL,
+                    upload_speed INTEGER NOT NULL,
+                    downloaded INTEGER NOT NULL,
+                    downloaded_offset INTEGER NOT NULL,
+                    download_speed INTEGER NOT NULL,
+                    last_flags TEXT NULL,
+                    first_time_seen INTEGER NOT NULL,
+                    last_time_seen INTEGER NOT NULL,
+                    peer_geoip TEXT NULL
+                );
+                CREATE UNIQUE INDEX idx_peer_records_unique
+                    ON peer_records (address, torrent_id, downloader, port);
+                INSERT INTO peer_records
+                    (address, port, torrent_id, downloader, uploaded, uploaded_offset,
+                     upload_speed, downloaded, downloaded_offset, download_speed,
+                     first_time_seen, last_time_seen)
+                VALUES ('1.2.3.4', 1000, 1, 'qb', 1, 0, 0, 1, 0, 0, 1, 10),
+                       ('1.2.3.4', 2000, 1, 'qb', 2, 0, 0, 2, 0, 0, 1, 20);
+                "#,
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(path.to_str().unwrap()).unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            let columns: Vec<String> = {
+                let mut stmt = conn.prepare("PRAGMA table_info(pcb_range)").unwrap();
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .unwrap()
+                    .map(|row| row.unwrap())
+                    .collect()
+            };
+            assert!(columns.iter().any(|c| c == "ip_range"), "{columns:?}");
+            assert!(!columns.iter().any(|c| c == "range"), "{columns:?}");
+
+            let rows: Vec<(i64, i64)> = {
+                let mut stmt = conn
+                    .prepare("SELECT port, last_time_seen FROM peer_records")
+                    .unwrap();
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .unwrap()
+                    .map(|row| row.unwrap())
+                    .collect()
+            };
+            assert_eq!(
+                rows,
+                vec![(2000, 20)],
+                "同 (address,torrent,downloader) 只保留 last_time_seen 最新的一条"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

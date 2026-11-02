@@ -289,7 +289,7 @@ async fn peers_come_from_torrent_get_and_decode_base64_peer_id() {
     assert_eq!(normal.uploaded, 4000);
     assert_eq!(normal.progress, 0.5);
     assert_eq!(normal.flags.as_deref(), Some("DU"));
-    assert_eq!(normal.raw_ip, "9.9.9.9:1000");
+    assert_eq!(normal.raw_ip, "9.9.9.9", "上游 TRPeer 的 rawIp 是裸 IP");
     // peer_id 为 null -> 空字符串
     assert_eq!(by_ip.get("7.7.7.7").unwrap().peer_id.as_deref(), Some(""));
 
