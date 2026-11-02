@@ -181,11 +181,11 @@
    MultiDialing / BTN-legacy：零速但已握手的 peer 上游继续判定、本移植跳过。
    修法：`PeerData` 增 `is_handshaking: Option<bool>` 覆盖位（约 50 处构造点需补默认值），
    aria2 适配器填下载器值；生产已在使用 Aria2Next，优先级最高。
-3. **规则流水线不热重载（高，影响日常运维）**：`POST /api/general/reload` 与 profile 保存
-   都不重建规则模块（`crates/pbh/src/backend.rs:266` 注释已承认），而上游 SimpleReloadLib
-   会（`PBHGeneralController.java:99,306`）⇒ 在界面改完客户端名/Peer ID/模块开关后
-   不重启进程不生效。修法：`Pipeline.modules` 改 `RwLock<Vec<Arc<dyn RuleModule>>>`，
-   判定前取快照（避免跨 `await` 持锁），reload 里按当前配置重建。
+3. ~~**规则流水线不热重载**~~ —— 已修复：`SharedPipeline`（`RwLock<Arc<Pipeline>>`）按
+   轮/按请求取快照；`POST /api/general/reload` 与配置保存都会从磁盘重读配置并重建流水线。
+   重建时沿用同一个 `ban_list` Arc、PCB 先 flush 再 `load_persisted`、BTN 网络对象不重建
+   而是回灌 abilities / 允许列表、规则订阅从 `<data>/sub/*.txt` 缓存恢复。
+   已知差异：`multi-dialing` / `idle-dos` 的内存计数在重载时归零（上游原地 reload 不归零）。
 4. ~~**`auto-stun` / `stun.*` 键路径不一致**~~ —— 已修复：`AppConfig` 建模顶层
    `auto-stun:` / `stun:`，`normalize_upstream()` 把它们并入 `ip-remapping.auto-stun`
    （顶层优先）并在保存时移除别名，搬 Java 的 config.yml 不再静默失效。

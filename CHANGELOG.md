@@ -3,6 +3,26 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.7（2026-11-02）
+
+> 关闭 PLAN.md §4.2 最后一个高优先项：规则流水线热重载。
+
+### feat(reload): 规则流水线支持热重载（无需重启）
+
+- 新增 `SharedPipeline`（`RwLock<Arc<Pipeline>>` 句柄）：wave 每轮、BTN 线程每 tick、
+  Web 每次调用各取一次快照，同一轮内模块集合稳定，下一轮即看到新模块。
+- `POST /api/general/reload` 与**配置保存**现在都会：从磁盘重读配置 → 重建规则模块。
+  此前界面改客户端名 / Peer ID / 模块开关后必须重启进程（上游 SimpleReloadLib 会即时生效）。
+- 重建时保证运行态不丢：
+  - **内存封禁表沿用同一个 Arc**（封禁状态不丢，仍是全量重放的数据源）；
+  - **PCB**：旧实例先 `flush_dirty` 落库，新实例再从库 `load_persisted`；
+  - **BTN**：网络对象不重建（PoW/提交游标/能力缓存都在它身上），把已缓存的
+    abilities 与允许列表回灌到新的 `btn` 模块，不会触发整包重拉；
+  - **规则订阅**：从 `<data>/sub/*.txt` 缓存重新解析，重建后不会出现「到下次刷新前无规则」。
+- 已知差异（已写进代码注释与 PLAN）：`multi-dialing-blocker` /
+  `idle-connection-dos-protection` 的内存计数在每次重载时归零；上游是原地 reload，
+  只在重启时归零。`btn` 模块被禁用时 BTN 线程会自行退出（上游返回 REQUIRE_RESTART）。
+
 ## 9.5.3-rs.6（2026-11-02）
 
 > 继续关闭 PLAN.md §4.2 的 review 遗留项（逐组提交、逐组验证）。

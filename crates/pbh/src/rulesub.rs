@@ -34,6 +34,41 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// 从磁盘缓存恢复订阅（热重载重建流水线后调用）。
+///
+/// 对齐上游 `IPBlackRuleList.reloadModule()`：重新解析 `<data>/sub/*.txt` 缓存，
+/// 让重建后的模块立刻拥有规则，不必等下一次定时刷新。返回恢复的订阅数。
+pub fn load_from_cache(pipeline: &Pipeline, config: &IpRuleListConfig, data_dir: &Path) -> usize {
+    let Some(module) = pipeline.module_as::<IpRuleListModule>(MODULE_NAME) else {
+        return 0;
+    };
+    let mut restored = 0;
+    for (rule_id, rule) in &config.rules {
+        if !is_enabled(rule) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(cache_path(data_dir, rule_id)) else {
+            continue;
+        };
+        let (entries, count) = parse_rule_list(&String::from_utf8_lossy(&bytes));
+        if count == 0 {
+            continue;
+        }
+        let name = if rule.name.trim().is_empty() {
+            rule_id.clone()
+        } else {
+            rule.name.clone()
+        };
+        module.set_subscription(RuleSubscription {
+            rule_id: rule_id.clone(),
+            name,
+            entries,
+        });
+        restored += 1;
+    }
+    restored
+}
+
 /// 拉取并刷新全部规则订阅；返回每个订阅的处理结果描述。
 ///
 /// - `db`：提供时，每个成功加载/更新的订阅会写入 `rule_sub_log`（更新历史）与

@@ -8,7 +8,12 @@ use crate::config::{AppConfig, DownloaderConfig, PushProviderConfig, PushSection
 use crate::push::{AlertLevel, AlertManager, PushManager};
 use crate::wave::DownloaderEntry;
 
+use pbh_core::btn_transport::BtnNetwork;
 use pbh_core::config::ProfileConfig;
+use pbh_core::geoip::GeoIpProvider;
+use pbh_core::modules::btn::BtnNetworkOnline;
+use pbh_core::modules::progress_cheat::ProgressCheatBlocker;
+use pbh_core::pipeline::{Pipeline, SharedPipeline};
 use pbh_core::remap::RemapConfig;
 use pbh_downloader::aria2::{Aria2Config, Aria2Downloader};
 use pbh_downloader::biglybt::{BiglyBtConfig, BiglyBtDownloader};
@@ -53,7 +58,15 @@ pub struct PbhBackend {
     config: StdMutex<AppConfig>,
     remap: Arc<RemapConfig>,
     blocklist_url: String,
-    pipeline: pbh_core::pipeline::SharedPipeline,
+    pipeline: SharedPipeline,
+    /// GeoIP 提供者：重建规则流水线时原样注入（`ip-address-blocker` 依赖它）
+    geo: Option<Arc<dyn GeoIpProvider>>,
+    /// BTN 网络句柄：重建时把已缓存的 abilities / 允许列表回灌到新的 btn 模块
+    btn_network: pbh_core::btn_transport::SharedBtnNetwork,
+    /// 数据库：重建流水线时用于 PCB 落库/恢复与规则订阅刷新
+    db: Arc<pbh_db::Database>,
+    /// 数据目录：重建流水线时从 `<data>/sub/*.txt` 恢复规则订阅缓存
+    data_dir: PathBuf,
     entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
     statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
     alert_manager: Arc<AlertManager>,
@@ -79,7 +92,10 @@ impl PbhBackend {
         config: AppConfig,
         remap: Arc<RemapConfig>,
         blocklist_url: String,
-        pipeline: pbh_core::pipeline::SharedPipeline,
+        pipeline: SharedPipeline,
+        geo: Option<Arc<dyn GeoIpProvider>>,
+        btn_network: pbh_core::btn_transport::SharedBtnNetwork,
+        db: Arc<pbh_db::Database>,
         entries: Arc<StdMutex<Vec<DownloaderEntry>>>,
         statuses: Arc<StdMutex<Vec<pbh_web::DownloaderStatus>>>,
         alert_manager: Arc<AlertManager>,
@@ -102,6 +118,10 @@ impl PbhBackend {
             remap,
             blocklist_url,
             pipeline,
+            geo,
+            btn_network,
+            db,
+            data_dir,
             entries,
             statuses,
             alert_manager,
@@ -174,6 +194,28 @@ impl PbhBackend {
         if let Ok(mut slot) = self.entries.lock() {
             *slot = rebuilt;
         }
+    }
+
+    /// 重建规则流水线（读磁盘上的最新配置；失败时保留当前流水线）。
+    fn rebuild_pipeline(&self) {
+        let cfg = match AppConfig::reload_from(&self.config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!("重建规则流水线失败（读取配置）: {e}");
+                return;
+            }
+        };
+        let old = self.pipeline.load();
+        let fresh = rebuild_rule_pipeline(
+            &cfg.profile,
+            self.geo.clone(),
+            &old,
+            &self.db,
+            self.btn_network.get(),
+            &self.data_dir,
+        );
+        self.pipeline.store(Arc::new(fresh));
+        info!("规则流水线已按最新配置重建");
     }
 }
 
@@ -264,9 +306,20 @@ impl WebBackend for PbhBackend {
     }
 
     fn reload(&self) -> Vec<ReloadEntry> {
-        // 对齐上游 `handleReloading`：先重载配置，再逐个重载运行时模块。
-        // Rust 侧规则流水线在启动时静态构建（不热建模块），此处重建下载器
-        // 与推送渠道并如实标注差异项。
+        // 对齐上游 `handleReloading`：先从磁盘重读配置，再逐个重载运行时模块
+        let mut config_result = "配置已重新读取".to_string();
+        match AppConfig::reload_from(&self.config_path) {
+            Ok(cfg) => {
+                if let Ok(mut slot) = self.config.lock() {
+                    *slot = cfg;
+                }
+            }
+            Err(e) => {
+                warn!("热重载读取配置失败，沿用内存中的配置: {e}");
+                config_result = format!("配置读取失败，沿用内存配置: {e}");
+            }
+        }
+        self.rebuild_pipeline();
         self.rebuild_downloaders();
         self.rebuild_push();
         // 演练模式随 reload 热应用（对齐上游 ReloadManager 的配置重载语义）
@@ -274,7 +327,11 @@ impl WebBackend for PbhBackend {
         vec![
             ReloadEntry {
                 module_name: "config".into(),
-                results: vec!["配置已重新读取".into()],
+                results: vec![config_result],
+            },
+            ReloadEntry {
+                module_name: "RunCheckModuleOrgan".into(),
+                results: vec!["规则流水线已按配置重建".into()],
             },
             ReloadEntry {
                 module_name: "DownloaderManager".into(),
@@ -361,6 +418,7 @@ impl WebBackend for PbhBackend {
             other => return Err(format!("CONFIG_NOT_FOUND: {other}")),
         }
         // 配置变更后的热加载（对齐上游写回后发起的 reload）
+        self.rebuild_pipeline();
         self.rebuild_downloaders();
         self.rebuild_push();
         self.sync_dry_run();
@@ -672,6 +730,63 @@ fn keep_existing_id(
         incoming.id = existing.id.clone();
     }
     incoming
+}
+
+/// 按配置重建规则流水线（`/api/general/reload` 与配置保存共用）。
+///
+/// 对齐上游 `ReloadManager` 的「重建对象 + 重新灌入运行态」：
+/// - `ban_list` 沿用旧流水线的 Arc（封禁状态不丢）；
+/// - PCB：旧实例先 `flush_dirty` 落库，新实例再从库 `load_persisted`；
+/// - BTN：网络对象**不重建**，把已缓存的 abilities / 允许列表回灌到新的 btn 模块；
+/// - 其余模块按配置重建。
+///
+/// 已知差异：`multi-dialing-blocker` / `idle-connection-dos-protection` 的内存计数
+/// 会在每次重载时归零（上游是原地 `reloadModule`，只在重启归零）。
+pub fn rebuild_rule_pipeline(
+    profile: &ProfileConfig,
+    geo: Option<Arc<dyn GeoIpProvider>>,
+    old: &Pipeline,
+    db: &pbh_db::Database,
+    btn_network: Option<Arc<BtnNetwork>>,
+    data_dir: &std::path::Path,
+) -> Pipeline {
+    use pbh_core::modules::progress_cheat::PcbEntityKind;
+
+    // PCB：未落库的累计量先写盘，否则重建会丢
+    if let Some(pcb) = old.module_as::<ProgressCheatBlocker>("progress-cheat-blocker") {
+        let rows = pcb.flush_dirty();
+        if !rows.is_empty() {
+            if let Err(e) = db.upsert_pcb_rows(&rows) {
+                warn!("PCB 状态落库失败（热重载）: {e}");
+            }
+        }
+    }
+
+    let fresh = profile
+        .build_pipeline_with_geo(geo)
+        .with_ban_list(old.ban_list.clone());
+
+    // PCB：从库恢复（与启动时同一路径）
+    if let Some(pcb) = fresh.module_as::<ProgressCheatBlocker>("progress-cheat-blocker") {
+        let mut rows = db.load_pcb_rows(PcbEntityKind::Addr).unwrap_or_default();
+        rows.extend(db.load_pcb_rows(PcbEntityKind::Range).unwrap_or_default());
+        pcb.load_persisted(rows);
+    }
+
+    // BTN：把已缓存的规则与允许列表回灌，避免整包重拉
+    if let (Some(network), Some(btn)) = (btn_network, fresh.module_as::<BtnNetworkOnline>("btn")) {
+        network.load_abilities(btn);
+    }
+
+    // 规则订阅：从 `<data>/sub/*.txt` 缓存恢复，避免重建后到下次刷新前「无规则」
+    if let Some(cfg) = &profile.module.ip_rule_list {
+        let restored = crate::rulesub::load_from_cache(&fresh, cfg, data_dir);
+        if restored > 0 {
+            info!("规则订阅已从缓存恢复 {restored} 条（热重载）");
+        }
+    }
+
+    fresh
 }
 
 /// 构造一个下载器（对齐 main.rs 启动时的构建矩阵；两者共用同一实现）。
@@ -1080,6 +1195,81 @@ module:
         let (dl, _) = build_downloader(&cfg, &remap, "http://127.0.0.1:9898").unwrap();
         assert_eq!(dl.downloader_type(), "qbittorrentee");
         assert_eq!(dl.id(), "ee");
+    }
+
+    /// 热重载：按新配置重建流水线后，新规则立即生效，且内存封禁表沿用同一个 Arc。
+    #[test]
+    fn rebuilding_the_pipeline_picks_up_new_rules_and_keeps_ban_list() {
+        use pbh_core::module::CheckContext;
+        use pbh_core::pipeline::Decision;
+
+        let db = pbh_db::Database::open_in_memory().unwrap();
+        let profile = |prefix: &str| {
+            let mut cfg = ProfileConfig::default();
+            cfg.module.client_name_blacklist = Some(pbh_core::config::ClientNameBlacklistConfig {
+                enabled: Some(true),
+                ban_duration_ms: 0,
+                banned_client_name: vec![format!(
+                    "{{\"method\":\"STARTS_WITH\",\"content\":\"{prefix}\"}}"
+                )],
+            });
+            cfg
+        };
+        let torrent = pbh_core::model::TorrentData {
+            hash: "h".into(),
+            name: "t".into(),
+            progress: 0.5,
+            total_size: 100,
+            piece_size: 10,
+            pieces_have: 5,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        };
+        let peer = |client: &str| pbh_core::model::PeerData {
+            client_name: Some(client.to_string()),
+            peer_id: Some("-qb0001-".into()),
+            // 非零速度 ⇒ 不处于「握手中」（客户端名规则会跳过握手 peer）
+            dl_speed: 1,
+            downloaded: 0,
+            up_speed: 1,
+            uploaded: 0,
+            progress: 0.5,
+            flags: Some(String::new()),
+            ip: "1.2.3.4".into(),
+            port: 6881,
+            raw_ip: "1.2.3.4".into(),
+            connection: None,
+        };
+        let ctx = CheckContext::default();
+        let decision = |pipeline: &Pipeline, client: &str| {
+            pipeline.evaluate("dl", &torrent, &peer(client), &ctx)
+        };
+
+        let old = profile("OldClient").build_pipeline();
+        if let Ok(mut list) = old.ban_list.lock() {
+            list.add("1.2.3.4", i64::MAX, "test-module", false);
+        }
+        assert!(matches!(decision(&old, "OldClient-1"), Decision::Ban(_)));
+        assert!(matches!(decision(&old, "NewClient-1"), Decision::None));
+
+        let data_dir = std::env::temp_dir().join(format!("pbh-reload-{}", std::process::id()));
+        let fresh =
+            rebuild_rule_pipeline(&profile("NewClient"), None, &old, &db, None, &data_dir);
+        assert!(
+            matches!(decision(&fresh, "NewClient-1"), Decision::Ban(_)),
+            "重建后新规则必须立即生效（无需重启）"
+        );
+        assert!(
+            matches!(decision(&fresh, "OldClient-1"), Decision::None),
+            "被移除的旧规则必须失效"
+        );
+        assert!(
+            Arc::ptr_eq(&old.ban_list, &fresh.ban_list),
+            "重建必须沿用同一个 ban_list（封禁状态不丢）"
+        );
+        assert!(fresh.ban_list.lock().unwrap().contains("1.2.3.4"));
     }
 
     /// 编辑下载器弹窗提交的 `config` 来自 `web_json()`，里面没有 `id` 字段

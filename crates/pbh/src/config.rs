@@ -939,6 +939,23 @@ impl AppConfig {
         }
     }
 
+    /// 从磁盘重新读取配置（供 `/api/general/reload` 与配置保存后的热重载使用）。
+    ///
+    /// 与 [`Self::load_or_create`] 的区别：只读、不创建；上游布局下 `profile.yml` 会覆盖
+    /// `config.yml` 里的 profile 段（与启动时一致）。
+    pub fn reload_from(path: &Path) -> anyhow::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        let mut cfg: AppConfig = serde_yaml::from_str(&text)?;
+        if let Some(parent) = path.parent() {
+            let profile_path = parent.join("profile.yml");
+            if profile_path.exists() {
+                cfg.profile = serde_yaml::from_str(&std::fs::read_to_string(&profile_path)?)?;
+            }
+        }
+        cfg.normalize_upstream();
+        Ok(cfg)
+    }
+
     /// 把**上游布局**的配置段并入本移植结构：
     /// - `client:` 映射（下载器 UUID → 配置）→ `downloaders` 列表（UUID 作为下载器 ID）；
     /// - `push-notification:` 段 → `push` 段。
