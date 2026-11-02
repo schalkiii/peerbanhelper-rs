@@ -164,7 +164,78 @@
 > `persist.vacuum-interval-days` 的上游启动 VACUUM 在 v9.5.1 中调用被注释（仅实验性
 > 手动触发），本移植保留实验室的 `sqlite_vacuum`，不额外实现启动维护。
 
-### 4.2 已知且保留的行为差异（说明，不计划「修复」）
+### 4.2 2026-11-02 全量 review 的遗留项（按影响排序）
+
+> 本轮 review（Java v9.5.3 ↔ 本移植逐模块比对）已修复的项见 CHANGELOG `9.5.3-rs.4`；
+> 下列是**已确认但本轮未动**的缺口，每条都给了复核入口。
+
+1. **qBittorrentEE 适配器缺失（高）**：上游有独立类型与影子封禁链路
+   （`DownloaderManagerImpl.java:84-85`、`qbittorrent/impl/enhanced/QBittorrentEE.java` 的
+   `shadowbanPeers` / `shadow_banned_IPs` / 登录自检跳过已影子封禁 peer），本移植
+   `crates/pbh/src/backend.rs` 的构建矩阵无该分支，选了该类型会直接构造失败——但
+   `crates/pbh/src/config.rs` 的类型清单与界面下拉仍在暴露它。
+2. **Aria2Next 的「握手中」口径（高，逐 peer 结果不同）**：上游读下载器上报的
+   `handshaking` 字段（`aria2next/bean/A2Peer.java:97-99`），本移植按速率推导
+   （`crates/pbh-core/src/model.rs:207-209`）。该闸门控制 PCB / PeerId / ClientName /
+   MultiDialing / BTN-legacy：零速但已握手的 peer 上游继续判定、本移植跳过。
+   修法：`PeerData` 增 `is_handshaking: Option<bool>` 覆盖位（约 50 处构造点需补默认值），
+   aria2 适配器填下载器值；生产已在使用 Aria2Next，优先级最高。
+3. **规则流水线不热重载（高，影响日常运维）**：`POST /api/general/reload` 与 profile 保存
+   都不重建规则模块（`crates/pbh/src/backend.rs:266` 注释已承认），而上游 SimpleReloadLib
+   会（`PBHGeneralController.java:99,306`）⇒ 在界面改完客户端名/Peer ID/模块开关后
+   不重启进程不生效。修法：`Pipeline.modules` 改 `RwLock<Vec<Arc<dyn RuleModule>>>`，
+   判定前取快照（避免跨 `await` 持锁），reload 里按当前配置重建。
+4. **`auto-stun` / `stun.*` 键路径不一致（高，迁移场景静默失效）**：上游读**顶层**
+   `auto-stun`（`BTStunManager.java:64,75`）与顶层 `stun.tcp-servers`/`udp-servers`
+   （`StunManager.java:37`），本移植放在 `ip-remapping.auto-stun`
+   （`crates/pbh/src/config.rs:982-987`）⇒ 直接搬 Java 的 config.yml 时这些键被当未知键
+   保留但从不读取。修法：加顶层 serde 别名并在加载期迁移。
+5. **`proxy.setting` 数值语义（高，需按上游代码而非注释对齐）**：上游 `HTTPUtil.java:96-117`
+   是 `1 → HTTP(host:port)`、`2 → SOCKS(host:port)`（与 `config.yml` 的注释矛盾，以代码为准）；
+   本移植 `0|1` 一律「沿用环境代理」、`2` 写 HTTP 环境变量 ⇒ 填 1 的用户完全不走代理、
+   填 2 的用户由 SOCKS 变 HTTP。修同时需同步 README/PLAN §4.1 第 1 条的表述。
+6. **不可解析 IP 的回落缺失（中）**：上游 `IPAddressUtil.getIPAddress` 解析失败返回占位地址
+   `127.123.123.123` 并继续参与黑名单/GeoIP 判定（`IPBlackList.java:308,316`）；
+   本移植解析失败即 pass（`modules/ip_blacklist.rs:243` → `iputil.rs:29-38`）。
+7. **PCB 内存实体不做空闲淘汰（中，已核对不宜按 review 建议改）**：上游两个缓存是
+   `expireAfterAccess=180s`（`ProgressCheatBlocker.java:56-73`），活跃 swarm 每 2 分钟被
+   访问一次实际不会淘汰；本移植常驻。注意**不能**改成「解封时连内存一起删」——
+   10.9 天对跑已证明那会造成 46 行误封（docs/TESTING.md pending-5、`progress_cheat.rs:335` 注释）。
+8. **下载器能力缺口（中）**：① BitComet 的解封路径未接（上游 `BitComet.java:554-556`
+   在 `removed` 非空时 `unban_peers`），根因是 `Downloader` trait 无解封入口，wave 只做整份
+   replace；② `getBTProtocolPort/setBTProtocolPort` 全缺但仍声明
+   `LIVE_UPDATE_BT_PROTOCOL_PORT`（上游 `BTStunInstance.java:119-121` 会改监听端口）；
+   ③ `/api/utilities/replaceTracker` 整套缺失（需 trait 增 `getTrackers`/`setTrackers`/
+   `getAllTorrents`）；④ Deluge 每个 RPC 前都重新 `auth.login`（上游登录一次复用会话
+   `Deluge.java:118`）⇒ 每轮请求翻倍。
+9. **增量封禁 `raw_ip` 口径（中，待逐类型复核）**：review 认为上游非 qB 下载器交给
+   qB `banPeers` 的是裸 IP（`TRPeer.java:20`、`Deluge.java:143`、`BiglyBT.java:394`、
+   `BitComet.java:101`），本移植多类型拼 `ip:port`（`transmission/mod.rs:278`、
+   `deluge/mod.rs:242`、`biglybt/mod.rs:507`、`bitcomet/mod.rs:447`；仅
+   `aria2/mod.rs:344` 一致）。改前要先确认上游各类型 `getRawIp()` 的真实返回值，
+   多下载器混跑时才影响下发载荷。
+10. **老 Java 库的增量迁移缺失（中）**：本移植只有 `CREATE TABLE IF NOT EXISTS` +
+    `ban_logs` 两条 ALTER（`crates/pbh-db/src/lib.rs:315-333`），不读 `flyway_schema_history`，
+    停留在 V1_1/V1_2 的库不会补做 V1_3（`peer_records` 唯一键去 port + 去重）与
+    V1_5（`pcb_range."range"` → `ip_range`）⇒ `ON CONFLICT(ip_range, …)` 可能直接报错。
+11. **`/api/general/status` 与图表的字段缺口（中）**：`network.nat_type` / `use_proxy` 仍硬编码
+    （应接 AutoSTUN 缓存与代理配置，`PBHGeneralController.java:234-245`）；
+    `system.version` 在非 Linux 平台留空（无免依赖取法）；
+    `/api/chart/sessionAnalyse` 的 16 个指标里 14 个恒 0 占位（口径与
+    `PeerConnectionMetricsDTO` 不同）。
+12. **状态码与文案差异（低）**：`PUT /api/modules/ipblacklist/netType` 返回 201（上游 200）；
+    `PUT /api/general/{config,profile}` 返回 200 + null（上游 201 + reload 结果体）；
+    `geoIpInfo` 无 IPDB 时 `message` 是裸 key 且 `data` 给四个空数组（上游本地化文本 +
+    `data=null`）；`ignoreBanForDisconnect=false` 时未过 `excludeFromDisplay`
+    （`PBHBanController.java:190-193`）；日志条目键 `seq` 对前端模型 `offset`
+    （`api/model/log.ts:3`，当前视图未读所以无表现）。
+13. **上游有、本移植未建模的配置（低）**：`pbh-plus-key`、`server.external-webui`、`gui`、
+    `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）、
+    `pbh.demoMode` / `pbh.apiToken` / `pbh.log.level` 三个开关；
+    另外 `ip-database.account-id` / `license-key` 字段已实现但出厂模板未列出，
+    模板 `config-version` 落后上游一位。
+
+### 4.3 已知且保留的行为差异（说明，不计划「修复」）
 
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），
   本移植保留该上限属**更严格**的防御性行为（只会把超时脚本判为 pass，方向安全）。
@@ -185,7 +256,7 @@
   `WebBackend::set_token` 写回 `config.yml`，重启保持）与下载器（经后端持久化）；
   `btn` 与 `database` 段忽略（Rust 版固定内置 SQLite，无外部数据库配置项）。
 
-### 4.3 原生 GUI（Tauri 托盘壳）——已完成（M1）
+### 4.4 原生 GUI（Tauri 托盘壳）——已完成（M1）
 
 - [x] **架构**：独立 crate `crates/pbh-gui`（**不在 workspace members**——Tauri 在 Linux 需要
       webkit2gtk 系统库，纳入工作区会破坏 WSL/容器构建；Windows 侧单独构建）。
@@ -198,7 +269,7 @@
       已随 `9.5.1-rs.1` 发布（产物含 `pbh-gui.exe` + `WebView2Loader.dll`）。
 - [ ] **里程碑 M2/M3（未做）**：开机自启、托盘菜单进一步完善、Linux（libwebkit2gtk-4.1）/macOS 适配与打包。
 
-### 4.4 长时对跑基建（数十小时 ~ 数天）
+### 4.5 长时对跑基建（数十小时 ~ 数天）
 
 - [x] **采样脚本 `longrun_sample.ps1`**：周期（默认 5 分钟）采样两侧进程 RSS/私有内存/CPU、
       SQLite 文件大小、`/health` 状态，追加 JSONL；Rust 侧崩溃自动拉起（对账游标存 DB，重启无损）。
@@ -214,7 +285,7 @@
       磁盘水位告警（剩余空间 / 单库体积阈值，JSONL 打 flag）；`pbh --tag` 身份标记
       （写入 `metadata.dualrun_tag` + `dualrun_started_at` + 启动日志）。
 
-### 4.5 扩展项（超出上游对等范围）
+### 4.6 扩展项（超出上游对等范围）
 
 - [ ] MySQL / PostgreSQL 支持（sqlx）——上游默认 sqlite/h2，属部署扩展
 - [ ] 插件系统评估（WASM / wasmtime）

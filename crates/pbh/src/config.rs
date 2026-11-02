@@ -116,12 +116,13 @@ pub enum PushProviderConfig {
         channel: String,
     },
     /// `ServerChanPushProvider.loadFromYaml`：空白的 `channel`/`openid` 视为未配置
+    /// （YAML 键 `sendkey`/`openid` ⇄ Web 键 `sendKey`/`openId`）
     ServerChan {
-        #[serde(default)]
+        #[serde(default, alias = "sendKey")]
         sendkey: String,
         #[serde(default)]
         channel: String,
-        #[serde(default)]
+        #[serde(default, alias = "openId")]
         openid: String,
     },
     /// `SmtpPushProvider.loadFromYaml`（`port` 缺省为 0，与上游 `getInt("port")` 一致）
@@ -139,20 +140,22 @@ pub enum PushProviderConfig {
         password: String,
         #[serde(default)]
         sender: String,
-        #[serde(default = "default_smtp_sender_name")]
+        /// YAML 键 `name`，Web API/前端键 `senderName`（上游两套加载器命名不同）
+        #[serde(default = "default_smtp_sender_name", alias = "senderName")]
         name: String,
-        #[serde(default)]
+        /// YAML 键 `receiver`，Web API/前端键 `receivers`
+        #[serde(default, alias = "receivers")]
         receiver: Vec<String>,
         #[serde(default = "default_smtp_encryption")]
         encryption: String,
         #[serde(default = "p_true", rename = "sendPartial")]
         send_partial: bool,
     },
-    /// `TelegramPushProvider.loadFromYaml`
+    /// `TelegramPushProvider.loadFromYaml`（YAML `chatid` ⇄ Web `chatId`）
     Telegram {
         #[serde(default)]
         token: String,
-        #[serde(default)]
+        #[serde(default, alias = "chatId")]
         chatid: String,
     },
     /// `BarkPushProvider.loadFromYaml`（`message_group` 为空时仍按空串发送，不做置空）
@@ -237,6 +240,115 @@ impl PushProviderConfig {
         Ok(serde_yaml::from_value(serde_yaml::Value::Mapping(
             normalized,
         ))?)
+    }
+
+    /// **Web API 专用**的渠道配置形状（上游 `PushWrapperDTO(name, type, saveJson())`，
+    /// `saveJson()` = Gson 序列化各 provider 的 `Config` 类）。
+    ///
+    /// 键名以**前端读什么**为准（`webui/src/api/model/push.ts`），与 YAML 键不同：
+    /// YAML 用 `name` / `receiver` / `sendkey` / `openid` / `chatid`，
+    /// Web 用 `senderName` / `receivers` / `sendKey` / `openId` / `chatId`。
+    /// `GET /api/push` 缺 `config` 时前端 `editPush.vue` 的子表单是空的，
+    /// 提交就会把该渠道的配置整体写空（与下载器编辑弹窗同一类缺陷）。
+    pub fn web_json(&self) -> serde_json::Value {
+        match self {
+            Self::PushPlus {
+                token,
+                topic,
+                channel,
+            } => serde_json::json!({"token": token, "topic": topic, "channel": channel}),
+            Self::ServerChan {
+                sendkey,
+                channel,
+                openid,
+            } => serde_json::json!({"sendKey": sendkey, "channel": channel, "openId": openid}),
+            Self::Smtp {
+                host,
+                port,
+                auth,
+                username,
+                password,
+                sender,
+                name,
+                receiver,
+                encryption,
+                send_partial,
+            } => serde_json::json!({
+                "host": host,
+                "port": port,
+                "auth": auth,
+                "username": username,
+                "password": password,
+                "sender": sender,
+                "senderName": name,
+                "receivers": receiver,
+                "encryption": encryption,
+                "sendPartial": send_partial,
+            }),
+            Self::Telegram { token, chatid } => {
+                serde_json::json!({"token": token, "chatId": chatid})
+            }
+            Self::Bark {
+                backend_url,
+                device_key,
+                message_group,
+            } => serde_json::json!({
+                "backend_url": backend_url,
+                "device_key": device_key,
+                "message_group": message_group,
+            }),
+            Self::PushDeer { endpoint, pushkey } => {
+                serde_json::json!({"endpoint": endpoint, "pushkey": pushkey})
+            }
+            Self::Gotify { endpoint, priority } => {
+                serde_json::json!({"endpoint": endpoint, "priority": priority})
+            }
+            Self::Ntfy {
+                server_url,
+                topic,
+                token,
+                priority,
+                tags,
+            } => serde_json::json!({
+                "server_url": server_url,
+                "topic": topic,
+                "token": token,
+                "priority": priority,
+                "tags": tags,
+            }),
+            Self::Webhook {
+                url,
+                method,
+                content_type,
+                body_template,
+                headers,
+            } => serde_json::json!({
+                "url": url,
+                "method": method,
+                "content_type": content_type,
+                "body_template": body_template,
+                // 上游 Config.headers 是 Map<String,String>：值为 null 的表项不对外暴露
+                "headers": headers
+                    .iter()
+                    .filter_map(|(k, v)| v.as_ref().map(|v| (k.clone(), v.clone())))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            }),
+        }
+    }
+
+    /// Web API 里的 `type`（前端 `PushType` 枚举值，全小写）。
+    pub fn web_type(&self) -> &'static str {
+        match self {
+            Self::PushPlus { .. } => "pushplus",
+            Self::ServerChan { .. } => "serverchan",
+            Self::Smtp { .. } => "smtp",
+            Self::Telegram { .. } => "telegram",
+            Self::Bark { .. } => "bark",
+            Self::PushDeer { .. } => "pushdeer",
+            Self::Gotify { .. } => "gotify",
+            Self::Ntfy { .. } => "ntfy",
+            Self::Webhook { .. } => "webhook",
+        }
     }
 }
 
@@ -1300,5 +1412,99 @@ client:
         assert!(
             matches!(as_yaml["api-key"], serde_yaml::Value::Null | serde_yaml::Value::String(_)),
             "api-key 写出为字符串或 null（未配置时）");
+    }
+
+    /// 各推送渠道 `web_json` 的键集必须等于上游 `saveJson()`（Gson 序列化 `Config` 类），
+    /// 也就是前端 `webui/src/api/model/push.ts` 的字段名 —— 缺 `config` 或键名不对，
+    /// 推送编辑弹窗就会把该渠道配置写空。
+    #[test]
+    fn push_web_json_key_sets_match_upstream_save_json() {
+        let cases: Vec<(&str, Vec<&str>)> = vec![
+            (
+                "smtp",
+                vec![
+                    "auth",
+                    "encryption",
+                    "host",
+                    "password",
+                    "port",
+                    "receivers",
+                    "sendPartial",
+                    "sender",
+                    "senderName",
+                    "username",
+                ],
+            ),
+            ("serverchan", vec!["channel", "openId", "sendKey"]),
+            ("telegram", vec!["chatId", "token"]),
+            ("bark", vec!["backend_url", "device_key", "message_group"]),
+            ("pushdeer", vec!["endpoint", "pushkey"]),
+            ("gotify", vec!["endpoint", "priority"]),
+            (
+                "ntfy",
+                vec!["priority", "server_url", "tags", "token", "topic"],
+            ),
+            ("pushplus", vec!["channel", "token", "topic"]),
+            (
+                "webhook",
+                vec!["body_template", "content_type", "headers", "method", "url"],
+            ),
+        ];
+        for (kind, expected) in cases {
+            let cfg: PushProviderConfig =
+                serde_json::from_value(serde_json::json!({"type": kind})).unwrap();
+            assert_eq!(cfg.web_type(), kind, "web type 必须是前端 PushType 的值");
+            let view = cfg.web_json();
+            let object = view
+                .as_object()
+                .unwrap_or_else(|| panic!("{kind} 的 config 必须是对象"));
+            let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, expected, "{kind} 渠道的 config 键集与前端模型不一致");
+        }
+    }
+
+    /// 写路径：前端提交的是 `Config` 类字段名（`senderName`/`receivers`/`sendKey`/
+    /// `openId`/`chatId`），必须解析得动，否则保存一次就把渠道配置重置成默认值。
+    #[test]
+    fn push_channel_accepts_frontend_json_key_names() {
+        let sc: PushProviderConfig = serde_json::from_value(serde_json::json!({
+            "type": "serverchan", "sendKey": "SCT1", "openId": "oid", "channel": "4"
+        }))
+        .unwrap();
+        match &sc {
+            PushProviderConfig::ServerChan {
+                sendkey,
+                openid,
+                channel,
+            } => {
+                assert_eq!(sendkey, "SCT1");
+                assert_eq!(openid, "oid");
+                assert_eq!(channel, "4");
+            }
+            _ => panic!("类型应解析为 serverchan"),
+        }
+        let tg: PushProviderConfig = serde_json::from_value(serde_json::json!({
+            "type": "telegram", "token": "t", "chatId": "123"
+        }))
+        .unwrap();
+        assert_eq!(tg.web_json()["chatId"], "123");
+
+        let smtp: PushProviderConfig = serde_json::from_value(serde_json::json!({
+            "type": "smtp", "senderName": "PBH", "receivers": ["a@b.c"], "host": "smtp.example"
+        }))
+        .unwrap();
+        let view = smtp.web_json();
+        assert_eq!(view["senderName"], "PBH");
+        assert_eq!(view["receivers"], serde_json::json!(["a@b.c"]));
+        // YAML 规范键（`name` / `receiver`）仍要能读，老配置不能失效
+        let from_yaml: PushProviderConfig = PushProviderConfig::parse(
+            &serde_yaml::from_str::<serde_yaml::Value>(
+                "type: smtp\nname: PBH-yaml\nreceiver:\n  - c@d.e\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(from_yaml.web_json()["senderName"], "PBH-yaml");
     }
 }

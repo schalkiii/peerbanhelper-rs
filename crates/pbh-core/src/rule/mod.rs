@@ -90,6 +90,38 @@ mod tests {
         Matcher::parse(&v).unwrap()
     }
 
+    /// 规则字段非法必须让整条规则**不可用**（上游 `syntax.get("min").getAsInt()`、
+    /// `MatchResultEnum.valueOf(...)` 都会抛异常）。
+    ///
+    /// 这条严格性是安全边界：`LENGTH` 若缺省成 `0..MAX`，就会命中所有字符串，
+    /// 一条手写漏字的规则等于全网误封。
+    #[test]
+    fn invalid_rule_fields_are_rejected() {
+        let parse = |json: &str| {
+            Matcher::parse(&serde_json::from_str::<Value>(json).unwrap())
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        assert!(
+            parse(r#"{"method":"LENGTH","hit":"TRUE"}"#).is_err(),
+            "缺 min/max 的 LENGTH 必须拒绝"
+        );
+        assert!(
+            parse(r#"{"method":"LENGTH","min":1,"hit":"TRUE"}"#).is_err(),
+            "只给 min 同样必须拒绝"
+        );
+        assert!(
+            parse(r#"{"method":"CONTAINS","content":"x","hit":"MAYBE"}"#).is_err(),
+            "hit 取值不在 DEFAULT/TRUE/FALSE 内必须拒绝"
+        );
+        assert!(
+            parse(r#"{"method":"CONTAINS","content":"x","miss":"maybe"}"#).is_err(),
+            "miss 同样严格"
+        );
+        assert!(parse(r#"{"method":"LENGTH","min":1,"max":3,"hit":"true"}"#).is_ok());
+        assert!(parse(r#"{"method":"CONTAINS","content":"x"}"#).is_ok());
+    }
+
     #[test]
     fn false_short_circuits_even_after_true() {
         // 第一条 CONTAINS a -> TRUE，第二条 EQUALS 显式 FALSE：最终不命中（FALSE 短路）

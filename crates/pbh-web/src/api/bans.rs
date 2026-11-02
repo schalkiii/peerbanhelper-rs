@@ -117,17 +117,27 @@ fn matches_search(state: &AppState, locale: &str, ip: &str, metadata: &BanMetada
         .any(|candidate| candidate.to_lowercase().contains(&needle))
 }
 
+/// 封禁列表的搜索关键字（上游 `PBHBanController.java:114,159-160`）。
+///
+/// 前端对 `search` 是**两次编码**（`webui/src/service/banList.ts:50` 先 `encodeURIComponent`，
+/// 再由 `URLSearchParams` 编码一次），容器只解一层，所以 `search` 要再显式解一次——
+/// 不解就会拿字面 `%E4%B8%AD` 去匹配，中文/非 ASCII 关键字的搜索结果恒空。
+/// `filter` 上游不解码，这里也保持原样。
+pub(crate) fn bans_keyword(search: Option<&str>, filter: Option<&str>) -> String {
+    match (search, filter) {
+        (Some(search), _) => crate::percent_decode(search),
+        (None, Some(filter)) => filter.to_string(),
+        (None, None) => String::new(),
+    }
+    .trim()
+    .to_string()
+}
+
 /// `GET /api/bans`：旧版 feed（`lastBanTime`+`limit`）与新分页（`page`+`pageSize`）。
 pub async fn list(State(state): State<AppState>, Query(q): Query<BansQuery>) -> Response {
     let locale = normalize_locale(q.locale.as_deref().unwrap_or(&state.locale));
     let ignore_disconnect = q.ignore_ban_for_disconnect.unwrap_or(true);
-    let keyword = q
-        .search
-        .as_deref()
-        .or(q.filter.as_deref())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let keyword = bans_keyword(q.search.as_deref(), q.filter.as_deref());
 
     let records = state
         .ban_list

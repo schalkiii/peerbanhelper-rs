@@ -260,6 +260,27 @@ impl QBittorrentDownloader {
         Ok(LoginResult::success("OK", version))
     }
 
+    /// 上一次真正登录时取到的版本号。
+    ///
+    /// 对齐上游 `lastSemver` 的滞后感：复用会话时不重新取版本，因此 `RANGE_BAN_IP`
+    /// 能力位也只在真正登录之后才更新。
+    fn cached_version(&self) -> String {
+        self.last_version
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    /// `finish_login` + 失败时复位健康位：上游以 `lastStatus != HEALTHY` 决定下一轮是否
+    /// 重发 `setPreferences`，本移植的等价实现是「任何非成功登录都复位」，让下次成功重新下发。
+    async fn finish_login_tracked(&self) -> anyhow::Result<LoginResult> {
+        let result = self.finish_login().await?;
+        if !result.success {
+            self.healthy.store(false, Ordering::SeqCst);
+        }
+        Ok(result)
+    }
+
     async fn fetch_properties(&self, hash: &str) -> anyhow::Result<TorrentProperties> {
         if let Some(entry) = self.props_cache.lock().unwrap().get(hash) {
             if entry.at.elapsed() < self.props_ttl {
@@ -317,10 +338,11 @@ impl Downloader for QBittorrentDownloader {
 
     fn login<'a>(&'a self) -> BoxFuture<'a, anyhow::Result<LoginResult>> {
         Box::pin(async move {
-            // 1. 复用已有会话（对齐 Java `login0` 开头的 `if (isLoggedIn()) return SUCCESS`）。
-            //    上游 `isLoggedIn()` 自捕获异常返回 false，传输失败不在此中断（继续走认证）。
+            // 上游 `login0` 开头：`if (isLoggedIn()) return SUCCESS`（重用 Session 会话）。
+            // 复用分支**不做**版本门槛、也不重发 setPreferences——把版本校验放在这里会让
+            // 老版本 qB 每轮都拿到 REQUIRE_TAKE_ACTIONS，整轮不下发封禁（2026-11-02 review）。
             if self.session_valid().await.unwrap_or(false) {
-                return self.finish_login().await;
+                return Ok(LoginResult::success("OK", self.cached_version()));
             }
             // API Key 无效时不再尝试表单登录（上游直接返回凭据错误）
             if self
@@ -348,8 +370,12 @@ impl Downloader for QBittorrentDownloader {
                 Ok(resp) => resp,
                 Err(e) => return Ok(LoginResult::exception(format!("{e:#}"))),
             };
-            // 上游以 `response.isSuccessful() && "Ok.".equals(body)` 判定成功
-            if !(200..300).contains(&resp.status) || !resp.body.trim().eq_ignore_ascii_case("Ok.") {
+            // 上游判据是 `response.isSuccessful() && isLoggedIn()`（`AbstractQbittorrent.java:156`），
+            // **不检查响应体是否等于 "Ok."**：按体判据时，旧版或被反向代理改写响应体的
+            // 部署会被误记成 INCORRECT_CREDENTIAL（并计入登录失败冷却）。
+            let logged_in = (200..300).contains(&resp.status)
+                && self.session_valid().await.unwrap_or(false);
+            if !logged_in {
                 return Ok(LoginResult::incorrect_credential(format!(
                     "login failed: statusCode={} body={}",
                     resp.status,
@@ -357,14 +383,8 @@ impl Downloader for QBittorrentDownloader {
                 )));
             }
 
-            // 3. 会话校验：buildInfo 的 libtorrent 非空（上游 `isLoggedIn()` 自捕获 →
-            //    false 时同样落入 INCORRECT_CREDENTIAL 分支，不计数）
-            if !self.session_valid().await.unwrap_or(false) {
-                return Ok(LoginResult::incorrect_credential(
-                    "session invalid: empty libtorrent",
-                ));
-            }
-            self.finish_login().await
+            // 3. 版本校验 + 首次健康时下发偏好（失败会把健康位复位）
+            self.finish_login_tracked().await
         })
     }
 
@@ -988,18 +1008,25 @@ mod tests {
         }
     }
 
-    /// 会话有效时复用 Cookie：不调用 `/auth/login`；首次健康仍下发同 IP 多连接开关。
+    /// 会话有效时复用 Cookie：上游 `login0` 第一行直接 SUCCESS——不查版本、不下发偏好、
+    /// 不 `/auth/login`（版本与 `RANGE_BAN_IP` 能力位因此只在真正登录后更新，与上游 `lastSemver` 一致）。
     #[tokio::test]
     async fn login_reuses_existing_session_and_skips_form_login() {
         let mock = QbMock::new();
         let dl = mock_downloader(mock.clone());
         let result = dl.login().await.unwrap();
         assert!(result.success);
-        assert_eq!(result.version, "5.0.0");
+        assert_eq!(result.version, "", "复用会话不取版本（对齐上游提前返回）");
         let urls: Vec<String> = mock.requests().iter().map(|r| r.url.clone()).collect();
-        assert!(urls.iter().any(|u| u.ends_with("/app/version")));
+        assert!(
+            !urls.iter().any(|u| u.ends_with("/app/version")),
+            "复用会话不应查版本：{urls:?}"
+        );
         assert!(!urls.iter().any(|u| u.ends_with("/auth/login")));
-        assert!(urls.iter().any(|u| u.ends_with("/app/setPreferences")));
+        assert!(
+            !urls.iter().any(|u| u.ends_with("/app/setPreferences")),
+            "复用会话不应重发偏好：{urls:?}"
+        );
     }
 
     /// 会话失效 -> 表单登录一次；版本低于 4.5.0 -> REQUIRE_TAKE_ACTIONS。
@@ -1012,13 +1039,27 @@ mod tests {
         assert!(result.success, "{:?} {}", result.status, result.message);
         assert!(mock.requests().iter().any(|r| r.url.ends_with("/auth/login")));
 
+        // 版本门槛只在「真正登录」路径生效，所以要先让会话失效
         let mock = QbMock::new();
         *mock.version.lock().unwrap() = (200, "v4.4.9".to_string());
+        mock.build_info.lock().unwrap().push_back((403, String::new()));
         let dl = mock_downloader(mock);
         let result = dl.login().await.unwrap();
         assert!(!result.success);
         assert_eq!(result.status, LoginStatus::RequireTakeActions);
         assert!(result.message.contains("4.5.0"), "{}", result.message);
+    }
+
+    /// 表单登录成功只认 `isSuccessful() && isLoggedIn()`：响应体不是 `Ok.` 也不算失败
+    ///（旧版/反向代理会改写响应体，按体判据会误计登录失败冷却）。
+    #[tokio::test]
+    async fn form_login_success_does_not_require_ok_body() {
+        let mock = QbMock::new();
+        mock.build_info.lock().unwrap().push_back((403, String::new()));
+        *mock.login.lock().unwrap() = (200, String::new());
+        let dl = mock_downloader(mock);
+        let result = dl.login().await.unwrap();
+        assert!(result.success, "{:?} {}", result.status, result.message);
     }
 
     /// API Key 会话无效时直接凭据错误，不回退表单登录（对齐上游 login0 分支）。
@@ -1154,6 +1195,8 @@ mod tests {
     async fn ban_payloads_and_range_ban_capability_follow_upstream() {
         let mock = QbMock::new();
         *mock.version.lock().unwrap() = (200, "v5.3.0".to_string());
+        // 让首次会话校验失败，走真正的表单登录（复用会话时上游不取版本，能力位保持不声明）
+        mock.build_info.lock().unwrap().push_back((403, String::new()));
         let dl = mock_downloader(mock.clone());
         assert!(
             !dl.feature_flags().iter().any(|f| f == "RANGE_BAN_IP"),

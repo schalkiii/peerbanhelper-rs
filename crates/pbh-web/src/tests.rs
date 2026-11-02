@@ -903,6 +903,101 @@ async fn bans_search_matches_metadata_and_returns_geo() {
 }
 
 #[tokio::test]
+async fn access_history_pagination_is_one_based() {
+    // 回归（2026-11-02）：`/api/peer/{ip}/accessHistory` 曾把 `page` 当 0-based 用
+    //（offset = page*size，回显 page+1）。上游 `util/query/Pageable.java` 是 1-based
+    //（缺省 page=1、offset=(page-1)*size），前端首屏传 page=1 ⇒ 直接跳到第二页。
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let state = test_state(db.clone());
+    state.downloaders.lock().unwrap().push(DownloaderStatus {
+        id: "dl".into(),
+        name: "DL".into(),
+        kind: "qbittorrent".into(),
+        online: true,
+        version: "5.2.0".into(),
+        torrents: 0,
+        peers: 0,
+    });
+    let torrent_id = db
+        .ensure_torrent_id(&pbh_core::model::TorrentData {
+            hash: "abcd".into(),
+            name: "n".into(),
+            progress: 0.0,
+            total_size: 10,
+            piece_size: 1,
+            pieces_have: 1,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        })
+        .unwrap()
+        .to_string();
+    let sink = pbh_db::DbMonitorSink::new(db.clone());
+    // 两条记录必须落在不同 downloader 上：`peer_records` 的冲突键是
+    // (address, torrent_id, downloader)，同键会被 upsert 合并成一行
+    for index in 0..2 {
+        sink.upsert_peer_record(&pbh_core::modules::monitor::PeerRecordRow {
+            address: "1.2.3.4".into(),
+            port: 6881 + index,
+            torrent_id: torrent_id.clone(),
+            downloader: format!("dl-{index}"),
+            peer_id: "-qB0001".into(),
+            client_name: "qBittorrent 4.6.0".into(),
+            uploaded: 10,
+            uploaded_offset: 0,
+            upload_speed: 0,
+            downloaded: 10,
+            downloaded_offset: 0,
+            download_speed: 0,
+            last_flags: None,
+            first_time_seen_ms: 1000 + index as i64,
+            last_time_seen_ms: 1000 + index as i64,
+            peer_geoip: None,
+        });
+    }
+    let (_, first) = get_json(&state, "/api/peer/1.2.3.4/accessHistory?page=1&pageSize=1").await;
+    let (_, second) = get_json(&state, "/api/peer/1.2.3.4/accessHistory?page=2&pageSize=1").await;
+    let (_, defaults) = get_json(&state, "/api/peer/1.2.3.4/accessHistory?pageSize=1").await;
+    assert_eq!(first["data"]["page"], json!(1), "page 回显应与请求一致");
+    assert_eq!(
+        first["data"]["results"][0]["port"],
+        json!(6882),
+        "第 1 页必须是最新一条（last_time_seen DESC）"
+    );
+    assert_eq!(
+        second["data"]["results"][0]["port"],
+        json!(6881),
+        "page=2 才是第二条"
+    );
+    assert_eq!(
+        defaults["data"]["results"][0]["port"],
+        json!(6882),
+        "缺省 page 必须等同 page=1（上游 Pageable 缺省值）"
+    );
+}
+
+#[test]
+fn bans_keyword_decodes_search_only_like_upstream() {
+    // 回归（2026-11-02）：前端对 search 编码两次（banList.ts:50 + URLSearchParams），
+    // 上游 `PBHBanController.java:159-160` 显式再解一次；不解的话中文关键字变成字面
+    // `%E4%B8%AD` 串，封禁列表搜索恒空。`filter` 上游不解码，这里也不能解。
+    let encoded = "%E4%B8%AD%E6%96%87%E4%BE%8B%E5%AD%90"; // 中文例子
+    assert_eq!(
+        crate::api::bans::bans_keyword(Some(encoded), None),
+        "中文例子"
+    );
+    assert_eq!(
+        crate::api::bans::bans_keyword(None, Some(encoded)),
+        encoded,
+        "filter 必须与上游一样不做二次解码"
+    );
+    assert_eq!(crate::api::bans::bans_keyword(None, None), "");
+    // 空白与缺省：上游 `search.trim()` 后再比较
+    assert_eq!(crate::api::bans::bans_keyword(Some("  ab  "), None), "ab");
+}
+
+#[tokio::test]
 async fn push_channels_endpoint() {
     let state = test_state(Arc::new(Database::open_in_memory().unwrap()));
     let (status, body) = get_json(&state, "/api/push").await;
@@ -1615,6 +1710,45 @@ async fn webui_contract_all_endpoints_exist_and_match_shape() {
         torrents: 0,
         peers: 0,
     });
+    // 访问历史端点要有真实行才能校验 results_fields（前端读 `downloader.id/name/type`
+    // 与 `uploadedOffset`/`downloadedOffset`）；torrent 的 hash 用清单里的样例 `abcdef`
+    let torrent_id = state
+        .db
+        .ensure_torrent_id(&pbh_core::model::TorrentData {
+            hash: "abcdef".into(),
+            name: "示例种子".into(),
+            progress: 0.5,
+            total_size: 1024,
+            piece_size: 16,
+            pieces_have: 32,
+            completed_override: None,
+            dlspeed: 0,
+            upspeed: 0,
+            is_private: Some(false),
+        })
+        .unwrap()
+        .to_string();
+    let sink = pbh_db::DbMonitorSink::new(state.db.clone());
+    for (index, downloader) in ["dl-seed", "dl-seed-2"].iter().enumerate() {
+        sink.upsert_peer_record(&pbh_core::modules::monitor::PeerRecordRow {
+            address: "1.2.3.4".into(),
+            port: 6881 + index as u16,
+            torrent_id: torrent_id.clone(),
+            downloader: (*downloader).into(),
+            peer_id: "-qB0001".into(),
+            client_name: "qBittorrent 4.6.0".into(),
+            uploaded: 10 + index as i64,
+            uploaded_offset: 2,
+            upload_speed: 1,
+            downloaded: 5 + index as i64,
+            downloaded_offset: 1,
+            download_speed: 0,
+            last_flags: None,
+            first_time_seen_ms: 1000 + index as i64,
+            last_time_seen_ms: 2000 + index as i64,
+            peer_geoip: None,
+        });
+    }
 
     let contract: Value = serde_json::from_str(WEBUI_ENDPOINTS_JSON).expect("清单 JSON");
     let endpoints = contract["endpoints"].as_array().expect("endpoints 数组");

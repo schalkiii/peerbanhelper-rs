@@ -71,22 +71,15 @@ pub async fn access_history(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let host = parse_ip(&ip);
-    let page = params
-        .get("page")
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(0)
-        .max(0);
-    let size = params
-        .get("pageSize")
-        .or_else(|| params.get("size"))
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30)
-        .clamp(1, 500);
+    // 上游 `Pageable` 是 **1-based**（`page` 缺省 1，offset = (page-1)*size，见
+    // `util/query/Pageable.java:19-35`）；这里必须走同一个入口，否则前端首屏传
+    // `page=1` 会拿到第二页数据（此前本处理器把 page 当 0-based 用）
+    let (page, size) = crate::api::pagination(&params);
     // `orderBy` 的值是 `field|asc|desc`，按值解析（见 `api::parse_order_by_params`）
     let order: Vec<(String, bool)> = crate::api::parse_order_by_params(&params);
     match state
         .db
-        .query_access_history(Some(&host), None, &order, size, page * size)
+        .query_access_history(Some(&host), None, &order, size, (page - 1) * size)
     {
         Ok((rows, total)) => {
             let results = rows
@@ -102,11 +95,16 @@ pub async fn access_history(
                             "name": r.torrent_name,
                             "infoHash": r.torrent_info_hash,
                         },
-                        "downloader": r.downloader,
+                        // 上游给的是 `DownloaderBasicInfo(id,name,type)` 对象
+                        //（前端 accessHistoryTable.vue 读 `record.downloader.name`），
+                        // 裸字符串会让下载器列显示空白
+                        "downloader": crate::api::bans::downloader_info(&state, &r.downloader),
                         "peerId": r.peer_id,
                         "clientName": r.client_name,
                         "uploaded": r.uploaded,
+                        "uploadedOffset": r.uploaded_offset,
                         "downloaded": r.downloaded,
+                        "downloadedOffset": r.downloaded_offset,
                         "uploadSpeed": r.upload_speed,
                         "downloadSpeed": r.download_speed,
                         "lastFlags": r.last_flags,
@@ -116,7 +114,7 @@ pub async fn access_history(
                 })
                 .collect::<Vec<_>>();
             let data = json!({
-                "page": page + 1,
+                "page": page,
                 "size": size,
                 "total": total,
                 "results": results,

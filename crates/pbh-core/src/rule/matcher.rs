@@ -112,10 +112,18 @@ pub struct Matcher {
     pub miss: Verdict,
 }
 
-fn verdict_or(v: &Value, key: &str, default: Verdict) -> Verdict {
+/// 解析 `hit` / `miss`。上游是 `MatchResultEnum.valueOf(...)`：值不认识就抛异常，
+/// 整条规则不可用；本移植退化成 `DEFAULT` 的话，`LENGTH` 之类会拿默认命中值参与判定。
+/// 因此这里对**出现了但无法识别**的值返回 Err（大小写仍按宽松处理，避免误伤手写出错的大小写）。
+fn verdict_or(v: &Value, key: &str, default: Verdict) -> anyhow::Result<Verdict> {
     match v.get(key).and_then(|x| x.as_str()) {
-        Some(s) => Verdict::parse(s),
-        None => default,
+        Some(s) => match s.trim().to_ascii_uppercase().as_str() {
+            "DEFAULT" => Ok(Verdict::Default),
+            "TRUE" => Ok(Verdict::True),
+            "FALSE" => Ok(Verdict::False),
+            other => anyhow::bail!("非法的 {key} 取值: {other}（上游 MatchResultEnum 只认 DEFAULT/TRUE/FALSE）"),
+        },
+        None => Ok(default),
     }
 }
 
@@ -183,8 +191,8 @@ impl Matcher {
                     Some(c) => Some(Box::new(Matcher::parse(c)?)),
                     None => None,
                 };
-                let hit = verdict_or(v, "hit", Verdict::True);
-                let miss = verdict_or(v, "miss", Verdict::Default);
+                let hit = verdict_or(v, "hit", Verdict::True)?;
+                let miss = verdict_or(v, "miss", Verdict::Default)?;
                 let content = |key: &str| {
                     v.get(key)
                         .and_then(|x| x.as_str())
@@ -205,8 +213,17 @@ impl Matcher {
                         Kind::Regex(pattern, re)
                     }
                     "LENGTH" => {
-                        let min = v.get("min").and_then(|x| x.as_i64()).unwrap_or(0);
-                        let max = v.get("max").and_then(|x| x.as_i64()).unwrap_or(i64::MAX);
+                        // 上游 `syntax.get("min").getAsInt()`：缺 min/max 直接抛异常。
+                        // 缺省成 0..MAX 会让这条规则命中**所有**字符串（等于误封），
+                        // 所以这里按不可用处理，绝不给宽松默认值
+                        let min = v
+                            .get("min")
+                            .and_then(|x| x.as_i64())
+                            .ok_or_else(|| anyhow::anyhow!("LENGTH 规则缺少 min: {v}"))?;
+                        let max = v
+                            .get("max")
+                            .and_then(|x| x.as_i64())
+                            .ok_or_else(|| anyhow::anyhow!("LENGTH 规则缺少 max: {v}"))?;
                         Kind::Length(min, max)
                     }
                     other => anyhow::bail!("unknown matcher method: {other}"),

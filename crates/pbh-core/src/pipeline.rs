@@ -52,6 +52,25 @@ impl Pipeline {
             .and_then(|m| m.as_any().downcast_ref::<T>())
     }
 
+    /// 上游 `DownloaderServerImpl.unbanWhitelistedPeers()`：把落在
+    /// `ignore-peers-from-addresses` 段内的已持久化封禁从内存表移除并标记全量重放
+    ///（等价于排期解封）。返回被移除的地址，供启动日志记录。
+    pub fn unban_whitelisted(&self) -> Vec<String> {
+        let mut list = self.ban_list.lock().unwrap_or_else(|e| e.into_inner());
+        let hits: Vec<String> = list
+            .keys_sorted()
+            .into_iter()
+            .filter(|ip| self.ignore.contains(ip))
+            .collect();
+        for ip in &hits {
+            list.remove(ip);
+        }
+        if !hits.is_empty() {
+            list.mark_reapply();
+        }
+        hits
+    }
+
     pub fn evaluate(
         &self,
         downloader_id: &str,

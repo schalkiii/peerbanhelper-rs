@@ -79,10 +79,57 @@ struct AlertRecord {
     read: bool,
 }
 
+/// 告警落库（对齐上游 `alertDao` / `AlertServiceImpl`）。
+///
+/// 抽成 trait 是为了让 `AlertManager` 在纯内存单测里也能跑；生产由 `main.rs` 注入
+/// `Arc<Database>`。落库是**必须的**：上游 WebUI 的告警页 `/api/alerts` 只读 `alert` 表，
+/// 不落库的话 ban wave 产生的下载器登录失败等告警在界面上永远看不到；
+/// 而且「同 identifier 已存在未读 ⇒ 不再发」的判据也只看进程内状态，
+/// 用户在界面标已读后本应允许再次告警（上游 `read_at IS NULL`），纯内存做不到。
+pub trait AlertStore: Send + Sync {
+    /// 上游 `identifierAlertExists`：存在且未读
+    fn has_unread(&self, identifier: &str) -> bool;
+    /// 上游 `identifierAlertExistsIncludeRead`：存在即真
+    fn exists(&self, identifier: &str) -> bool;
+    /// 上游 `alertDao.saveOrUpdate`
+    fn save(
+        &self,
+        level: AlertLevel,
+        identifier: &str,
+        title: &TranslationComponent,
+        content: &TranslationComponent,
+    );
+}
+
+impl AlertStore for pbh_db::Database {
+    fn has_unread(&self, identifier: &str) -> bool {
+        self.alert_has_unread(identifier).unwrap_or(false)
+    }
+
+    fn exists(&self, identifier: &str) -> bool {
+        self.alert_exists(identifier).unwrap_or(false)
+    }
+
+    fn save(
+        &self,
+        level: AlertLevel,
+        identifier: &str,
+        title: &TranslationComponent,
+        content: &TranslationComponent,
+    ) {
+        let title_json = serde_json::to_string(title).unwrap_or_default();
+        let content_json = serde_json::to_string(content).unwrap_or_default();
+        if let Err(e) = self.insert_alert(level.name(), identifier, &title_json, &content_json) {
+            tracing::error!("告警落库失败（{identifier}）: {e}");
+        }
+    }
+}
+
 /// 对齐上游 `alert/AlertManagerImpl` 的告警发布子集。
 ///
-/// 未移植部分（本阶段无 WebUI、无 `alert` 表，见模块文档第 2、3 条）：
-/// - `AlertService` 的落库与 30 天清理（`cleanup`）、`getUnreadAlerts()` 列表；
+/// 未移植部分（见模块文档第 2、3 条）：
+/// - `AlertService` 的 30 天清理（`cleanup_alerts` 已实现，由 `main.rs` 每日调度）、
+///   `getUnreadAlerts()` 列表（由 `/api/alerts` 直接读表）；
 /// - `Main.getGuiManager().createNotification(...)` ⇒ 以同级别的 tracing 事件替代；
 /// - Sentry 上报（上游在 catch 中 `Sentry.captureException`）。
 pub struct AlertManager {
@@ -94,6 +141,8 @@ pub struct AlertManager {
     /// identifier → 记录；`identifierAlertExists` = 存在且未读，
     /// `identifierAlertExistsIncludeRead` = 存在即真。
     alerts: Mutex<HashMap<String, AlertRecord>>,
+    /// 落库端；未注入时退化为纯进程内判存（单测与无库场景）
+    store: Mutex<Option<Arc<dyn AlertStore>>>,
 }
 
 impl AlertManager {
@@ -107,7 +156,19 @@ impl AlertManager {
             translator,
             locale: locale.into(),
             alerts: Mutex::new(HashMap::new()),
+            store: Mutex::new(None),
         }
+    }
+
+    /// 注入告警落库端（`main.rs` 打开数据库后调用）。
+    pub fn set_store(&self, store: Arc<dyn AlertStore>) {
+        if let Ok(mut slot) = self.store.lock() {
+            *slot = Some(store);
+        }
+    }
+
+    fn store(&self) -> Option<Arc<dyn AlertStore>> {
+        self.store.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// 文案表（供 ban wave 等复用同一 translator/locale 渲染日志）。
@@ -121,7 +182,13 @@ impl AlertManager {
     }
 
     /// 对齐 `AlertManager.identifierAlertExists`（存在且**未读**）。
+    ///
+    /// 注入落库端后以数据库为准：用户在 WebUI 标已读 ⇒ `read_at` 非空 ⇒ 允许再次告警，
+    /// 这是纯进程内状态做不到的（会把同 identifier 的告警永久吞掉）。
     pub fn identifier_alert_exists(&self, identifier: &str) -> bool {
+        if let Some(store) = self.store() {
+            return store.has_unread(identifier);
+        }
         self.alerts
             .lock()
             .map(|alerts| alerts.get(identifier).is_some_and(|record| !record.read))
@@ -130,6 +197,9 @@ impl AlertManager {
 
     /// 对齐 `AlertManager.identifierAlertExistsIncludeRead`。
     pub fn identifier_alert_exists_include_read(&self, identifier: &str) -> bool {
+        if let Some(store) = self.store() {
+            return store.exists(identifier);
+        }
         self.alerts
             .lock()
             .map(|alerts| alerts.contains_key(identifier))
@@ -196,6 +266,10 @@ impl AlertManager {
         }
         if let Ok(mut alerts) = self.alerts.lock() {
             alerts.insert(identifier.to_string(), AlertRecord { level, read: false });
+        }
+        // 上游 `alertDao.saveOrUpdate`：先落库再推送，WebUI 的告警页只读表
+        if let Some(store) = self.store() {
+            store.save(level, identifier, title, content);
         }
         let title_text = self.translator.render(title, &self.locale);
         let content_text = self.translator.render(content, &self.locale);

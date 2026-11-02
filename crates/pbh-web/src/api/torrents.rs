@@ -92,17 +92,8 @@ pub async fn access_history(
     Path(info_hash): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let page = params
-        .get("page")
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let size = params
-        .get("pageSize")
-        .or_else(|| params.get("size"))
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(30)
-        .clamp(1, 500);
+    // 与 `peers.rs` 用同一套分页（上游 `Pageable`：page 缺省 1、size 缺省 10）
+    let (page, size) = crate::api::pagination(&params);
     // `orderBy` 的值是 `field|asc|desc`，按值解析（见 `api::parse_order_by_params`）
     let order: Vec<(String, bool)> = crate::api::parse_order_by_params(&params);
     match state
@@ -123,11 +114,18 @@ pub async fn access_history(
                             "name": r.torrent_name,
                             "infoHash": r.torrent_info_hash,
                         },
-                        "downloader": r.downloader,
+                        // 上游给 `DownloaderBasicInfo(id,name,type)` 对象，且带
+                        // uploadedOffset/downloadedOffset（前端增量列直接读）
+                        "downloader": crate::api::bans::downloader_info(&state, &r.downloader),
                         "peerId": r.peer_id,
                         "clientName": r.client_name,
                         "uploaded": r.uploaded,
+                        "uploadedOffset": r.uploaded_offset,
                         "downloaded": r.downloaded,
+                        "downloadedOffset": r.downloaded_offset,
+                        "uploadSpeed": r.upload_speed,
+                        "downloadSpeed": r.download_speed,
+                        "lastFlags": r.last_flags,
                         "firstTimeSeen": r.first_time_seen,
                         "lastTimeSeen": r.last_time_seen,
                     })

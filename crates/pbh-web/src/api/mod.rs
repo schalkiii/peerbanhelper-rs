@@ -197,7 +197,13 @@ pub fn api_routes() -> Router<crate::AppState> {
         .route("/sub/rules/update", post(sub::refresh_all))
         .route(
             "/sub/rule/{id}",
-            patch(sub::update_rule).delete(sub::remove_rule),
+            // 上游路由分工：PATCH = `switcher`（只改 enabled）、POST = `save(isAdd=false)`
+            //（改 ruleName/subUrl）、DELETE = 删除。本移植的 `update_rule` 按 body 里
+            // 出现的键增量处理，因此两种方法可复用同一处理器；缺 POST 会让前端
+            // `UpdateRuleItem`（WebUI 编辑订阅）拿到 405
+            patch(sub::update_rule)
+                .post(sub::update_rule)
+                .delete(sub::remove_rule),
         )
         .route("/sub/rule/{id}/update", post(sub::refresh_rule))
         .route("/sub/logs", get(sub::logs))

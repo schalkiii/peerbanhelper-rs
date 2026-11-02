@@ -90,6 +90,13 @@ pub struct ProfileConfig {
     pub ignore_peers_from_addresses: Vec<String>,
     #[serde(default)]
     pub module: ModulesSection,
+    /// 本程序已经「见过」的默认规则指纹（见 [`crate::rule_backfill`]）。
+    ///
+    /// 随版本新增的默认客户端名 / Peer ID 规则只追加一次；用户之后删掉的规则不会因为
+    /// 再次启动被「复活」。上游靠 `config-version` + 逐条 `ProfileUpdateScript` 达到
+    /// 同样效果，本移植没有那份脚本历史，改用「已见过」集合等价实现。
+    #[serde(rename = "default-rules-seen", default)]
+    pub default_rules_seen: Vec<String>,
 }
 
 impl Default for ProfileConfig {
@@ -99,6 +106,7 @@ impl Default for ProfileConfig {
             ban_duration: default_global_ban_duration(),
             ignore_peers_from_addresses: default_ignore_addresses(),
             module: ModulesSection::default(),
+            default_rules_seen: Vec::new(),
         }
     }
 }
@@ -1105,21 +1113,24 @@ impl ProfileConfig {
         }
         if let Some(cfg) = &self.module.peer_id_blacklist {
             if enabled_or_disabled(&cfg.enabled) {
-                if let Ok(rules) = RuleSet::from_json_text(&cfg.banned_peer_id) {
-                    pipeline.add_module(Box::new(StringBlacklist::peer_id_with(
+                match RuleSet::from_json_text(&cfg.banned_peer_id) {
+                    Ok(rules) => pipeline.add_module(Box::new(StringBlacklist::peer_id_with(
                         rules,
                         cfg.ban_duration_ms,
-                    )));
+                    ))),
+                    // 规则集里任一条不可解析就整模块不注册（与上游一致），
+                    // 不记日志的话用户只会看到「模块没生效」
+                    Err(e) => tracing::warn!("peer-id-blacklist 规则集解析失败，本模块未启用: {e}"),
                 }
             }
         }
         if let Some(cfg) = &self.module.client_name_blacklist {
             if enabled_or_disabled(&cfg.enabled) {
-                if let Ok(rules) = RuleSet::from_json_text(&cfg.banned_client_name) {
-                    pipeline.add_module(Box::new(StringBlacklist::client_name_with(
-                        rules,
-                        cfg.ban_duration_ms,
-                    )));
+                match RuleSet::from_json_text(&cfg.banned_client_name) {
+                    Ok(rules) => pipeline.add_module(Box::new(
+                        StringBlacklist::client_name_with(rules, cfg.ban_duration_ms),
+                    )),
+                    Err(e) => tracing::warn!("client-name-blacklist 规则集解析失败，本模块未启用: {e}"),
                 }
             }
         }
@@ -1262,6 +1273,31 @@ pub fn module_config_names(pipeline: &Pipeline) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::iputil::IpSet;
+
+    /// 上游 `DownloaderServerImpl.unbanWhitelistedPeers()`（load 末尾）：启动恢复的封禁表里，
+    /// 落在 `ignore-peers-from-addresses` 段内的条目要立即排期解封——否则从 Java 版迁来的库
+    /// 里那些 LAN/CGNAT 封禁会在每次重启后继续下发给下载器。
+    #[test]
+    fn unban_whitelisted_drops_bans_inside_ignore_ranges() {
+        let mut pipeline = ProfileConfig::default().build_pipeline();
+        pipeline.ignore = IpSet::from_cidrs(["10.0.0.0/8"]);
+        {
+            let mut list = pipeline.ban_list.lock().unwrap();
+            list.add("10.1.2.3", i64::MAX, "test-module", false);
+            list.add("8.8.8.8", i64::MAX, "test-module", false);
+        }
+        assert_eq!(pipeline.unban_whitelisted(), vec!["10.1.2.3".to_string()]);
+        assert_eq!(
+            pipeline.ban_list.lock().unwrap().keys_sorted(),
+            vec!["8.8.8.8".to_string()],
+            "ignore 段外的封禁必须保留"
+        );
+        assert!(
+            pipeline.unban_whitelisted().is_empty(),
+            "第二次运行不应重复处理"
+        );
+    }
 
     #[test]
     fn default_profile_disables_all_modules() {

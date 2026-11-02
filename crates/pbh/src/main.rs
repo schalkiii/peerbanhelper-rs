@@ -116,6 +116,18 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("PBH_DATA_DIR", &data_dir);
 
     let (mut cfg, cfg_path) = config::AppConfig::load_or_create(&data_dir)?;
+    // 默认规则补齐（对齐上游 `ProfileUpdateScript` 的意图）：随程序版本新增的默认
+    // 客户端名 / Peer ID 规则也要落到从旧版本或 Java 版带过来的配置里，只补一次，
+    // 用户之后删掉的不会被复活。必须在构建流水线之前完成。
+    let backfilled = pbh_core::rule_backfill::apply_missing_defaults(&mut cfg.profile);
+    if !backfilled.is_empty() {
+        if let Err(e) = cfg.save_to(&cfg_path) {
+            warn!("默认规则补齐后写回配置失败（本次仍按补齐后的内存配置运行）: {e}");
+        }
+        for fp in backfilled {
+            info!("默认规则补齐：已加入 {fp}");
+        }
+    }
     // 代理必须在构造任何 HTTP 客户端之前写入环境变量（reqwest 默认读环境代理）
     pbh_core::proxy::apply_env(&cfg.proxy);
     if cfg.performance.windows_ecoqos_api {
@@ -371,6 +383,10 @@ async fn main() -> anyhow::Result<()> {
         translator.clone(),
         cfg.language.locale.clone(),
     ));
+    // 告警落库（对齐上游 `alertDao.saveOrUpdate`）：WebUI 的告警页只读 `alert` 表，
+    // 「同 identifier 未读才抑制」的判据也必须以库为准，否则下载器登录失败一类
+    // 告警在界面上永远看不到，且标已读后无法再次告警
+    alert_manager.set_store(db.clone());
 
     // 监控模块（`active-monitoring` / `peer-analyse-service.*`，上游非 RuleFeatureModule，
     // 不参与 peer 判定）：由 ban wave 循环按上游定时任务间隔驱动。
@@ -447,6 +463,18 @@ async fn main() -> anyhow::Result<()> {
                 list.mark_reapply();
             }
         }
+    }
+
+    // 上游 `DownloaderServerImpl.load()` 末尾的 `unbanWhitelistedPeers()`：从 Java 版
+    // 或旧配置带过来的持久化封禁里，落在 `ignore-peers-from-addresses` 段（LAN/CGNAT 等）
+    // 的条目必须立即排期解封，否则重启后仍在持续下发给下载器。
+    let unbanned = pipeline.unban_whitelisted();
+    if !unbanned.is_empty() {
+        info!(
+            "启动解封：{} 条封禁落在 ignore-peers-from-addresses 内，已排期解封（示例 {}）",
+            unbanned.len(),
+            unbanned[0]
+        );
     }
 
     // Web 状态

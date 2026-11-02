@@ -9,6 +9,31 @@ use std::collections::HashMap;
 
 use crate::AppState;
 
+/// 前端 `OSType` 认的操作系统名（对齐上游 `osMXBean.getName()`：macOS 是 `Mac OS X`）。
+fn os_display_name() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "Windows",
+        "linux" => "Linux",
+        "macos" => "Mac OS X",
+        "freebsd" => "FreeBSD",
+        "solaris" => "Solaris",
+        _ => "Other",
+    }
+}
+
+/// 操作系统版本（上游取 `osMXBean.getVersion()`）。
+///
+/// 之前这里填的是 CPU 架构，「关于」页会把 `x86_64` 当版本号显示。Linux 有免依赖的取法
+/// （内核版本文件）；其它平台没有可靠且无依赖的来源时返回空串——宁可留空也不给错值。
+fn os_version() -> String {
+    if os_display_name() == "Linux" {
+        if let Ok(text) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+            return text.trim().to_string();
+        }
+    }
+    String::new()
+}
+
 /// `GET /api/general/status`：整体运行信息（含 JVM→运行时约定、内存由系统层填充）。
 pub async fn status(
     State(state): State<AppState>,
@@ -69,8 +94,11 @@ pub async fn status(
             "memory": { "heap": heap, "non_heap": heap },
         },
         "system": {
-            "os": std::env::consts::OS,
-            "version": std::env::consts::ARCH,
+            // 上游 `generateSystemData` 用 `osMXBean.getName()`，Windows 归一为 "Windows"；
+            // 前端 `api/model/status.ts` 的 OSType 只认 Linux/Windows/Mac OS X/FreeBSD/Solaris/Other，
+            // 直接给 `std::env::consts::OS`（小写 windows）会让「关于」页取不到 osLogo
+            "os": os_display_name(),
+            "version": os_version(),
             "architecture": std::env::consts::ARCH,
             "cores": std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1),
             "load": 0,

@@ -97,8 +97,19 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 4. 版本号约定：Cargo 版本对齐上游基线（当前 9.5.3），移植自身的发布序列以 `-rs.N`
    后缀体现在 tag / Release 标题上
 
-## 当前状态（2026-10-31）
+## 当前状态（2026-11-02）
 
+- **9.5.3-rs.4（2026-11-02；全量 review 补齐，已部署生产）**：新增**默认规则补齐迁移**
+  （`rule_backfill` + `profile.default-rules-seen`，等价上游 `config-version`+`ProfileUpdateScript`，
+  只补一次、不复活用户删除项）；修复 14 组不一致：push 渠道缺 `config` 子对象（保存写空）、
+  push 写路径不再 `_`→`-` 归一、accessHistory 分页 0-based 与 `downloader` 对象/两个 offset、
+  `/api/bans` search 二次解码、缺 `POST /api/sub/rule/{id}`、`sessionAnalyse` 时间窗参数名、
+  `system.os/version` 错值、`DownloaderMeta.paused` 硬编码、`torrent_by_hash` 查废弃表致计数恒 0、
+  qB 复用会话多做版本门槛（老版本整轮不下发）与 `Ok.` 响应体判据、Transmission `paused`/版本截断、
+  LENGTH 缺 min/max 会命中全部字符串、脚本返回值按 `intValue()` 窄化、告警不落库、
+  启动不解除白名单内封禁。工作区 **707 测试通过**（另 1 ignore）、GUI 4、clippy 零警告。
+  遗留 13 组缺口（qBittorrentEE 适配器、Aria2Next handshaking、规则流水线热重载、
+  `auto-stun`/`stun` 顶层键、`proxy.setting` 语义等）登记在 **PLAN.md §4.2**，附两侧 file:line。
 - **9.5.3-rs.3（2026-10-31；日志轮转 + 降噪，已部署生产）**：
   `data/pbh-gui.log` 曾 23 天涨到 236 MB。GUI 每 2s 检查大小，超 16 MB 复制为 `.1` 并清空
   （保留 `.1~.3`，上限约 64 MB）；非终端输出关掉 ANSI（占体积 11% 且破坏 grep 行首匹配）；

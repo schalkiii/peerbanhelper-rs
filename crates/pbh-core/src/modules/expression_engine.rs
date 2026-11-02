@@ -179,8 +179,10 @@ impl ExpressionEngine {
             };
         }
         // Number：0 → pass；1 → BAN；2 → SKIP；其它 → pass（上游记日志后视为无效）
+        // 上游取的是 `Number.intValue()`（先窄化成 32 位整型），因此超过 2^31 的返回值
+        // 会按低 32 位判定，而不是按完整 64 位值判定
         if ret.is_int() {
-            match ret.as_int().unwrap_or(0) {
+            match ret.as_int().unwrap_or(0) as i32 as i64 {
                 0 => return None,
                 1 => return Some((PeerAction::Ban, "1".to_string())),
                 2 => return Some((PeerAction::Skip, "2".to_string())),
@@ -188,8 +190,8 @@ impl ExpressionEngine {
             }
         }
         if ret.is_float() {
-            // 上游 `number.intValue()` 为向零截断（`return 0.9` → 0 = pass）
-            let v = ret.as_float().unwrap_or(0.0) as i64;
+            // 上游 `number.intValue()` 为向零截断（`return 0.9` → 0 = pass），同样先窄化到 int
+            let v = ret.as_float().unwrap_or(0.0) as i32 as i64;
             return match v {
                 0 => None,
                 1 => Some((PeerAction::Ban, v.to_string())),
@@ -422,6 +424,24 @@ mod tests {
     fn boolean_false_passes() {
         let m = with_script("a.av", "false");
         assert_eq!(result_of(&m).action, PeerAction::NoAction);
+    }
+
+    /// 上游取返回值用的是 `Number.intValue()`（先窄化到 32 位）：`2^32+2` 等价于返回 2
+    ///（SKIP），`2^31` 窄化成负数 ⇒ 无效值走 pass。按完整 64 位判定会把两者都当成无效值。
+    #[test]
+    fn number_return_narrows_to_32_bits_like_java() {
+        let m = with_script("a.av", "4294967298");
+        assert_eq!(
+            result_of(&m).action,
+            PeerAction::Skip,
+            "低 32 位是 2，应按 SKIP 处理"
+        );
+        let m = with_script("b.av", "2147483648");
+        assert_eq!(
+            result_of(&m).action,
+            PeerAction::NoAction,
+            "窄化成负数后是无效返回值"
+        );
     }
 
     #[test]

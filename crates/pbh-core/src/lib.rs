@@ -31,6 +31,7 @@ pub mod proxy;
 pub mod ptr;
 pub mod remap;
 pub mod rule;
+pub mod rule_backfill;
 
 pub use banlist::{needs_full_ban_list, BanList, BannedRecord};
 pub use model::{PeerAddress, PeerData, PeerFlag, TorrentData};

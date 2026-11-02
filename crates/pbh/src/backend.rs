@@ -191,7 +191,8 @@ impl WebBackend for PbhBackend {
         let config = d.web_json();
         Some(DownloaderMeta {
             endpoint: d.endpoint.clone(),
-            paused: false,
+            // 上游这里回 `downloader.isPaused()`；本移植的暂停状态来自配置项 `paused`
+            paused: d.paused,
             config,
         })
     }
@@ -556,15 +557,26 @@ impl WebBackend for PbhBackend {
         cfg.push
             .iter()
             .map(|(key, value)| {
-                let section = value.as_mapping().cloned().unwrap_or_default();
-                let kind = section
-                    .get(serde_yaml::Value::String("type".into()))
+                // 上游 `PushWrapperDTO(name, type, saveJson())`：**必须带 config 子对象**，
+                // 否则前端推送编辑弹窗的子表单为空，提交即写空该渠道配置
+                let kind = value
+                    .as_mapping()
+                    .and_then(|s| s.get(serde_yaml::Value::String("type".into())))
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_lowercase();
+                let (kind, config) = match PushProviderConfig::parse(value) {
+                    // 上游回的是 provider 自己的 `getConfigType()`（不是 YAML 原文），
+                    // 所以 type 也取自解析结果
+                    Ok(parsed) => (parsed.web_type().to_string(), parsed.web_json()),
+                    // 渠道本身就读不通（provider 未注册，与上游一致）：原样回显，
+                    // 不伪造字段，也不让它在列表里凭空消失
+                    Err(_) => (kind, serde_json::to_value(value).unwrap_or(Value::Null)),
+                };
                 json!({
                     "name": key,
                     "type": kind,
+                    "config": config,
                 })
             })
             .collect()
@@ -707,7 +719,9 @@ pub fn build_downloader(
                 verify_ssl: d.verify_tls,
                 rpc_url: d.resolved_rpc_url("/transmission/rpc"),
                 ignore_private: d.ignore_private,
-                paused: false,
+                // 上游 `Transmission.loadFromConfig` 把配置里的 `paused` 传给下载器
+                //（`AbstractDownloader` 在 isPaused 时整轮跳过），此处曾硬编码 false
+                paused: d.paused,
                 blocklist_url: blocklist_url.to_string(),
             };
             (
@@ -948,8 +962,13 @@ fn push_channel_parts(channel: &Value) -> Result<(String, serde_yaml::Mapping), 
         return Err("PUSH_CHANNEL_NAME_EMPTY".into());
     }
     let config = channel.get("config").cloned().unwrap_or(channel.clone());
-    let mut section = serde_yaml::from_value::<serde_yaml::Mapping>(denormalize_json(&config))
-        .map_err(|e| format!("渠道配置无效: {e}"))?;
+    // 这里**不做** `_`→`-` 归一（与 `write_config` 不同）：上游各 provider 的 YAML 键名
+    // 本身就混用——`backend_url`/`server_url` 用下划线、`content-type`/`body-template`
+    // 用连字符、`sendPartial` 用驼峰，能否落对由 `PushProviderConfig` 的 rename/alias 决定。
+    // 盲目转换会把 bark/ntfy 的配置键改坏，也会把自定义 header 名（如 `X-Token`）改写。
+    let as_yaml = serde_yaml::to_value(&config).map_err(|e| format!("渠道配置无效: {e}"))?;
+    let mut section =
+        serde_yaml::from_value::<serde_yaml::Mapping>(as_yaml).map_err(|e| e.to_string())?;
     if let Some(kind) = channel.get("type").and_then(|v| v.as_str()) {
         section.insert(
             serde_yaml::Value::String("type".into()),

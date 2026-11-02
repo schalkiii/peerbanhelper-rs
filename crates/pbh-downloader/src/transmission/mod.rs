@@ -224,8 +224,10 @@ impl TransmissionDownloader {
     /// `version.length() > 5` 时截断到 5 字符（上游行为）
     fn normalize_version(raw: &str) -> String {
         let trimmed = raw.trim();
-        if trimmed.len() > 5 {
-            trimmed[..5].to_string()
+        // 上游 `substring(0, 5)` 按 UTF-16 计；这里按字符取前 5 个，
+        // 避免非 ASCII 版本串在字节中间切片直接 panic
+        if trimmed.chars().count() > 5 {
+            trimmed.chars().take(5).collect()
         } else {
             trimmed.to_string()
         }

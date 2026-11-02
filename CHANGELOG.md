@@ -3,6 +3,107 @@
 本文件记录 peerbanhelper-rs 的功能新增、缺陷修复与行为变更，按时间倒序排列。
 提交信息遵循 `type(scope): 中文描述` 约定。
 
+## 9.5.3-rs.4（2026-11-02）
+
+> 对 Java v9.5.3 做全量 review 后的补齐：新增默认规则自动补齐迁移，修复 14 组
+> 行为/契约差异；确认但未动的缺口登记在 PLAN.md §4.2（含两侧 file:line 与修法）。
+
+### feat(config): 默认规则补齐迁移（对齐上游 `ProfileUpdateScript` 的意图）
+
+- 新增 `crates/pbh-core/src/rule_backfill.rs` + profile 的 `default-rules-seen` 集合：
+  随程序版本新增的默认客户端名 / Peer ID 规则，会自动补进**已有**配置。
+- 语义：每条默认规则只在第一次见到时补（补过之后即使用户删掉也不会被复活）；
+  模块配置节整体不存在（用户没启用该模块）时不代为创建；补齐后写回 `config.yml` 并 info 记录。
+- 上游的做法是 `config-version` + 逐条 `@UpdateScript(version = N)`（`ProfileUpdateScript.java`），
+  本移植没有那份脚本历史，改用等价的「已见过集合」机制，效果一致且不需要每次新写迁移脚本。
+- 直接动因：2026-10-28 BTN 公告的 Gopeed 家族新变种；`Gopeed bt-` 前缀规则虽已随 v9.5.3
+  移植进 `defaults.rs`，但只有全新安装才拿得到——生产 profile 里此前只有旧的 `Gopeed bt-exp`。
+
+### fix(web): 六处会让前端静默出错的契约差异
+
+- **`/api/push` 缺 `config` 子对象**：上游是 `PushWrapperDTO(name, type, saveJson())`，
+  本移植只给 `{name,type}` ⇒ 前端 `editPush.vue` 子表单为空，保存即写空该渠道配置。
+  现按类型输出与 `webui/src/api/model/downloader…/push.ts` 一致的键集（smtp 的
+  `senderName`/`receivers`、serverchan 的 `sendKey`/`openId`、telegram 的 `chatId`、
+  bark/ntfy 的 `backend_url`/`server_url`、webhook 的 `content_type`/`body_template`/`headers`）。
+- **推送渠道写路径**：补上述 camelCase 的 serde alias；并且**不再**对 push 配置段做
+  `_`→`-` 归一——上游各 provider 的 YAML 键名本来就混用（`backend_url` 下划线、
+  `content-type` 连字符、`sendPartial` 驼峰），盲目转换会把 bark/ntfy 与自定义
+  header 名（如 `X-Token`）写坏。
+- **`/api/peer/{ip}/accessHistory` 分页差一页**：本移植把 `page` 当 0-based
+  （offset = page*size、回显 page+1），上游 `util/query/Pageable.java` 是 1-based
+  ⇒ 前端首屏 `page=1` 实际显示第二页。改用统一的 `pagination()` 入口。
+- **accessHistory（peer 与 torrent 两处）字段缺失**：`downloader` 由裸 id 字符串改为
+  `DownloaderBasicInfo(id,name,type)` 对象；补 `uploadedOffset`/`downloadedOffset`
+  （`peer_records` 查询此前根本没取这两列）；torrent 侧同时补齐 `uploadSpeed`/
+  `downloadSpeed`/`lastFlags` 并复用统一分页。
+- **`/api/bans?search=` 少一次解码**：前端两次编码（`banList.ts:50` 的
+  `encodeURIComponent` + `URLSearchParams`），上游 `PBHBanController.java:159-160` 显式再解一次；
+  不解时中文/非 ASCII 关键字变成字面 `%E4%B8%AD` 串，搜索恒空。`filter` 与上游一致**不**解码。
+- **缺 `POST /api/sub/rule/{id}`**：上游 `save(isAdd=false)` 是 WebUI「编辑订阅」的入口，
+  此前返回 405（`PATCH` 在上游只是 enable 开关）。
+- **`/api/chart/sessionAnalyse` 时间窗失效**：读的是 `startTime`/`endTime`，上游/前端都是
+  `startAt`/`endAt` ⇒ 永远退化成 `0..now`，图表时间选择器无效。
+- **`/api/general/status` 系统信息**：`system.os` 按前端 `OSType` 映射
+  （Windows/Linux/Mac OS X/…，原先给小写的 `std::env::consts::OS` 取不到 osLogo）；
+  `version` 不再填 CPU 架构（Linux 读内核版本，其它平台无免依赖取法时留空，不给错值）；
+  `DownloaderMeta.paused` 由硬编码 `false` 改为配置值（上游回 `downloader.isPaused()`）。
+
+### fix(db): 单种子详情的封禁数不再恒 0
+
+- `torrent_by_hash` 的 `peerBanCount` 改从 `history` 统计（列表查询早已是 `history`），
+  此前查废弃表 `ban_logs` ⇒ `/api/torrent/{hash}` 静默显示 0。
+
+### fix(downloader): qBittorrent 登录链路与 Transmission 暂停
+
+- **复用会话时直接 SUCCESS**（对齐 `AbstractQbittorrent.login0()` 第一行
+  `if (isLoggedIn()) return SUCCESS`）：此前复用分支也走版本门槛 + `setPreferences`，
+  老版本 qB 会每轮拿到 `REQUIRE_TAKE_ACTIONS`，整轮不下发封禁。版本与 `RANGE_BAN_IP`
+  能力位因此只在真正登录后更新（与上游 `lastSemver` 的滞后感一致）。
+- **表单登录判据**改为 `isSuccessful() && isLoggedIn()`（上游不比较响应体是否等于 `Ok.`）；
+  按体判据时旧版或被反向代理改写响应体的部署会被误记为凭据错误并计入登录冷却。
+- 登录非成功时复位健康位（上游按 `lastStatus != HEALTHY` 决定是否重发偏好），
+  使掉线恢复后重新下发「关闭同 IP 多连接」。
+- Transmission 的 `paused` 不再硬编码 `false`，取配置的 `paused`
+  （对齐 `Transmission.java:92`），勾选暂停后不再继续巡检与 `blocklist-update`。
+- Transmission 版本串截断改用 `chars().take(5)`，非 ASCII 版本号不再 panic。
+
+### fix(module): 规则解析严格性与脚本返回值窄化
+
+- `LENGTH` 缺 `min`/`max` ⇒ 整条规则不可用（上游 `syntax.get("min").getAsInt()` 抛异常）。
+  此前的默认值 `0..MAX` 会让该规则命中**所有**字符串 —— 一条手写漏字的规则等于全网误封。
+- `hit`/`miss` 出现但取值不在 `DEFAULT/TRUE/FALSE` ⇒ 拒绝（上游 `MatchResultEnum.valueOf` 抛异常）；
+  大小写仍按宽松处理（同值不影响判定，避免误伤手写大小写）。
+- 规则集解析失败时记 `warn` 并说明「本模块未启用」，不再静默降级。
+- 自定义脚本的数字返回值按上游 `Number.intValue()` 先窄化到 32 位
+  （`2^32+2` ⇒ SKIP，`2^31` ⇒ 负数 ⇒ 无效值走 pass）。
+
+### fix(alert): 告警落库，抑制判据以数据库为准
+
+- 新增 `AlertStore`（生产注入 `Database`），`publish_alert` 先查
+  「同 identifier 是否有**未读**告警」再落库（对齐 `AlertManagerImpl.publishAlert` + `alertDao`）。
+- 修掉两个后果：① ban wave 产生的下载器登录失败等告警在 `/api/alerts` 永远看不到
+  （该端点只读 `alert` 表）；② 同 identifier 的告警在本进程被永久吞掉——WebUI 标已读
+  只改库里的 `read_at`，纯内存判存复位不了。
+- 新增 `Database::alert_has_unread` / `alert_exists` / `insert_alert`。
+
+### fix(startup): 启动时解封落在白名单内的持久化封禁
+
+- 新增 `Pipeline::unban_whitelisted()`（对齐上游 `DownloaderServerImpl.unbanWhitelistedPeers`）：
+  落在 `ignore-peers-from-addresses` 段内的已持久化封禁从内存表移除并标记全量重放。
+  此前从 Java 版迁来的库里那些 LAN/CGNAT 段封禁会在每次重启后继续下发给下载器。
+
+### test / docs
+
+- 新增用例：默认规则补齐 6 个（含「用户删除不复活」「模块节缺失不代建」「键序不同不重复追加」）、
+  规则字段严格性、脚本 32 位窄化、push 逐类型键集与 camelCase 往返、
+  accessHistory 1-based 分页、bans 双重解码、`torrent_by_hash` 计数、alert 未读语义、启动解封。
+- `webui_endpoints.json` 补 `POST /api/sub/rule/{id}` 与两个 accessHistory 的 `results_fields`。
+- PLAN.md 新增 §4.2「2026-11-02 全量 review 的遗留项」共 13 组（qBittorrentEE 适配器缺失、
+  Aria2Next `handshaking` 口径、规则流水线热重载、`auto-stun`/`stun` 顶层键、
+  `proxy.setting` 数值语义、老库 flyway 增量迁移等），每条附两侧 file:line 与修法；
+  原 §4.2~4.5 顺延为 §4.3~4.6。
+
 ## 9.5.3-rs.3（2026-10-31）
 
 > 日志治理：轮转 + 降噪/降级。生产 `data/pbh-gui.log` 曾 23 天涨到 **236 MB**。

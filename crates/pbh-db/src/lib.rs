@@ -550,6 +550,48 @@ impl Database {
         )?)
     }
 
+    /// 是否存在该 identifier 的**未读**告警（上游 `AlertServiceImpl.identifierAlertExists`
+    /// 用 `read_at IS NULL`：在 WebUI 标记已读之后，同一告警可以再次发出）。
+    pub fn alert_has_unread(&self, identifier: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let found: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM alert WHERE identifier = ?1 AND read_at IS NULL)",
+            rusqlite::params![identifier],
+            |row| row.get(0),
+        )?;
+        Ok(found != 0)
+    }
+
+    /// 是否存在该 identifier 的告警（不论已读，上游
+    /// `identifierAlertExistsIncludeRead`）。
+    pub fn alert_exists(&self, identifier: &str) -> anyhow::Result<bool> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let found: i64 = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM alert WHERE identifier = ?1)",
+            rusqlite::params![identifier],
+            |row| row.get(0),
+        )?;
+        Ok(found != 0)
+    }
+
+    /// 落库一条告警（上游 `alertDao.saveOrUpdate`）。`alert` 表没有 `push` 列：
+    /// 是否推送由应用层决定，这里只存 `level/identifier/title/content/时间`。
+    pub fn insert_alert(
+        &self,
+        level: &str,
+        identifier: &str,
+        title_json: &str,
+        content_json: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO alert (create_at, read_at, level, identifier, title, content)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
+            rusqlite::params![now_ms(), level, identifier, title_json, content_json],
+        )?;
+        Ok(())
+    }
+
     // ---------- 持久化封禁列表（`banlist`，对齐上游 `BanListService`） ----------
 
     /// `BanListService.readBanList`：读回 `(address, BanMetadata JSON)` 列表。
@@ -1138,7 +1180,8 @@ impl Database {
             "SELECT p.id, p.address, p.port, p.torrent_id, COALESCE(t.info_hash, ''), COALESCE(t.name, ''),
                     COALESCE(t.size, 0), p.downloader, COALESCE(p.peer_id, ''), COALESCE(p.client_name, ''),
                     p.uploaded, p.downloaded, p.upload_speed, p.download_speed,
-                    COALESCE(p.last_flags, ''), p.first_time_seen, p.last_time_seen
+                    COALESCE(p.last_flags, ''), p.first_time_seen, p.last_time_seen,
+                    p.uploaded_offset, p.downloaded_offset
              FROM peer_records p LEFT JOIN torrents t ON t.id = p.torrent_id {cond}
              ORDER BY {order_sql} LIMIT ? OFFSET ?"
         );
@@ -1167,6 +1210,8 @@ impl Database {
                     last_flags: row.get(14)?,
                     first_time_seen: row.get(15)?,
                     last_time_seen: row.get(16)?,
+                    uploaded_offset: row.get(17)?,
+                    downloaded_offset: row.get(18)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1266,7 +1311,7 @@ impl Database {
         let row = conn
             .query_row(
                 "SELECT t.id, t.info_hash, t.name, t.size,
-                        COALESCE((SELECT COUNT(*) FROM ban_logs b WHERE b.torrent_hash = t.info_hash), 0),
+                        COALESCE((SELECT COUNT(*) FROM history b WHERE b.torrent_id = t.id), 0),
                         COALESCE((SELECT COUNT(*) FROM peer_records p WHERE p.torrent_id = t.id), 0)
                  FROM torrents t WHERE t.info_hash = ?1 LIMIT 1",
                 rusqlite::params![hash],
@@ -1462,6 +1507,10 @@ pub struct AccessHistoryRow {
     pub client_name: String,
     pub uploaded: i64,
     pub downloaded: i64,
+    /// 增量封禁/统计用的累计偏移（上游 `AccessHistoryDTO.uploadedOffset` /
+    /// `downloadedOffset`，前端访问历史表格直接读这两列）
+    pub uploaded_offset: i64,
+    pub downloaded_offset: i64,
     pub upload_speed: i64,
     pub download_speed: i64,
     pub last_flags: String,
@@ -1924,5 +1973,62 @@ mod tests {
             last_time_seen_ms: 0,
             first_time_seen_ms: 0,
         }
+    }
+
+    /// 回归（2026-11-02 review）：单种子详情曾查废弃表 `ban_logs`，
+    /// 而列表查询用的是 `history` ⇒ `/api/torrent/{hash}` 的 `peerBanCount` 恒 0
+    ///（前端静默显示 0，不报错）。两处口径必须一致。
+    #[test]
+    fn torrent_by_hash_counts_bans_from_history() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_history(&history_record("1.2.3.4")).unwrap();
+        db.insert_history(&history_record("1.2.3.5")).unwrap();
+        let row = db
+            .torrent_by_hash("hash-1")
+            .unwrap()
+            .expect("torrent_by_hash 应能查到刚写入的种子");
+        assert_eq!(row.peer_ban_count, 2, "封禁数应按 history.torrent_id 统计");
+        // 封禁计数不应把别的种子的记录算进来
+        let other = history_record("9.9.9.9");
+        let mut renamed = other.clone();
+        renamed.torrent = torrent("hash-2");
+        renamed.ip = "9.9.9.9".into();
+        db.insert_history(&renamed).unwrap();
+        assert_eq!(
+            db.torrent_by_hash("hash-1").unwrap().unwrap().peer_ban_count,
+            2
+        );
+        assert_eq!(
+            db.torrent_by_hash("hash-2").unwrap().unwrap().peer_ban_count,
+            1
+        );
+    }
+
+    /// 告警落库与「未读才抑制」判据（上游 `alertDao` + `identifierAlertExists`）。
+    /// 用户在 WebUI 标已读后必须允许同 identifier 再次告警。
+    #[test]
+    fn alert_store_semantics_match_upstream_dao() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        assert!(!db.alert_has_unread("dl-login-failed").unwrap());
+        assert!(!db.alert_exists("dl-login-failed").unwrap());
+
+        db.insert_alert(
+            "WARN",
+            "dl-login-failed",
+            r#"{"key":"X","params":[]}"#,
+            r#"{"key":"Y","params":[]}"#,
+        )
+        .unwrap();
+        assert!(db.alert_has_unread("dl-login-failed").unwrap());
+        assert!(db.alert_exists("dl-login-failed").unwrap());
+
+        let unread = db.list_unread_alerts().unwrap();
+        assert_eq!(unread.len(), 1, "告警页只读表：不落库就看不到");
+        db.mark_alert_read(unread[0].id).unwrap();
+        assert!(
+            !db.alert_has_unread("dl-login-failed").unwrap(),
+            "标已读后不应再算未读"
+        );
+        assert!(db.alert_exists("dl-login-failed").unwrap());
     }
 }

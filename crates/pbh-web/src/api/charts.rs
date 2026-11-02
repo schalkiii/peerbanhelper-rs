@@ -223,12 +223,15 @@ pub async fn session_analyse(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    // 时间窗参数名与其余图表端点一致（上游 `WebUtil.java:14-15` 读 `startAt`/`endAt`，
+    // 前端 `charts.ts:148-151` 也这么发）；此前读的是 `startTime`/`endTime` ⇒ 永远
+    // 退化成 0..now，图表的时间选择器无效
     let start = params
-        .get("startTime")
+        .get("startAt")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
     let end = params
-        .get("endTime")
+        .get("endAt")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(now_ms());
     let downloader = params

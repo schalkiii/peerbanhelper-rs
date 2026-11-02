@@ -82,10 +82,12 @@
       "fields": ["found", "address", "banCount", "torrentAccessCount", "firstTimeSeen", "lastTimeSeen", "uploadedToPeer", "downloadedFromPeer", "geo", "ptrLookup", "btnQueryAvailable"]
     },
     { "method": "GET", "path": "/api/peer/1.2.3.4/banHistory", "shape": "page" },
-    { "method": "GET", "path": "/api/peer/1.2.3.4/accessHistory", "shape": "page" },
+    { "method": "GET", "path": "/api/peer/1.2.3.4/accessHistory", "shape": "page",
+      "results_fields": ["address", "port", "downloader.id", "downloader.name", "downloader.type", "clientName", "uploadedOffset", "downloadedOffset"] },
     { "method": "GET", "path": "/api/torrent/query", "shape": "page" },
     { "method": "GET", "path": "/api/torrent/abcdef/banHistory", "shape": "page" },
-    { "method": "GET", "path": "/api/torrent/abcdef/accessHistory", "shape": "page" },
+    { "method": "GET", "path": "/api/torrent/abcdef/accessHistory", "shape": "page",
+      "results_fields": ["downloader.id", "uploadedOffset", "downloadedOffset"] },
 
     { "method": "GET", "path": "/api/push", "shape": "array" },
     { "method": "POST", "path": "/api/push/test", "shape": "any" },
@@ -95,6 +97,7 @@
     { "method": "GET", "path": "/api/sub/rules", "shape": "array" },
     { "method": "PUT", "path": "/api/sub/rule", "shape": "any" },
     { "method": "PATCH", "path": "/api/sub/rule/rule-1", "shape": "any" },
+    { "method": "POST", "path": "/api/sub/rule/rule-1", "shape": "any" },
     { "method": "DELETE", "path": "/api/sub/rule/rule-1", "shape": "any" },
     { "method": "POST", "path": "/api/sub/rule/rule-1/update", "shape": "any" },
     { "method": "POST", "path": "/api/sub/rules/update", "shape": "any" },

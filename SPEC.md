@@ -407,6 +407,22 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 - `profile.yml`：`check-interval`(5000)、`ban-duration`(1209600000=14 天)、
   `ignore-peers-from-addresses`、`module.*`（各模块 enabled/ban-duration/规则集）。
   本阶段把 profile 段并入 `config.yml` 的 `profile:` 下（单文件部署），字段名与语义不变。
+- **默认规则补齐迁移（启动期，构建流水线之前）**：`profile.default-rules-seen` 记录本程序
+  已经「见过」的默认规则指纹（`模块|method|content`）。随版本新增的默认客户端名 / Peer ID
+  规则第一次见到时，若用户列表里没有就追加并写回配置；此后即使用户删掉也不会被复活。
+  等价于上游 `config-version` + `@UpdateScript(version=N)` 的效果，但不需要维护脚本历史。
+  模块配置节整体缺失（用户没启用该模块）时**不代为创建**。
+- **[GOLDEN] 规则字段严格性**：`LENGTH` 必须同时给出 `min` 与 `max`；`hit`/`miss` 一旦出现
+  必须是 `DEFAULT`/`TRUE`/`FALSE`（上游 `syntax.get("min").getAsInt()`、
+  `MatchResultEnum.valueOf()` 都会抛异常）。违规时整规则集解析失败、模块不启用并记 warn——
+  **绝不**退化成 `min=0,max=MAX`（那会让该规则命中所有字符串，等于误封）。
+  大小写按宽松处理（同一取值不影响判定结果）。
+- **启动解封**：从数据库恢复封禁表后，落在 `ignore-peers-from-addresses` 段内的条目立即移除
+  并标记全量重放（上游 `DownloaderServerImpl.unbanWhitelistedPeers`），否则迁移自 Java 版的
+  LAN/CGNAT 封禁会在每次重启后继续下发。
+- **告警落库**：`publishAlert` 的抑制判据是「同 identifier 是否仍有**未读**告警」
+  （`alert.read_at IS NULL`，上游 `AlertServiceImpl`）；未被抑制则先写 `alert` 表再推送。
+  WebUI 的 `/api/alerts` 只读该表，不落库的告警在界面上不可见。
 - **[GOLDEN] 模块启用语义**（`AbstractFeatureModule.shouldModuleEnabled`）：
   `module.<name>` 配置节缺失，或节内没有 `enabled: true` → **该模块被禁用**。
 - **[GOLDEN] `ban-duration` 语义**：模块级 `ban-duration` 缺省 / 为 0 → 回退到全局 `ban-duration`。
@@ -477,7 +493,27 @@ Rust `regex` crate 的 `is_match` 是部分匹配，因此封装为 `^(?:content
 - **`GET /api/modules/ipblacklist/ip/test`**：接受单 IP 与 CIDR；`count` 为该地址族的
   地址总数（IPv4 /24 = 256）；`generatedCidr` 为主机位清零的前缀块。
 - **`GET /api/bans?search=`**：匹配 IP、peer id、client name、torrent 名称/hash、规则与描述；
-  `ipGeoData` 返回实时 GeoIP（未装库为 null）。
+  `ipGeoData` 返回实时 GeoIP（未装库为 null）。`search` 需**再解一次 URL 编码**
+  （前端 `encodeURIComponent` + `URLSearchParams` 两次编码，上游 `PBHBanController.java:159-160`
+  显式解码），否则非 ASCII 关键字恒查不到；`filter` 上游不解码，本移植也不解。
+- **`GET /api/push`**：每条渠道是 `PushWrapperDTO(name, type, config)`，**`config` 子对象不可缺**
+  （缺了前端编辑弹窗子表单为空，保存即写空该渠道）。`config` 的键集 = 上游各 provider
+  `saveJson()`（Gson 序列化 `Config` 类）= 前端 `webui/src/api/model/push.ts`，
+  与 YAML 键名不同（`name`⇄`senderName`、`receiver`⇄`receivers`、`sendkey`⇄`sendKey`、
+  `openid`⇄`openId`、`chatid`⇄`chatId`）；写路径两套键都要收，且 push 段**不做**
+  `_`→`-` 归一（上游 YAML 本来就混用下划线/连字符/驼峰，转换会写坏 bark/ntfy 与自定义 header 名）。
+- **访问历史（`/api/peer/{ip}/accessHistory`、`/api/torrent/{hash}/accessHistory`）**：
+  分页是 **1-based**（`Pageable`：`page` 缺省 1、offset=(page-1)*size，回显 `page`）；
+  每条记录的 `downloader` 是 `DownloaderBasicInfo(id,name,type)` **对象**（不是裸 id 字符串），
+  并含 `uploadedOffset`/`downloadedOffset`（前端增量列直接读）。
+- **`POST /api/sub/rule/{ruleId}`**：上游 `save(isAdd=false)`，是 WebUI「编辑订阅」
+  （改名 / 改 URL）的入口；`PATCH` 在上游只用于 enable 开关。两者本移植共用增量处理器。
+- **`/api/chart/*` 时间窗参数统一 `startAt`/`endAt`**（`WebUtil.java:14-15`）；
+  `sessionAnalyse` 曾误读 `startTime`/`endTime` ⇒ 时间选择器失效退化成全量。
+- **`/api/general/status` 的 `system.os`** 必须是前端 `OSType` 认的字面量
+  （`Windows`/`Linux`/`Mac OS X`/`FreeBSD`/`Solaris`/`Other`，`api/model/status.ts:1-8`），
+  否则「关于」页取不到系统图标；`version` 是操作系统版本，**不是** CPU 架构
+  （拿不到时留空，不给错值）。
 - **`GET /api/peer/{ip}`**：`found = banCount>0 || torrentAccessCount>0`；`torrentAccessCount`
   为 `peer_records` 行数；`geo` 实时查询；`btnQueryAvailable` 取决于 `ip_query` 能力。
 - **`GET /api/statistic/counter`**：`wastedTraffic` = 累计被封禁 peer 的 `uploaded`
@@ -544,10 +580,16 @@ SQLite（默认 `data/persist/peerbanhelper.db`），核心表：
   进程启动时把**未到期**的条目载入内存封禁表；解封时同步删除该行。
   （上游同时持久化 `banForDisconnect` 等元数据，Rust 阶段暂只保留恢复所需的字段。）
 - `progress_peer_history`：downloader、torrent、ip、uploaded 快照、最大进度、时间（供虚假进度模块）。
+- **封禁计数口径**：种子 / 对等体的封禁计数一律以 `history`（上游 `HistoryService`）为准；
+  `ban_logs` 是早期遗留表，新代码不再读写（`torrent_by_hash` 曾误查该表，导致
+  `/api/torrent/{hash}` 的 `peerBanCount` 静默显示 0）。
 
 ## 9. 已知差距（阶段性，按对“忠实”影响排序）
 
 以下差距已确认，按影响从高到低排列，作为后续迭代的输入：
+
+> **完整清单在 PLAN.md**：本节只留结构性大项。逐条带两侧 `file:line` 的缺口与修法
+> 见 [PLAN.md §4.1 与 §4.2](./PLAN.md)（后者是 2026-11-02 全量 review 的遗留项）。
 
 > 上游全部规则模块（含默认启用与默认关闭）均已实现并接入流水线：
 > `ip-address-blocker`（含 GeoIP 四维度）/ `peer-id-blacklist` / `client-name-blacklist` /
