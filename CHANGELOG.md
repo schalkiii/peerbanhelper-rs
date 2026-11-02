@@ -14,6 +14,15 @@
   IP 黑白名单、订阅规则列表、PCB 前缀键、BTN 规则、自动范围封禁都改用该入口，
   不再「解析失败即 pass」；配置文件里的地址解析仍保持严格（坏配置忽略）。
 
+### fix(config): 支持上游 v9.5.3 的顶层 `auto-stun:` / `stun:` 段
+
+- 上游把 AutoSTUN 设置放在**顶层**（`auto-stun.enabled/downloaders`、
+  `stun.tcp-servers/udp-servers/available-test`），本移植早期放在 `ip-remapping.auto-stun` 下
+  ⇒ 直接把 Java 的 `config.yml` 搬过来时这些键被当未知键保留、从不读取（AutoSTUN 静默退回禁用）。
+- 现在两套写法都读：`normalize_upstream()` 把顶层值并入 `ip-remapping.auto-stun`（顶层优先），
+  保存时移除顶层别名，避免同一组设置两份漂移。
+- `stun.available-test` 仅建模读取（STUN 可用性测试尚未移植，见 PLAN §4.2 第 13 条）。
+
 ### fix(proxy): `setting=1/2` 的代理类型按上游代码对齐
 
 - `1` ⇒ **HTTP** 代理、`2` ⇒ **SOCKS5**（`socks5h://`，DNS 也交给代理）——

@@ -186,11 +186,10 @@
    会（`PBHGeneralController.java:99,306`）⇒ 在界面改完客户端名/Peer ID/模块开关后
    不重启进程不生效。修法：`Pipeline.modules` 改 `RwLock<Vec<Arc<dyn RuleModule>>>`，
    判定前取快照（避免跨 `await` 持锁），reload 里按当前配置重建。
-4. **`auto-stun` / `stun.*` 键路径不一致（高，迁移场景静默失效）**：上游读**顶层**
-   `auto-stun`（`BTStunManager.java:64,75`）与顶层 `stun.tcp-servers`/`udp-servers`
-   （`StunManager.java:37`），本移植放在 `ip-remapping.auto-stun`
-   （`crates/pbh/src/config.rs:982-987`）⇒ 直接搬 Java 的 config.yml 时这些键被当未知键
-   保留但从不读取。修法：加顶层 serde 别名并在加载期迁移。
+4. ~~**`auto-stun` / `stun.*` 键路径不一致**~~ —— 已修复：`AppConfig` 建模顶层
+   `auto-stun:` / `stun:`，`normalize_upstream()` 把它们并入 `ip-remapping.auto-stun`
+   （顶层优先）并在保存时移除别名，搬 Java 的 config.yml 不再静默失效。
+   `stun.available-test` 仍未消费（见第 13 条）。
 5. ~~**`proxy.setting` 数值语义**~~ —— 已修复：`1` ⇒ HTTP、`2` ⇒ SOCKS5（按上游代码），
    `0` 保留环境为有意差异，见 §4.1 第 1 条。
 6. ~~**不可解析 IP 的回落缺失**~~ —— 已修复：新增 `iputil::parse_addr_or_invalid`

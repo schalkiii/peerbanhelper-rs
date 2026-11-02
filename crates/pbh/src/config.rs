@@ -30,6 +30,15 @@ pub struct AppConfig {
     /// `ip-remapping:` 段（Teredo / NAT64 地址翻译）
     #[serde(rename = "ip-remapping", default)]
     pub ip_remapping: IpRemapConfig,
+    /// 上游 v9.5.3 的**顶层** `auto-stun:` 段。本移植早期把它放在
+    /// `ip-remapping.auto-stun` 下；加载时并入那里（顶层优先），随后从文件移除，
+    /// 避免同一组设置出现两份、互相漂移。
+    #[serde(rename = "auto-stun", default, skip_serializing_if = "Option::is_none")]
+    pub auto_stun_top: Option<TopLevelAutoStun>,
+    /// 上游 v9.5.3 的**顶层** `stun:` 段（`tcp-servers` / `udp-servers` / `available-test`）。
+    /// 同上，加载后并入 `ip-remapping.auto-stun`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stun: Option<TopLevelStun>,
     /// `ip-database:` 段（GeoIP/GeoCN 数据库，对齐上游 `config.yml` 的 `ip-database`
     /// 与 `IPDBManager#setupIPDB`；数据库文件位于 `<data>/ipdb/geoip/`）
     #[serde(rename = "ip-database", default)]
@@ -851,6 +860,8 @@ impl Default for AppConfig {
             profile: default_profile(),
             banlist_remapping: BanlistRemapping::default(),
             ip_remapping: IpRemapConfig::default(),
+            auto_stun_top: None,
+            stun: None,
             ip_database: IpDatabaseConfig::default(),
             language: default_language(),
             push: PushSection::default(),
@@ -956,6 +967,31 @@ impl AppConfig {
                 self.push = mapping;
             }
         }
+        // 上游 v9.5.3 的顶层 `auto-stun:` / `stun:` 并进 `ip-remapping.auto-stun`
+        //（本移植的规范位置）；顶层值优先，处理完即 `take()`，保存时不再写两份。
+        if let Some(top) = self.auto_stun_top.take() {
+            let target = &mut self.ip_remapping.auto_stun;
+            if let Some(v) = top.enabled {
+                target.enabled = v;
+            }
+            if let Some(v) = top.use_friendly_loopback_mapping {
+                target.use_friendly_loopback_mapping = v;
+            }
+            if let Some(v) = top.downloaders {
+                target.downloaders = v;
+            }
+        }
+        if let Some(top) = self.stun.take() {
+            let target = &mut self.ip_remapping.auto_stun;
+            if let Some(v) = top.tcp_servers {
+                target.tcp_servers = v;
+            }
+            if let Some(v) = top.udp_servers {
+                target.udp_servers = v;
+            }
+            // `available-test` 尚未消费，保留读取（字段建模即可）
+            let _ = top.available_test;
+        }
     }
 
     /// 序列化并写回配置文件（Web 配置保存与下载器/推送热管理的共用写入口）。
@@ -970,14 +1006,22 @@ impl AppConfig {
         if let Some(mapping) = overlay.as_mapping_mut() {
             // 内部别名不落盘：下载器统一写 `downloaders`、推送统一写 `push`
             // （字段的 serde 名就是 `client` / `push-notification`）
-            for key in ["client", "clients", "push-notification", "push_notification"] {
+            for key in [
+                "client",
+                "clients",
+                "push-notification",
+                "push_notification",
+                "auto-stun",
+                "stun",
+            ] {
                 mapping.remove(serde_yaml::Value::String(key.into()));
             }
         }
         if let Some(mapping) = document.as_mapping_mut() {
             // 上游布局的别名：内容已并入 `downloaders` / `push`，移除避免下次加载重复
-            mapping.remove(serde_yaml::Value::String("client".into()));
-            mapping.remove(serde_yaml::Value::String("push-notification".into()));
+            for key in ["client", "push-notification", "auto-stun", "stun"] {
+                mapping.remove(serde_yaml::Value::String(key.into()));
+            }
         }
         merge_yaml(&mut document, &overlay);
         std::fs::write(path, serde_yaml::to_string(&document)?)?;
@@ -994,6 +1038,33 @@ impl AppConfig {
         }
         Ok(())
     }
+}
+
+/// 上游顶层 `auto-stun:` 段（`config.yml:158-173`）。
+///
+/// 字段全是 `Option`：缺省与显式 `false` 语义不同，缺省时不能覆盖
+/// `ip-remapping.auto-stun` 里已有的值。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TopLevelAutoStun {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(rename = "use-friendly-loopback-mapping", default)]
+    pub use_friendly_loopback_mapping: Option<bool>,
+    #[serde(default)]
+    pub downloaders: Option<Vec<String>>,
+}
+
+/// 上游顶层 `stun:` 段（`config.yml:136-153`）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TopLevelStun {
+    #[serde(rename = "tcp-servers", default)]
+    pub tcp_servers: Option<Vec<String>>,
+    #[serde(rename = "udp-servers", default)]
+    pub udp_servers: Option<Vec<String>>,
+    /// 上游用于决定是否做 STUN 可用性测试；本移植尚未消费（见 PLAN §4.2 第 13 条），
+    /// 仅建模以便与上游配置互通。
+    #[serde(rename = "available-test", default)]
+    pub available_test: Option<bool>,
 }
 
 /// 读取 YAML 文档；文件不存在/无法解析时返回空映射（保存时以空基底合并）。
@@ -1506,5 +1577,52 @@ client:
         )
         .unwrap();
         assert_eq!(from_yaml.web_json()["senderName"], "PBH-yaml");
+    }
+
+    /// 上游 v9.5.3 把 `auto-stun` / `stun` 放在**顶层**；本移植的规范位置是
+    /// `ip-remapping.auto-stun`。加载时必须把顶层值并进来（顶层优先），
+    /// 并且保存时不再写两份，避免同一组设置漂移。
+    #[test]
+    fn upstream_top_level_auto_stun_is_merged_and_normalized_on_save() {
+        let text = r#"
+stun:
+  tcp-servers: ["turn.example:3478"]
+  udp-servers: ["stun.example:3478"]
+  available-test: false
+auto-stun:
+  enabled: true
+  use-friendly-loopback-mapping: false
+  downloaders: ["qBittorrent"]
+ip-remapping:
+  auto-stun:
+    enabled: false
+    tcp-servers: ["nested.example:3478"]
+"#;
+        let mut cfg: AppConfig = serde_yaml::from_str(text).unwrap();
+        cfg.normalize_upstream();
+        let st = &cfg.ip_remapping.auto_stun;
+        assert!(st.enabled, "顶层 enabled=true 必须覆盖嵌套的 false");
+        assert!(!st.use_friendly_loopback_mapping);
+        assert_eq!(st.downloaders, vec!["qBittorrent".to_string()]);
+        assert_eq!(
+            st.tcp_servers,
+            vec!["turn.example:3478".to_string()],
+            "顶层 stun 段优先于嵌套"
+        );
+        assert_eq!(st.udp_servers, vec!["stun.example:3478".to_string()]);
+
+        let dir = std::env::temp_dir().join(format!("pbh-cfg-autostun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.yml");
+        cfg.save_to(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !saved.contains("
+auto-stun:"),
+            "顶层 auto-stun 别名不应落盘：{saved}"
+        );
+        assert!(saved.contains("ip-remapping:"), "{saved}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
