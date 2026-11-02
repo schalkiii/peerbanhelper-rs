@@ -99,6 +99,14 @@ bypassVersionCheck/enableRangeBanIp/ignoreRangeBanIpCondition/disableSameIpMulti
 
 ## 当前状态（2026-11-02）
 
+- **9.5.3-rs.7（2026-11-02；关闭 review 剩余高/中项）**：**规则流水线热重载**
+  （`SharedPipeline` + reload/保存时从磁盘重读重建；ban_list 沿用、PCB flush/恢复、
+  BTN 回灌 abilities、订阅从缓存恢复）；Aria2Next 透传 `handshaking`；
+  `nat_type`/`use_proxy` 接真实值；接线 `pbh.demoMode`/`apiToken`/`log.level`；
+  `sessionAnalyse` 全部 17 个计数列；配置保存 201 + reload 结果体；
+  封禁列表无条件排除 `excludeFromDisplay`；日志条目键 `seq`→`offset`。
+  工作区 **722 测试通过**（另 1 ignore）、clippy 零警告。
+  仅剩 §4.3 的两条「无调用方、不计划修复」项（BT 监听端口改写、replaceTracker）。
 - **9.5.3-rs.6（2026-11-02；继续关闭 review 遗留项）**：不可解析地址回落占位地址
   `127.123.123.123`（上游 `INVALID_ADDRESS_MISSINGNO`）；`proxy.setting` 按上游代码改为
   1=HTTP / 2=SOCKS5（0 保留环境为有意差异）；支持上游顶层 `auto-stun` / `stun` 段；

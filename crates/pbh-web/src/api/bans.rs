@@ -146,6 +146,11 @@ pub async fn list(State(state): State<AppState>, Query(q): Query<BansQuery>) -> 
         .unwrap_or_default();
     let mut rows: Vec<Value> = Vec::new();
     for record in records {
+        // 上游 `getBanResponseStream`：`isExcludeFromDisplay()` **无条件**过滤，
+        // 之后才按 `ignoreBanForDisconnect` 决定是否跳过「封禁即断开」条目
+        if record.metadata.exclude_from_display {
+            continue;
+        }
         if ignore_disconnect && record.ban_for_disconnect {
             continue;
         }

@@ -30,6 +30,16 @@
 - `nat_type` 取 AutoSTUN 缓存的 NAT 类型（未启用时为 `Unknown`，与上游 BTSTUN 默认一致）；
   `use_proxy` 由 `proxy.setting != 0` 决定（对齐 `HTTPUtil.getProxyType() != DIRECT`）。
 
+### fix(web): 会话时段分析补齐全部分项；配置保存状态码与封禁列表过滤对齐
+
+- `/api/chart/sessionAnalyse`：聚合层本来就按 PeerFlag 逐 peer 统计了 17 个计数，
+  但读取 SQL 只取了 `total/incoming` 两列 ⇒ 其余 14 项恒 0。现在按天聚合全部计数列。
+- `PUT /api/general/{config,profile}`：返回 **201 + reload 结果体**（上游 `handleConfigPut`
+  先置 201 再用重载结果覆盖响应体）。
+- 封禁列表：**无条件**过滤 `excludeFromDisplay` 的条目（上游 `getBanResponseStream`），
+  再按 `ignoreBanForDisconnect` 决定是否跳过「封禁即断开」。
+- 日志条目键 `seq` → `offset`（前端模型 `api/model/log.ts` 读的是后者）。
+
 ### feat(config): 接线 `pbh.demoMode` / `pbh.apiToken` / `pbh.log.level`
 
 - **demoMode**（演示/录屏）：`/api/downloaders` 的 endpoint、下载器状态 DTO 的

@@ -331,7 +331,21 @@ pub async fn config_put(
         "config"
     };
     match state.backend.write_config(name, &body) {
-        Ok(()) => crate::std_resp(true, Some("OK"), Value::Null).into_response(),
+        Ok(()) => {
+            // 上游 `handleConfigPut`：先 201，再用 `handleReloading` 的结果覆盖响应体
+            let results = state.backend.reload();
+            let data = json!({
+                "results": results.iter().map(|r| json!({
+                    "moduleName": r.module_name,
+                    "changes": r.results,
+                })).collect::<Vec<_>>(),
+            });
+            (
+                StatusCode::CREATED,
+                crate::std_resp(true, Some("OK"), data),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             crate::std_resp(false, Some(&e), Value::Null),

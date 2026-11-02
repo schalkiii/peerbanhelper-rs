@@ -241,8 +241,8 @@ pub async fn session_analyse(
         .connection_metrics_trend(start, end, downloader.as_deref())
         .unwrap_or_default();
     // 对齐上游 `PeerConnectionMetricsDTO`：字段名用驼峰且包含全部 18 个字段。
-    // Rust 仅落库并聚合 `totalConnections`/`incomingConnections`，其余按 0 占位
-    // （待 metrics 写入层补齐后可移除占位）。
+    // 计数由 `aggregate_connection_metrics` 按 PeerFlag 逐 peer 汇总（与上游
+    // `PeerConnectionMetricsService.aggregating` 一致），这里只按天相加。
     let data = rows
         .iter()
         .map(|(ts, row)| {
@@ -250,21 +250,21 @@ pub async fn session_analyse(
                 "key": ts,
                 "totalConnections": row[0],
                 "incomingConnections": row[1],
-                "remoteRefuseTransferToClient": 0,
-                "remoteAcceptTransferToClient": 0,
-                "localRefuseTransferToPeer": 0,
-                "localAcceptTransferToPeer": 0,
-                "localNotInterested": 0,
-                "questionStatus": 0,
-                "optimisticUnchoke": 0,
-                "fromDHT": 0,
-                "fromPEX": 0,
-                "fromLSD": 0,
-                "fromTrackerOrOther": 0,
-                "rc4Encrypted": 0,
-                "plainTextEncrypted": 0,
-                "utpSocket": 0,
-                "tcpSocket": 0,
+                "remoteRefuseTransferToClient": row[2],
+                "remoteAcceptTransferToClient": row[3],
+                "localRefuseTransferToPeer": row[4],
+                "localAcceptTransferToPeer": row[5],
+                "localNotInterested": row[6],
+                "questionStatus": row[7],
+                "optimisticUnchoke": row[8],
+                "fromDHT": row[9],
+                "fromPEX": row[10],
+                "fromLSD": row[11],
+                "fromTrackerOrOther": row[12],
+                "rc4Encrypted": row[13],
+                "plainTextEncrypted": row[14],
+                "utpSocket": row[15],
+                "tcpSocket": row[16],
             })
         })
         .collect::<Vec<_>>();

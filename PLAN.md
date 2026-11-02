@@ -211,25 +211,32 @@
     → `ip_range`，**必须先于 schema.sql**，否则新索引引用旧库不存在的列）与 V1_3
     （`peer_records` 唯一键去 port + 按 `last_time_seen DESC, id DESC` 去重），
     与上游 flyway 脚本逐条一致；补了构造老库的迁移用例。
-11. **`/api/general/status` 与图表的字段缺口（中）**：~~`network.nat_type` / `use_proxy`
-    硬编码~~ 已修复（NAT 类型取 AutoSTUN 缓存、`use_proxy` 看 `proxy.setting`）；
-    `system.version` 在非 Linux 平台留空（无免依赖取法）；
-    `/api/chart/sessionAnalyse` 的 16 个指标里 14 个恒 0 占位（口径与
-    `PeerConnectionMetricsDTO` 不同）。
-12. **状态码与文案差异（低）**：~~`PUT /api/modules/ipblacklist/*` 返回 201~~ 已改为 200
-    （上游 PUT 处理器不设状态码）；~~`geoIpInfo` 无 IPDB 时裸 key + 空数组~~ 已改为
-    本地化文案 + `data=null`（上游 `PBHChartController.handleGeoIP`）。
-    仍缺：`PUT /api/general/{config,profile}` 返回 200 + null（上游 201 + reload 结果体）；
-    `ignoreBanForDisconnect=false` 时未过 `excludeFromDisplay`（`PBHBanController.java:190-193`）；
-    日志条目键 `seq` 对前端模型 `offset`（`api/model/log.ts:3`，当前视图未读）。
+11. ~~**`/api/general/status` 与图表的字段缺口**~~ —— 已修复：`network.nat_type` 取
+    AutoSTUN 缓存（未启用 `Unknown`）、`use_proxy` 看 `proxy.setting`；
+    `sessionAnalyse` 的全部 17 个计数列按天聚合（聚合层本就按 PeerFlag 逐 peer 统计，
+    此前只是读取 SQL 只取了前两列）；`system.version` 在非 Linux 平台仍留空
+    （无免依赖取法，已在此说明）。
+12. ~~**状态码与文案差异**~~ —— 已全部修复：黑名单规则 PUT 200、`geoIpInfo` 本地化 +
+    `data=null`、配置保存返回 **201 + reload 结果体**（上游 `handleConfigPut` 的行为）、
+    封禁列表**无条件**过滤 `excludeFromDisplay`（`PBHBanController.java:190-193`）、
+    日志条目键改为前端模型读取的 `offset`。
 13. **上游有、本移植未建模的配置（低）**：`pbh-plus-key`、`server.external-webui`、`gui`、
-    `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）；
-    ~~`pbh.demoMode` / `pbh.apiToken` / `pbh.log.level`~~ 已接线（demoMode 打码下载器地址/凭据、
-    配置页下载器段与 BTN 凭据；apiToken 覆盖 Web token；log.level 覆盖默认级别）；
-    另外 `ip-database.account-id` / `license-key` 字段已实现但出厂模板未列出，
-    模板 `config-version` 落后上游一位。
+    `stun.available-test`、`database.host/port/username/password/database`（MySQL/PG，属扩展项）。
+    ~~`pbh.demoMode` / `pbh.apiToken` / `pbh.log.level`~~ 已接线；
+    ~~`ip-database.account-id` / `license-key` 模板缺项~~ 已核对：**上游模板同样没有这两项**
+    （代码按可选键读取，缺省即空），本移植模板与上游一致，无需补。
+    模板 `config-version`：故意不写——我们的 profile 并非逐版执行过上游迁移脚本，
+    写一个「看起来已迁移」的版本号反而会让 Java 端跳过必要迁移。
 
 ### 4.3 已知且保留的行为差异（说明，不计划「修复」）
+
+> **`setBTProtocolPort` / `getBTProtocolPort` 未实现**：上游由 AutoSTUN 隧道
+> （`BTStunInstance`）在映射成功后改写下载器监听端口。本移植未实现 AutoSTUN 隧道，
+> 该接口没有调用方；`LIVE_UPDATE_BT_PROTOCOL_PORT` 能力位仍按上游声明（前端不读它），
+> 等隧道功能移植时一并补上。
+> **`/api/utilities/replaceTracker` 未实现**：上游前端**从不调用**该接口（是给外部脚本的
+> 集成 API），本移植的下载器 trait 没有 `getTrackers/setTrackers/getAllTorrents` 三件套，
+> 单独为它扩接口的收益低于风险。若将来有人需要，按 PLAN 记录的方式在 trait 上补齐。
 
 - 表达式脚本 1500ms 超时兜底：上游 `maxScriptExecuteTime` 是死字段（声明后无引用），
   本移植保留该上限属**更严格**的防御性行为（只会把超时脚本判为 pass，方向安全）。

@@ -33,7 +33,8 @@ impl LogEntry {
             "thread": self.thread,
             "level": self.level,
             "content": self.content,
-            "seq": self.seq,
+            // 前端模型 `api/model/log.ts` 读的是 `offset`（对齐上游日志流字段）
+            "offset": self.seq,
         })
     }
 }

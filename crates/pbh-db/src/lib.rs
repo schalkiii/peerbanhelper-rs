@@ -1157,37 +1157,59 @@ impl Database {
         start_ms: i64,
         end_ms: i64,
         downloader: Option<&str>,
-    ) -> anyhow::Result<Vec<(i64, [i64; 2])>> {
+    ) -> anyhow::Result<Vec<(i64, [i64; 17])>> {
+        /// 计数列（与 `ConnectionMetricsRow` 字段顺序一致，也与 Web DTO 一致）
+        const COLUMNS: [&str; 17] = [
+            "total_connections",
+            "incoming_connections",
+            "remote_refuse_transfer_to_client",
+            "remote_accept_transfer_to_client",
+            "local_refuse_transfer_to_peer",
+            "local_accept_transfer_to_peer",
+            "local_not_interested",
+            "question_status",
+            "optimistic_unchoke",
+            "from_dht",
+            "from_pex",
+            "from_lsd",
+            "from_tracker_or_other",
+            "rc4_encrypted",
+            "plain_text_encrypted",
+            "utp_socket",
+            "tcp_socket",
+        ];
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let (cond, has_downloader) = match downloader {
             Some(_) => (" AND downloader = ?3", true),
             None => ("", false),
         };
+        let sums = COLUMNS
+            .iter()
+            .map(|column| format!("COALESCE(SUM({column}), 0)"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
-            "SELECT (timeframe_at / 86400000) * 86400000 AS day,
-                    COALESCE(SUM(total_connections), 0),
-                    COALESCE(SUM(incoming_connections), 0)
+            "SELECT (timeframe_at / 86400000) * 86400000 AS day, {sums}
              FROM peer_connection_metrics WHERE timeframe_at >= ?1 AND timeframe_at < ?2{cond}
              GROUP BY day ORDER BY day"
         );
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, [i64; 17])> {
+            let mut values = [0i64; COLUMNS.len()];
+            for (index, slot) in values.iter_mut().enumerate() {
+                *slot = row.get(index + 1)?;
+            }
+            Ok((row.get(0)?, values))
+        };
         let mut stmt = conn.prepare(&sql)?;
         let rows = if has_downloader {
-            let d = downloader.unwrap_or_default();
-            stmt.query_map(rusqlite::params![start_ms, end_ms, d], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?],
-                ))
-            })?
+            stmt.query_map(
+                rusqlite::params![start_ms, end_ms, downloader.unwrap_or_default()],
+                map_row,
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?
         } else {
-            stmt.query_map(rusqlite::params![start_ms, end_ms], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    [r.get::<_, i64>(1)?, r.get::<_, i64>(2)?],
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            stmt.query_map(rusqlite::params![start_ms, end_ms], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         Ok(rows)
     }
@@ -2091,6 +2113,34 @@ mod tests {
             "标已读后不应再算未读"
         );
         assert!(db.alert_exists("dl-login-failed").unwrap());
+    }
+
+    /// sessionAnalyse 的按天聚合要带上全部计数列（此前只读 total/incoming，其余恒 0）。
+    #[test]
+    fn connection_metrics_trend_returns_all_counters() {
+        let db = Database::open_in_memory().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO peer_connection_metrics (
+                    timeframe_at, downloader, total_connections, incoming_connections,
+                    remote_refuse_transfer_to_client, remote_accept_transfer_to_client,
+                    local_refuse_transfer_to_peer, local_accept_transfer_to_peer,
+                    local_not_interested, question_status, optimistic_unchoke,
+                    from_dht, from_pex, from_lsd, from_tracker_or_other,
+                    rc4_encrypted, plain_text_encrypted, utp_socket, tcp_socket)
+                 VALUES (?1, 'qb', 10, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)",
+                rusqlite::params![1_000i64],
+            )
+            .unwrap();
+        }
+        let rows = db.connection_metrics_trend(0, i64::MAX, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        let (_, counts) = &rows[0];
+        assert_eq!(counts[0], 10);
+        assert_eq!(counts[1], 4);
+        assert_eq!(counts[9], 8, "fromDHT 必须读出来（此前恒 0）");
+        assert_eq!(counts[16], 15);
     }
 
     /// 老 Java 库（flyway 停在 V1_1/V1_2）打开时要补齐两处结构：
